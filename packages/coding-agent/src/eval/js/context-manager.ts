@@ -24,6 +24,7 @@ import type { ShadowPlan } from "../speculation/types";
 import type { EvalToolDescriptor, EvalToolInvokeResult } from "../types";
 import { type ShadowSnapshot, shadowSnapshotDigest } from "./shared/runtime";
 import { projectJavaScriptShadowPlan } from "./speculation";
+import { clearMacroRuntime } from "../macro-registry";
 import { callSessionTool, type JsStatusEvent } from "./tool-bridge";
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
 // hidden argv mode, so compiled/npm builds only need one JavaScript entry.
@@ -374,6 +375,16 @@ export async function runIfSnapshotMatches(options: {
 		if (error instanceof ToolError && error.message === "JS shadow snapshot changed") return null;
 		throw error;
 	}
+}
+
+/**
+ * Whether a live JS worker context already exists for `sessionKey`. Used by
+ * macro expansion to evaluate a registered JS macro only when a context exists
+ * (no live context => leave the token literal), so a stray macro never
+ * cold-starts a worker.
+ */
+export function hasLiveJsSession(sessionKey: string): boolean {
+	return sessions.get(sessionKey)?.state === "alive";
 }
 
 export async function resetVmContext(sessionKey: string): Promise<void> {
@@ -844,6 +855,7 @@ async function killSessionFor(session: JsSession, error: Error, options: { force
 }
 
 async function killSession(session: JsSession, error: Error, options: { force: boolean }): Promise<void> {
+	clearMacroRuntime(session.sessionId, session.cwd, "js");
 	if (session.state === "dead") return;
 	session.state = "dead";
 	for (const pending of session.pending.values()) {

@@ -693,6 +693,68 @@ if "__omp_prelude_loaded__" not in globals():
 
     tool = _ToolProxy()
 
+    _OMP_MACRO_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    _OMP_MACRO_SENTINEL = object()
+    __omp_macro_registry = {}
+    __omp_macro_revision = 0
+
+    def defmacro(name: str, value=_OMP_MACRO_SENTINEL):
+        """Register a value or callable for host-side inline macro expansion."""
+        if os.environ.get("PI_EVAL_PY_MACROS") == "0":
+            raise RuntimeError("Python defmacro requires the persistent session kernel; python.kernelMode is per-call")
+        if not isinstance(name, str) or not _OMP_MACRO_NAME_RE.match(name):
+            raise ValueError("defmacro name must be a valid identifier")
+
+        def _register(target):
+            global __omp_macro_revision
+            __omp_macro_revision += 1
+            __omp_macro_registry[name] = target
+            _emit_status("macro", action="register", runtime="py", name=name, revision=__omp_macro_revision)
+            return target
+
+        if value is _OMP_MACRO_SENTINEL:
+            return _register
+        return _register(value)
+
+    def _omp_macro_jsonable(value):
+        """Best-effort coerce a macro result into a JSON-serializable form."""
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        try:
+            json.dumps(value)
+            return value
+        except Exception:
+            return repr(value)
+
+    def __omp_eval_macros(specs):
+        """Resolve a batch of registered inline macros.
+
+        `specs` is a list of `[name, args]` pairs: `args is None` for a bare value
+        reference, or a list of positional arguments for a call. Returns a list of
+        `{"ok": True, "value": ...}` / `{"ok": False, "error": "..."}` in order.
+        Names are looked up only in the kernel-local macro registry populated by
+        `defmacro`, so the host never calls arbitrary globals by accident.
+        """
+        results = []
+        for spec in specs:
+            try:
+                name, args = spec[0], spec[1]
+                if name not in __omp_macro_registry:
+                    results.append({"ok": False, "error": f"macro '{name}' is not registered"})
+                    continue
+                target = __omp_macro_registry[name]
+                if args is None:
+                    value = target
+                elif not callable(target):
+                    results.append({"ok": False, "error": f"macro '{name}' is not callable"})
+                    continue
+                else:
+                    value = target(*args)
+                results.append({"ok": True, "value": _omp_macro_jsonable(value)})
+            except BaseException as exc:  # noqa: BLE001 - surface every macro error per item
+                results.append({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        return results
+
     _HANDLE_UNSET = object()
 
     class _Handle:

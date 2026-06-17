@@ -93,6 +93,8 @@ const PRELUDE_GLOBAL_KEYS = [
 	"display",
 	"tool",
 	"completion",
+	"defmacro",
+	"__omp_eval_macros",
 	"output",
 	"agent",
 	"wait",

@@ -16,6 +16,7 @@ import {
 	waitForPromiseWithCancellation,
 } from "../executor-base";
 import type { JsStatusEvent } from "../js/shared/types";
+import { clearMacroRuntime, recordMacroStatusEvent } from "../macro-registry";
 import { getEnabledEvalPreludes } from "../preludes";
 import type { EvalToolDescriptor, EvalToolInvokeResult } from "../types";
 import {
@@ -246,6 +247,7 @@ async function replaceSessionKernel(
 ): Promise<PythonKernel> {
 	const kernel = session.kernel;
 	const generation = session.generation;
+	clearMacroRuntime(session.sessionId, session.cwd, "py");
 	const inFlight = session.replacement;
 	if (inFlight?.generation === generation) {
 		if (
@@ -356,6 +358,9 @@ async function executeWithKernel(
 		options?.signal,
 		Math.max(1, remainingMs ?? 10_000),
 	);
+	const macroSessionId = options?.sessionId ?? "";
+	const macroCwd = options?.cwd ?? getProjectDir();
+	const macrosEnabled = options?.kernelMode !== "per-call";
 	return executeWithKernelBase<PythonExecutorOptions>({
 		kernel,
 		code,
@@ -366,6 +371,8 @@ async function executeWithKernel(
 		buildKernelEnvPatch: buildManagedKernelEnvPatch,
 		formatKernelTimeoutAnnotation,
 		formatTimeoutAnnotation,
+		interceptStatus: event => macrosEnabled && recordMacroStatusEvent(macroSessionId, macroCwd, event),
+		onKernelKilled: () => clearMacroRuntime(macroSessionId, macroCwd, "py"),
 	});
 }
 
@@ -417,6 +424,7 @@ const sessionRegistry = createKernelSessionRegistry<PythonKernel, PythonExecutor
 	acquireLiveSessionKernel,
 	invalidateSession: session => {
 		session.generation += 1;
+		clearMacroRuntime(session.sessionId, session.cwd, "py");
 	},
 	shutdownSession: session => shutdownInvalidatedSession(session),
 	validateKernel: (session, kernel) => session.kernel === kernel,
@@ -567,6 +575,16 @@ export async function executePythonWithKernel(
 	options?: PythonExecutorOptions,
 ): Promise<PythonResult> {
 	return await executeWithKernel(kernel, code, options);
+}
+
+/**
+ * Return the already-running kernel for a session (matching `sessionId` + `cwd`),
+ * or `null`. Never starts one — used by macro expansion to evaluate a registered
+ * Python macro only when a kernel already exists (no live kernel => leave the
+ * token literal).
+ */
+export function peekLivePythonKernel(sessionId: string, cwd: string): PythonKernelExecutor | null {
+	return sessionRegistry.peekLiveKernel(normalizeKernelSessionCwd(cwd), { sessionId }) ?? null;
 }
 
 export async function executePython(code: string, options?: PythonExecutorOptions): Promise<PythonResult> {

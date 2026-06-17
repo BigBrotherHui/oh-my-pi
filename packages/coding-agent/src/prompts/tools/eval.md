@@ -16,6 +16,8 @@ display(value) → None        print(value, ...) → None
 read(path, offset?=1, limit?=None) → str
 write(path, content) → str
 env(key?=None, value?=None) → str | None | dict
+defmacro(name, value) → value
+    Register a value or function for inline macro expansion. Python also supports decorator form: `@defmacro("name")`.
 output(*ids, format?="raw", query?=None, offset?=None, limit?=None) → str | dict | list[dict]
 {{#if js}}await {{/if}}tool.<name>(args) → unknown
     Invoke any session tool; `args` = its parameter object.{{#if py}} Async: `await tool.read({...})`.{{/if}}
@@ -48,6 +50,24 @@ budget → {{#if py}}`budget.total` (ceiling or None), `budget.spent()`, `budget
 
 {{{preludeDocumentation}}}
 {{/if}}
+
+<macros>
+Splice a registered macro value into ANY output — assistant prose or tool-call arguments — with `@[[name(args)]]`. The harness resolves it against the live kernel that registered the macro before the message is sent or the tool runs.
+
+```
+{{#if py}}defmacro("pow2", lambda x: x * x)   # Python
+{{/if}}{{#if js}}defmacro("tag", "v1")               // JavaScript
+{{/if}}@[[pow2(10)]] → call the registered macro and splice its return value
+@[[tag]]       → splice the registered value without calling
+```
+
+- Register macros with `defmacro(name, value)` before referencing them. Unregistered names are left literal and do not probe either kernel.
+- Python macros require the persistent session kernel; `defmacro()` raises when Python is configured for per-call kernels.
+- `args` are JSON literals (`@[[pow2(10)]]`, `@[[fmt("usd", 1499)]]`); a bare name with no `()` is a value reference (`@[[outdir]]`).
+- Macro names are session-wide and must be unique across Python and JavaScript; an ambiguous name is left literal.
+- Resolved once when your message completes; you do NOT see the result as you write, so use macros for deterministic substitution (math, formatting, paths, constants), never to branch on.
+- Only a complete, well-formed token expands. An unknown name, ambiguous name, malformed token, or runtime with no live kernel is left exactly as written. Escape a literal with `\@[[…]]`.
+</macros>
 {{#if spawns}}
 <dag>
 Acyclic waves of handles:

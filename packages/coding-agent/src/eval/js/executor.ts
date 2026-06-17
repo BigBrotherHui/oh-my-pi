@@ -2,6 +2,7 @@ import { DEFAULT_MAX_BYTES, type OutputArtifactError, OutputSink } from "@oh-my-
 import type { ToolSession } from "../../tools";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../../tools/output-meta";
 import { isEvalTimeoutControlEvent } from "../bridge-timeout";
+import { clearMacroRuntime, recordMacroStatusEvent } from "../macro-registry";
 import { executeInVmContext, type JsDisplayOutput } from "./context-manager";
 import type { JsStatusEvent } from "./shared/types";
 
@@ -98,13 +99,17 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 	// only the runtime-work budget; use it solely as worker cold-start headroom
 	// and never derive a competing fixed timer from it.
 	const acquireBudgetMs = legacyTimeoutMs ?? options.idleTimeoutMs;
+	const cwd = options.cwd ?? options.session.cwd;
+	if (options.reset) {
+		clearMacroRuntime(options.sessionId, cwd, "js");
+	}
 
 	try {
 		await executeInVmContext({
 			sessionKey: options.sessionId,
 			sessionId: options.sessionId,
 			ownerId: options.kernelOwnerId,
-			cwd: options.cwd ?? options.session.cwd,
+			cwd,
 			session: options.session,
 			localRoots: options.localRoots,
 			reset: options.reset,
@@ -116,6 +121,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 				onText: chunk => outputSink.push(chunk),
 				onDisplay: output => {
 					if (output.type === "status") {
+						if (recordMacroStatusEvent(options.sessionId, cwd, output.event)) return;
 						// Timeout-control events drive the eval watchdog only; never
 						// store or render them as cell output.
 						options.onStatus?.(output.event);
@@ -141,6 +147,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 		};
 	} catch (error) {
 		if (signal?.aborted || isAbortError(error)) {
+			clearMacroRuntime(options.sessionId, cwd, "js");
 			const timedOut = Boolean(timeoutSignal?.aborted) || isTimeoutReason(options.signal?.reason);
 			if (timedOut) {
 				outputSink.push(formatJsTimeoutAnnotation(legacyTimeoutMs ?? options.idleTimeoutMs));

@@ -64,6 +64,19 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 	};
 	const write = async (path, data) => callHelper("writeFile", path, data);
 	const env = (key, value) => callHelper("env", key, value);
+	const macroNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+	const macroRegistry = new Map();
+	let macroRevision = 0;
+	const defmacro = (name, value) => {
+		if (typeof name !== "string" || !macroNamePattern.test(name)) {
+			throw new TypeError("defmacro name must be a valid identifier");
+		}
+		macroRevision += 1;
+		macroRegistry.set(name, value);
+		globalThis.__omp_emit_status__("macro", { action: "register", runtime: "js", name, revision: macroRevision });
+		return value;
+	};
+
 
 	const __tools = new Map();
 	globalThis.__omp_tools__ = __tools;
@@ -605,6 +618,7 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 	globalThis.display = display;
 	globalThis.tool = tool;
 	globalThis.completion = completion;
+	globalThis.defmacro = defmacro;
 	globalThis.output = output;
 	globalThis.agent = agent;
 	globalThis.wait = wait;
@@ -622,4 +636,46 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 	globalThis.read = read;
 	globalThis.write = write;
 	globalThis.env = env;
+
+	// Resolve a batch of registered inline macros. `specs` is
+	// `[name, argsOrNull][]` (null = bare value reference). Names are looked up
+	// only in `macroRegistry`, not on globalThis.
+	const __omp_macro_jsonable = (value) => {
+		if (value === null || value === undefined) return value ?? null;
+		const t = typeof value;
+		if (t === "number" || t === "boolean" || t === "string") return value;
+		try {
+			return structuredClone(value);
+		} catch {
+			return String(value);
+		}
+	};
+	globalThis.__omp_eval_macros = async (specs) => {
+		const results = [];
+		for (const spec of specs) {
+			try {
+				const name = spec[0];
+				const args = spec[1];
+				if (!macroRegistry.has(name)) {
+					results.push({ ok: false, error: `macro '${name}' is not registered` });
+					continue;
+				}
+				const target = macroRegistry.get(name);
+				let value;
+				if (args === null) {
+					value = target;
+				} else if (typeof target !== "function") {
+					results.push({ ok: false, error: `macro '${name}' is not callable` });
+					continue;
+				} else {
+					value = await target(...args);
+				}
+				results.push({ ok: true, value: __omp_macro_jsonable(value) });
+			} catch (e) {
+				const msg = e && e.message ? `${e.name}: ${e.message}` : String(e);
+				results.push({ ok: false, error: msg });
+			}
+		}
+		return results;
+	};
 }

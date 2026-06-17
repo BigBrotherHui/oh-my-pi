@@ -82,6 +82,7 @@ import { initializeWithSettings } from "./discovery";
 import { setInvocationConfiguredExtensions, withOmpExtensionRootScope } from "./discovery/omp-extension-roots";
 import { disposeVmContextsByOwner } from "./eval/js/context-manager";
 import { getEnabledEvalPreludes, type EvalPreludeDefinition } from "./eval/preludes";
+import { createMacroExpander } from "./eval/macro-expand";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
 import { defaultEvalSessionId } from "./eval/session-id";
 import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
@@ -3652,6 +3653,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 			return result;
 		};
+		const expandMacros = createMacroExpander(toolSession);
 		const kimiApiFormatSetting = settings.get("providers.kimiApiFormat");
 		const kimiApiFormat = kimiApiFormatSetting === "auto" ? undefined : kimiApiFormatSetting;
 		// Live-bound speculation config: the Agent captures this object once at
@@ -3726,9 +3728,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			cursorExecHandlers,
 			getCursorTools: () => (toolSession.xdev ? listXdevTools(toolSession.xdev) : []),
 			transformToolCallArguments,
+			// Inline macros expand first so recovered edit payloads see final text.
 			// A stray sloppy payload in plain text becomes a real edit tool call so
 			// the normal pipeline (validation, approval, rendering) executes it.
-			transformAssistantMessage: message => {
+			transformAssistantMessage: async (message, signal) => {
+				await expandMacros(message, signal);
 				if (!settings.get("edit.recoverInlineEdits")) return;
 				// The live tool is an ExtensionToolWrapper whose proxy forwards the
 				// EditTool `mode` getter; a bridge/custom edit tool without a sloppy

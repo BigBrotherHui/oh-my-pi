@@ -283,6 +283,7 @@ export const MANAGED_KERNEL_ENV_KEYS = [
 	"PI_TOOL_BRIDGE_TOKEN",
 	"PI_TOOL_BRIDGE_SESSION",
 	"PI_EVAL_LOCAL_ROOTS",
+	"PI_EVAL_PY_MACROS",
 ] as const;
 
 interface ManagedKernelEnvOptions {
@@ -291,6 +292,8 @@ interface ManagedKernelEnvOptions {
 	bridgeSessionId?: string;
 	bridge?: { url: string; token: string };
 	localRoots?: Record<string, string>;
+	/** Per-call kernels never retain state, so macro registration is disabled for them. */
+	kernelMode?: "session" | "per-call";
 }
 interface ManagedKernelEnvPolicy {
 	sparse?: boolean;
@@ -316,6 +319,7 @@ export function buildManagedKernelEnvPatch(
 			patch.PI_TOOL_BRIDGE_SESSION = options.bridgeSessionId ?? "";
 		}
 		if (localRoots) patch.PI_EVAL_LOCAL_ROOTS = JSON.stringify(localRoots);
+		if (options.kernelMode === "per-call") patch.PI_EVAL_PY_MACROS = "0";
 		return patch;
 	}
 	return {
@@ -325,6 +329,7 @@ export function buildManagedKernelEnvPatch(
 		PI_TOOL_BRIDGE_TOKEN: options.bridge?.token ?? null,
 		PI_TOOL_BRIDGE_SESSION: options.bridge && options.bridgeSessionId ? options.bridgeSessionId : null,
 		PI_EVAL_LOCAL_ROOTS: localRoots && Object.keys(localRoots).length > 0 ? JSON.stringify(localRoots) : null,
+		PI_EVAL_PY_MACROS: options.kernelMode === "per-call" ? "0" : null,
 	};
 }
 
@@ -424,6 +429,10 @@ export interface ExecuteWithKernelBaseParams<
 	buildKernelEnvPatch: (options: TOptions) => TEnv;
 	formatKernelTimeoutAnnotation: (executionTimeoutMs: number | undefined, kernelKilled: boolean) => string;
 	formatTimeoutAnnotation: (executionTimeoutMs: number | undefined) => string | undefined;
+	/** Consume a kernel status event before it is forwarded or stored; return `true` to swallow it. */
+	interceptStatus?: (event: JsStatusEvent) => boolean;
+	/** Invoked when the kernel was force-killed mid-cell and its retained state is gone. */
+	onKernelKilled?: () => void;
 }
 
 export async function executeWithKernelBase<
@@ -440,6 +449,8 @@ export async function executeWithKernelBase<
 		buildKernelEnvPatch,
 		formatKernelTimeoutAnnotation,
 		formatTimeoutAnnotation,
+		interceptStatus,
+		onKernelKilled,
 	} = params;
 
 	const settings = await Settings.init();
@@ -474,6 +485,7 @@ export async function executeWithKernelBase<
 
 	const collectDisplay = (output: KernelDisplayOutput): void => {
 		if (output.type === "status") {
+			if (interceptStatus?.(output.event)) return;
 			abortShield.handleStatus?.(output.event);
 			options?.onStatus?.(output.event);
 			if (isEvalTimeoutControlEvent(output.event)) return;
@@ -522,6 +534,7 @@ export async function executeWithKernelBase<
 		});
 
 		if (result.cancelled || abortShield.abortRequested) {
+			if (result.kernelKilled) onKernelKilled?.();
 			const timedOut = result.timedOut || abortShield.timedOut;
 			const annotation = timedOut
 				? formatKernelTimeoutAnnotation(executionTimeoutMs ?? options?.idleTimeoutMs, result.kernelKilled ?? false)

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added support for registered inline evaluation macros (`defmacro("name", value)` + `@[[name(args)]]`) that splice values or function results from live eval kernels into assistant messages and tool arguments
+- Added documentation detailing inline macro syntax, argument parsing, and placement rules to the eval instruction prompts
+
 ### Fixed
 
 - Prevented LSP client from hanging when a request is aborted while waiting for a previous write
