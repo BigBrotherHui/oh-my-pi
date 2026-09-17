@@ -177,7 +177,8 @@ export const enum WhichCachePolicy {
 export interface WhichOptions extends Bun.WhichOptions {
 	/**
 	 * Cache policy for the lookup.
-	 * Defaults to `WhichCachePolicy.Cached`.
+	 * Defaults to `WhichCachePolicy.Cached`. Misses (`null`) are never cached,
+	 * so a later lookup sees newly installed binaries on the same PATH.
 	 */
 	cache?: WhichCachePolicy;
 	/**
@@ -260,7 +261,7 @@ export function $which(command: string, options?: WhichOptions): string | null {
 	if (result && options?.requireAbsolutePaths && !isFullyQualifiedPath(result)) {
 		return null;
 	}
-	if (key != null && cachePolicy !== WhichCachePolicy.ReadOnly) {
+	if (key != null && result && cachePolicy !== WhichCachePolicy.ReadOnly) {
 		toolCache.set(key, result);
 	}
 	return result;

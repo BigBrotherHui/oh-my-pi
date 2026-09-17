@@ -82,4 +82,14 @@ describe("$which", () => {
 		expect($which("cmd", { cwd: `a${sep}b`, PATH: "c" })).toBe(second);
 		expect(whichSpy).toHaveBeenCalledTimes(2);
 	});
+
+	it("re-looks-up a previous miss so newly installed binaries resolve", () => {
+		const command = `omp-which-install-${process.pid}`;
+		const installedPath = path.join(os.tmpdir(), "omp-which-install", command);
+		const whichSpy = vi.spyOn(Bun, "which").mockReturnValueOnce(null).mockReturnValue(installedPath);
+
+		expect($which(command)).toBeNull();
+		expect($which(command)).toBe(installedPath);
+		expect(whichSpy).toHaveBeenCalledTimes(2);
+	});
 });
