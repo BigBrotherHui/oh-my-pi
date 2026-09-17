@@ -231,6 +231,25 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["later partial"]);
 	});
 
+	it("counts multi-row snapshot prefixes by rendered rows, not snapshot count", () => {
+		// ReflowingAppendBlock publishes ONE snapshot that renders to FOUR
+		// physical rows at width 2. Capacity 2 < 5 live rows forces a
+		// pressure offer; without it the offer is undefined, the projected
+		// count stays zero, and both the old and new code render the full
+		// block — the assertion below would pass either way.
+		const transcript = new TranscriptContainer();
+		const block = new ReflowingAppendBlock();
+		transcript.addChild(block);
+		const emitted = transcript.peekFinalizedBatch(2, 2)!;
+		expect(emitted.rows).toEqual(["ab", "cd", "ef", "gh"]);
+		transcript.acknowledgeFinalizedBatch(emitted.id);
+		// Live tail is the un-emitted suffix only: the block's full render
+		// minus the 4 emitted rows = ["partial"]. Under the old
+		// min(rows, count) memo the projected count was 1, so this
+		// rendered 4 stale rows here.
+		expect(transcript.renderViewport(2, 10, frame)).toEqual(["partial"]);
+	});
+
 	it("retires only the un-emitted final suffix", () => {
 		const transcript = new TranscriptContainer();
 		const block = new AppendBlock(["one", "two", "partial"], ["one", "two"]);
