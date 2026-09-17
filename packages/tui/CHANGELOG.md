@@ -16,6 +16,12 @@
 - Added performance improvements for long-running bash streaming output
 - Added the `dark-celestial` built-in theme: a twilight dark palette with pink/coral accents, purple keywords, cyan functions, and peach strings.
 
+### Fixed
+
+- Editor undo snapshots now copy the line array instead of running structuredClone over the whole buffer on every edit keystroke.
+- ScrollView rows now pad with the shared space buffer instead of allocating per-row padding strings.
+- Streaming Markdown skips the whole-document tab scan on append-only frames, expanding only the streamed delta.
+
 ## [18.2.4] - 2026-09-17
 
 ### Fixed
