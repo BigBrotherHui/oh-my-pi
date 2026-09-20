@@ -49,7 +49,8 @@ export function compareActivityRows(a: AgentActivityRow, b: AgentActivityRow): n
 	return a.timestamp - b.timestamp || a.id.localeCompare(b.id);
 }
 
-export function activityRowsFromProgress(progress: AgentProgress, lastUpdate = Date.now()): AgentActivityRow[] {
+export function activityRowsFromProgress(progress: AgentProgress, lastUpdate?: number): AgentActivityRow[] {
+	const observedAt = lastUpdate ?? 0;
 	const rows: AgentActivityRow[] = [];
 	const recentTools = progress.recentTools ?? [];
 	for (let index = recentTools.length - 1; index >= 0; index--) {
@@ -70,7 +71,7 @@ export function activityRowsFromProgress(progress: AgentProgress, lastUpdate = D
 		rows.push({
 			id: `live:${progress.id}:current-tool`,
 			agentId: progress.id,
-			timestamp: progress.currentToolStartMs ?? lastUpdate,
+			timestamp: progress.currentToolStartMs ?? observedAt,
 			kind: "tool",
 			title: progress.currentTool,
 			summary: progress.lastIntent ?? progress.currentToolArgs ?? progress.currentTool,
@@ -82,7 +83,7 @@ export function activityRowsFromProgress(progress: AgentProgress, lastUpdate = D
 	rows.push({
 		id: `live:${progress.id}:lifecycle`,
 		agentId: progress.id,
-		timestamp: lastUpdate,
+		timestamp: observedAt,
 		kind: "lifecycle",
 		title: progress.status ?? "running",
 		summary: progress.task ?? progress.description ?? "Agent activity",
@@ -101,7 +102,7 @@ export function activityRowsFromProgress(progress: AgentProgress, lastUpdate = D
 		rows.push({
 			id: `live:${progress.id}:response`,
 			agentId: progress.id,
-			timestamp: lastUpdate,
+			timestamp: observedAt,
 			kind: "response",
 			title: "Response",
 			summary: response,

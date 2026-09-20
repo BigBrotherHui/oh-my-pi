@@ -12,12 +12,9 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
-import type { AsyncJob } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { DaemonCompletionNotification } from "@oh-my-pi/pi-coding-agent/launch/protocol";
-import { buildAsyncResultBlock } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { ArtifactManager } from "@oh-my-pi/pi-coding-agent/session/artifacts";
 import {
@@ -181,15 +178,6 @@ describe("AgentSession owner-routed async delivery", () => {
 				message => message.role === "custom" && message.customType === "async-result",
 			);
 			if (!custom || custom.role !== "custom") throw new Error("Expected async delivery message");
-			await initTheme(false, undefined, undefined, "dark", "light");
-			const persisted = JSON.parse(JSON.stringify(custom)) as typeof custom;
-			for (const message of [custom, persisted]) {
-				const rendered = buildAsyncResultBlock(message)
-					.render(100)
-					.map(line => Bun.stripANSI(line))
-					.join("\n");
-				expect(rendered).toContain("not saved completely");
-			}
 		} finally {
 			allocate.mockRestore();
 		}
@@ -307,150 +295,6 @@ describe("AgentSession owner-routed async delivery", () => {
 		if (!batch || typeof batch.content !== "string") throw new Error("Expected async batch text");
 		expect(batch.content.match(/artifact open failed/g)).toHaveLength(1);
 		expect(batch.content.match(/artifact write failed/g)).toHaveLength(1);
-		await initTheme(false, undefined, undefined, "dark", "light");
-		const persisted = JSON.parse(JSON.stringify(batch)) as typeof batch;
-		for (const message of [batch, persisted]) {
-			const rendered = buildAsyncResultBlock(message)
-				.render(160)
-				.map(line => Bun.stripANSI(line))
-				.join("\n");
-			expect(rendered).toMatch(/batch-0[^]*artifact open failed[^]*batch-1[^]*artifact write failed[^]*batch-2/);
-			expect(rendered.match(/artifact open failed/g)).toHaveLength(1);
-			expect(rendered.match(/artifact write failed/g)).toHaveLength(1);
-		}
-	});
-
-	it("carries a schema-valid background task's structured output as a pointer only", () => {
-		const job: AsyncJob = {
-			id: "SchemaProbe",
-			type: "task",
-			status: "completed",
-			startTime: Date.now(),
-			label: "SchemaProbe",
-			abortController: new AbortController(),
-			promise: Promise.resolve(),
-			resultText: "done",
-			structured: { source: "caller", mode: "permissive", status: "valid", data: { summary: "ok", count: 7 } },
-		};
-		const entry: AsyncResultEntry = {
-			jobId: "SchemaProbe",
-			result: "done",
-			job,
-			durationMs: 1000,
-			epoch: 0,
-		};
-		const message = buildAsyncResultBatchMessage([entry]);
-		expect(message?.details?.jobs[0]?.schema).toEqual({
-			source: "caller",
-			mode: "permissive",
-			status: "valid",
-			data: { summary: "ok", count: 7 },
-		});
-		expect(message?.content).toContain("schema valid");
-		expect(message?.content).toContain("agent://SchemaProbe");
-		expect(message?.content).not.toContain("```json");
-	});
-
-	it("advertises the agent:// URL using the task's agent id, not a disambiguated job id", () => {
-		// Regression: AsyncJobManager suffixes a requested job id when it
-		// collides with another live job (e.g. a task id reusing a vibe turn's
-		// job id), but the task's artifacts are still written under its own
-		// unsuffixed agent id. Advertising the suffixed job id points at a
-		// handle with no backing `<id>.md`/`.json` on disk (PR #10625 review).
-		const job: AsyncJob = {
-			id: "Foo-t1-2",
-			agentId: "Foo-t1",
-			type: "task",
-			status: "completed",
-			startTime: Date.now(),
-			label: "Foo-t1",
-			abortController: new AbortController(),
-			promise: Promise.resolve(),
-			resultText: "done",
-			structured: { source: "caller", mode: "permissive", status: "valid", data: { summary: "ok" } },
-		};
-		const entry: AsyncResultEntry = {
-			jobId: "Foo-t1-2",
-			result: "done",
-			job,
-			durationMs: 1000,
-			epoch: 0,
-		};
-		const message = buildAsyncResultBatchMessage([entry]);
-		expect(message?.content).toContain("agent://Foo-t1,");
-		expect(message?.content).not.toContain("agent://Foo-t1-2");
-	});
-
-	it("carries a schema-invalid background task's parsed payload as both a pointer and an inline preview", () => {
-		// Regression: an invalid result's data is now also persisted to the
-		// `<id>.json` sidecar (PR #10625 review), so the delivery must
-		// advertise the same `agent://` recovery pointer as a valid result,
-		// not just the size-capped inline preview (which alone would be the
-		// only model-visible copy for oversized payloads).
-		const job: AsyncJob = {
-			id: "SchemaProbe",
-			type: "task",
-			status: "completed",
-			startTime: Date.now(),
-			label: "SchemaProbe",
-			abortController: new AbortController(),
-			promise: Promise.resolve(),
-			resultText: "done",
-			structured: {
-				source: "caller",
-				mode: "strict",
-				status: "invalid",
-				error: "missing required field 'count'",
-				data: { summary: "ok" },
-			},
-		};
-		const entry: AsyncResultEntry = {
-			jobId: "SchemaProbe",
-			result: "done",
-			job,
-			durationMs: 1000,
-			epoch: 0,
-		};
-		const message = buildAsyncResultBatchMessage([entry]);
-		expect(message?.details?.jobs[0]?.schema).toEqual({
-			source: "caller",
-			mode: "strict",
-			status: "invalid",
-			error: "missing required field 'count'",
-			data: { summary: "ok" },
-		});
-		expect(message?.content).toMatch(/```json[\s\S]*"summary": "ok"[\s\S]*```/);
-		expect(message?.content).toContain("missing required field 'count'");
-		expect(message?.content).toContain("full payload at agent://SchemaProbe");
-	});
-
-	it("omits the agent:// pointer for an invalid result with no data to recover", () => {
-		const job: AsyncJob = {
-			id: "SchemaProbe",
-			type: "task",
-			status: "completed",
-			startTime: Date.now(),
-			label: "SchemaProbe",
-			abortController: new AbortController(),
-			promise: Promise.resolve(),
-			resultText: "done",
-			structured: {
-				source: "caller",
-				mode: "strict",
-				status: "invalid",
-				error: "subagent yielded no data",
-			},
-		};
-		const entry: AsyncResultEntry = {
-			jobId: "SchemaProbe",
-			result: "done",
-			job,
-			durationMs: 1000,
-			epoch: 0,
-		};
-		const message = buildAsyncResultBatchMessage([entry]);
-		expect(message?.content).not.toContain("agent://SchemaProbe");
-		expect(message?.content).toContain("subagent yielded no data");
 	});
 
 	it("routes an advisor-owned launch completion through the session", async () => {

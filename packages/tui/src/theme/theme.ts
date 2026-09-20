@@ -25,8 +25,6 @@ export {
 	createHighlightStream,
 	getEditorTheme,
 	getMarkdownTheme,
-	getSelectListTheme,
-	getSettingsListTheme,
 	getSymbolTheme,
 	highlightCode,
 	setMarkdownMermaidRendering,
@@ -126,7 +124,7 @@ var sigwinchHandler: (() => void) | undefined;
 var autoDetectedTheme: boolean = false;
 var autoDarkTheme: string = "dark";
 var autoLightTheme: string = "light";
-var onThemeChangeCallback: ((event: ThemeChangeEvent) => void) | undefined;
+var themeChangeListeners: Set<(event: ThemeChangeEvent) => void> | undefined;
 var themeLoadRequestId: number = 0;
 let themeEpoch = 0;
 
@@ -177,6 +175,8 @@ export function initThemeSync(
 export function ensureThemeSync(): void {
 	if (typeof theme === "undefined") initThemeSync();
 }
+
+export const defaultTheme: Theme = loadThemeSync("dark");
 
 /** Initialize the default theme only when no earlier prepaint initialized one. */
 export async function ensureTheme(): Promise<void> {
@@ -364,12 +364,12 @@ export function getColorBlindMode(): boolean {
 	return currentColorBlindMode;
 }
 
+/** Subscribe to applied theme changes; returns an idempotent unsubscribe function. */
 export function onThemeChange(callback: (event: ThemeChangeEvent) => void): () => void {
-	onThemeChangeCallback = callback;
+	const listeners = (themeChangeListeners ??= new Set());
+	listeners.add(callback);
 	return () => {
-		if (onThemeChangeCallback === callback) {
-			onThemeChangeCallback = undefined;
-		}
+		listeners.delete(callback);
 	};
 }
 
@@ -384,10 +384,11 @@ export function getThemeEpoch(): number {
 	return themeEpoch;
 }
 
-/** Bump the theme epoch and notify the registered theme-change listener. */
+/** Bump the theme epoch and notify every registered theme-change listener. */
 function notifyThemeChange(event: ThemeChangeEvent = {}): void {
 	themeEpoch++;
-	onThemeChangeCallback?.(event);
+	if (themeChangeListeners === undefined) return;
+	for (const listener of [...themeChangeListeners]) listener(event);
 }
 
 async function startThemeWatcher(): Promise<void> {

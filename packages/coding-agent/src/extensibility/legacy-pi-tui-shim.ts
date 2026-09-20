@@ -6,7 +6,8 @@
  * exposes the equivalent, broader `decodePrintableKey` helper. Keep the legacy
  * name available without reintroducing it into the canonical package surface.
  */
-import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
+import { ImageProtocol } from "@oh-my-pi/pi-tui";
+import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 
 export * from "@oh-my-pi/pi-tui";
 export { decodePrintableKey as decodeKittyPrintable } from "@oh-my-pi/pi-tui";

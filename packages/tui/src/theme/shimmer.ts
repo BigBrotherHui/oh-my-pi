@@ -1,5 +1,11 @@
+/**
+ * Shimmer sweeps: a band of brighter colour travelling across text (the
+ * loader's working message, live hub heads, progress bars). Paints runs with
+ * one {@link Style} per run of same-tier code points; no per-character output.
+ */
+import type { Out } from "../core/richtext";
+import { Attr, type Color, Style } from "../core/style";
 import type { Theme, ThemeColor } from "./theme";
-import { FG_RESET } from "./color";
 
 // ─── Animation velocity ──────────────────────────────────────────────────────
 // Band/head travel speed in border cells per second. Driving position by a fixed
@@ -22,12 +28,9 @@ const KITT_TRAIL_LEN = 7;
 const TIER_HIGH = 0.65;
 const TIER_MID = 0.22;
 
-// ─── Raw ANSI codes ──────────────────────────────────────────────────────────
-const BOLD_OPEN = "\x1b[1m";
-const BOLD_CLOSE = "\x1b[22m";
-
-type ShimmerTheme = Pick<Theme, "bold" | "fg" | "getFgAnsi">;
-/** Sweep style for animated shimmer text; `disabled` renders every tier as the low color. */
+/** The theme surface the shimmer needs: packed foreground colours. */
+export type ShimmerTheme = Pick<Theme, "fgColor">;
+/** Sweep style for animated shimmer text; `disabled` renders every tier as the mid color. */
 export type ShimmerMode = "classic" | "kitt" | "disabled";
 
 let activeMode: ShimmerMode = "classic";
@@ -37,10 +40,11 @@ export function setShimmerMode(mode: ShimmerMode): void {
 	activeMode = mode;
 }
 
-type ShimmerPaletteTier = ThemeColor | { ansi: string };
+/** A tier colour: a theme token or a packed colour. */
+export type ShimmerPaletteTier = ThemeColor | Color;
 
-function resolveTierAnsi(theme: ShimmerTheme, tier: ShimmerPaletteTier): string {
-	return typeof tier === "string" ? theme.getFgAnsi(tier) : tier.ansi;
+function resolveTier(theme: ShimmerTheme, tier: ShimmerPaletteTier): Color {
+	return typeof tier === "string" ? theme.fgColor(tier) : tier;
 }
 
 /** Three-tier color stack a shimmer character cycles through as the band sweeps. */
@@ -69,21 +73,15 @@ export const DEFAULT_SHIMMER_PALETTE: ShimmerPalette = {
 };
 
 // ─── Palette compilation cache ───────────────────────────────────────────────
-// Resolving ANSI codes for every character was the dominant per-frame cost.
-// We resolve once per (theme, palette) pair into ready-to-concat prefix/suffix
-// strings, then coalesce same-tier runs at render time so each frame emits a
-// handful of escape sequences instead of one per code point.
-//
-// The cache is stashed as a Symbol-keyed slot directly on the palette object
-// — no module-level sidecar — and invalidates when the active Theme changes.
-interface TierSeq {
-	open: string;
-	close: string;
-}
+// Resolving styles for every character was the dominant per-frame cost. We
+// resolve once per (theme, palette) pair into three interned styles, then
+// coalesce same-tier runs at paint time. The cache is stashed as a
+// Symbol-keyed slot directly on the palette object and invalidates when the
+// active Theme changes.
 interface CompiledPalette {
-	low: TierSeq;
-	mid: TierSeq;
-	high: TierSeq;
+	low: Style;
+	mid: Style;
+	high: Style;
 }
 
 const kCompiledFor = Symbol("shimmer.compiledFor");
@@ -97,15 +95,11 @@ function compile(theme: ShimmerTheme, palette: ShimmerPalette): CompiledPalette 
 	const p = palette as ShimmerPalette & PaletteCache;
 	const cached = p[kCompiled];
 	if (cached && p[kCompiledFor] === theme) return cached;
-	const lowOpen = resolveTierAnsi(theme, palette.low);
-	const midOpen = resolveTierAnsi(theme, palette.mid);
-	const highColorOpen = resolveTierAnsi(theme, palette.high);
-	const highOpen = palette.bold ? `${BOLD_OPEN}${highColorOpen}` : highColorOpen;
-	const highClose = palette.bold ? `${BOLD_CLOSE}${FG_RESET}` : FG_RESET;
+	const high = Style.of({ fg: resolveTier(theme, palette.high), attrs: palette.bold ? Attr.Bold : Attr.None });
 	const out: CompiledPalette = {
-		low: { open: lowOpen, close: FG_RESET },
-		mid: { open: midOpen, close: FG_RESET },
-		high: { open: highOpen, close: highClose },
+		low: Style.of({ fg: resolveTier(theme, palette.low) }),
+		mid: Style.of({ fg: resolveTier(theme, palette.mid) }),
+		high,
 	};
 	p[kCompiledFor] = theme;
 	p[kCompiled] = out;
@@ -116,9 +110,6 @@ function compile(theme: ShimmerTheme, palette: ShimmerPalette): CompiledPalette 
 /** Smooth cosine bump sweeping left → right with edge padding. */
 function classicIntensity(time: number, index: number, length: number): number {
 	const period = length + CLASSIC_PADDING * 2;
-	// Fixed-velocity, un-floored band position: advancing at a constant
-	// cells/second (not period / fixed-sweep) keeps the per-frame step ≤1 cell at
-	// the default cadence for any length, so long messages are no steppier.
 	const pos = ((time / 1000) * SHIMMER_SPEED_CELLS_PER_S) % period;
 	const dist = Math.abs(index + CLASSIC_PADDING - pos);
 	if (dist >= CLASSIC_BAND_HALF_WIDTH) return 0;
@@ -133,9 +124,6 @@ function classicIntensity(time: number, index: number, length: number): number {
 function kittIntensity(time: number, index: number, length: number): number {
 	const range = length - 1;
 	if (range <= 0) return 1;
-	// Fixed head velocity: a triangle ping-pong over a 2*range round trip at a
-	// constant cells/second, so the bright head advances ≤1 cell per frame at the
-	// default cadence regardless of bar length. Round-trip duration scales with length.
 	const cycleCells = 2 * range;
 	const sweep = ((time / 1000) * SHIMMER_SPEED_CELLS_PER_S) % cycleCells;
 	const goingRight = sweep < range;
@@ -143,7 +131,6 @@ function kittIntensity(time: number, index: number, length: number): number {
 	const delta = index - head;
 	const abs = delta < 0 ? -delta : delta;
 	if (abs <= KITT_HEAD_HALF) return 1;
-	// Only chars *behind* the head light up — direction-dependent.
 	const behind = goingRight ? -delta : delta;
 	if (behind <= KITT_HEAD_HALF) return 0;
 	const t = (behind - KITT_HEAD_HALF) / KITT_TRAIL_LEN;
@@ -166,100 +153,8 @@ export function shimmerEnabled(): boolean {
 }
 
 /**
- * Apply a shimmer sweep across one or more segments, treating them as a
- * single continuous string for band positioning. Each segment can supply
- * its own palette so the gradient stays in lockstep while the colors
- * differ.
- *
- * Performance shape (per call, dominant cost):
- *   - One `Date.now()` read.
- *   - One `compile()` lookup per segment (Symbol-keyed cache slot, hot path
- *     skipped after first frame).
- *   - One ANSI open/close pair per **run of same-tier chars**, not per char.
- *   - No per-char allocations beyond the run buffer.
- */
-export function shimmerSegments(segments: readonly ShimmerSegment[], theme: ShimmerTheme): string {
-	const mode = activeMode;
-
-	// Pre-scan: total code-point count (positions the band) and resolved palette.
-	// The per-segment string is kept verbatim — iterating UTF-16 units with a
-	// surrogate-pair guard produces the same code points as `Array.from(text)`
-	// at zero per-frame allocation (previously the #1 hotspot at ~10% of profiled
-	// CPU during streaming — the working message is shimmered every animation
-	// frame at 30fps and `Array.from` reallocated the code-point array each tick).
-	let total = 0;
-	const perSeg: { text: string; palette: ShimmerPalette }[] = [];
-	for (const seg of segments) {
-		total += countCodePoints(seg.text);
-		perSeg.push({ text: seg.text, palette: seg.palette ?? DEFAULT_SHIMMER_PALETTE });
-	}
-	if (total === 0) return "";
-
-	// Disabled: no animation, no per-char work. Paint each segment in its mid
-	// tier so the working line stays legible without movement.
-	if (mode === "disabled") {
-		let out = "";
-		for (const { text, palette } of perSeg) {
-			const seq = compile(theme, palette).mid;
-			out += `${seq.open}${text}${seq.close}`;
-		}
-		return out;
-	}
-
-	const time = Date.now();
-	const intensityFn = mode === "kitt" ? kittIntensity : classicIntensity;
-
-	// Fast-path window: outside `[bandLo, bandHi]` the intensity is guaranteed
-	// zero (tier "low"), so we can skip `intensityFn` + `tierFor` entirely for
-	// the prefix/suffix of every segment. On the typical ~60-char working
-	// message the classic band spans ~12 cells, so ~80% of the per-char loop
-	// disappears — the intensity call and the tier compare were the residual
-	// per-frame cost after #4353 removed the allocation hotspot (issue #4377).
-	const { lo: bandLo, hi: bandHi } = activeBand(mode, time, total);
-
-	let out = "";
-	let index = 0;
-	for (const { text, palette } of perSeg) {
-		const compiled = compile(theme, palette);
-		let runTier: Tier | null = null;
-		let runStart = 0;
-		let runEnd = 0;
-		let i = 0;
-		while (i < text.length) {
-			// Detect a surrogate pair so a single code point (e.g. an emoji) stays
-			// atomic; the band position is measured in code points, not UTF-16 units.
-			const c = text.charCodeAt(i);
-			let step = 1;
-			if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
-				const c2 = text.charCodeAt(i + 1);
-				if (c2 >= 0xdc00 && c2 <= 0xdfff) step = 2;
-			}
-			const tier: Tier = index < bandLo || index > bandHi ? "low" : tierFor(intensityFn(time, index, total));
-			if (tier !== runTier) {
-				if (runTier !== null && runEnd > runStart) {
-					const seq = compiled[runTier];
-					out += `${seq.open}${text.slice(runStart, runEnd)}${seq.close}`;
-				}
-				runTier = tier;
-				runStart = i;
-			}
-			runEnd = i + step;
-			index++;
-			i += step;
-		}
-		if (runTier !== null && runEnd > runStart) {
-			const seq = compiled[runTier];
-			out += `${seq.open}${text.slice(runStart, runEnd)}${seq.close}`;
-		}
-	}
-	return out;
-}
-
-/**
  * Sweep window (code-point indices) outside which the intensity is guaranteed
- * zero for `mode` at `time` over `total` cells. Widening the window is safe —
- * the per-char intensity call still runs inside the window and reports 0 for
- * off-band code points — but narrower windows skip more of the per-char loop.
+ * zero for `mode` at `time` over `total` cells.
  */
 function activeBand(mode: "classic" | "kitt", time: number, total: number): { lo: number; hi: number } {
 	if (mode === "classic") {
@@ -276,8 +171,6 @@ function activeBand(mode: "classic" | "kitt", time: number, total: number): { lo
 	const sweep = ((time / 1000) * SHIMMER_SPEED_CELLS_PER_S) % cycleCells;
 	const goingRight = sweep < range;
 	const head = goingRight ? sweep : cycleCells - sweep;
-	// The trail always lies behind the head for the current direction — chars
-	// ahead of the head are dark. See {@link kittIntensity} for the exact rule.
 	return goingRight
 		? { lo: head - KITT_HEAD_HALF - KITT_TRAIL_LEN, hi: head + KITT_HEAD_HALF }
 		: { lo: head - KITT_HEAD_HALF, hi: head + KITT_HEAD_HALF + KITT_TRAIL_LEN };
@@ -302,6 +195,74 @@ function countCodePoints(text: string): number {
 	return n;
 }
 
-export function shimmerText(text: string, theme: ShimmerTheme, palette?: ShimmerPalette): string {
-	return shimmerSegments([{ text, palette }], theme);
+/**
+ * Paint a shimmer sweep across one or more segments into `out`, treating them
+ * as a single continuous string for band positioning. Each segment can
+ * supply its own palette so the gradient stays in lockstep while the colors
+ * differ. One run per stretch of same-tier code points; no per-char work
+ * outside the active band.
+ */
+export function paintShimmerSegments(
+	out: Out,
+	segments: readonly ShimmerSegment[],
+	theme: ShimmerTheme,
+	now: number = Date.now(),
+): void {
+	const mode = activeMode;
+	let total = 0;
+	const perSeg: { text: string; palette: ShimmerPalette }[] = [];
+	for (const seg of segments) {
+		total += countCodePoints(seg.text);
+		perSeg.push({ text: seg.text, palette: seg.palette ?? DEFAULT_SHIMMER_PALETTE });
+	}
+	if (total === 0) return;
+
+	// Disabled: no animation, no per-char work. Paint each segment in its mid
+	// tier so the working line stays legible without movement.
+	if (mode === "disabled") {
+		for (const { text, palette } of perSeg) out.push(compile(theme, palette).mid, text);
+		return;
+	}
+
+	const time = now;
+	const intensityFn = mode === "kitt" ? kittIntensity : classicIntensity;
+	const { lo: bandLo, hi: bandHi } = activeBand(mode, time, total);
+
+	let index = 0;
+	for (const { text, palette } of perSeg) {
+		const compiled = compile(theme, palette);
+		let runTier: Tier | null = null;
+		let runStart = 0;
+		let runEnd = 0;
+		let i = 0;
+		while (i < text.length) {
+			const c = text.charCodeAt(i);
+			let step = 1;
+			if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+				const c2 = text.charCodeAt(i + 1);
+				if (c2 >= 0xdc00 && c2 <= 0xdfff) step = 2;
+			}
+			const tier: Tier = index < bandLo || index > bandHi ? "low" : tierFor(intensityFn(time, index, total));
+			if (tier !== runTier) {
+				if (runTier !== null && runEnd > runStart) out.push(compiled[runTier], text.slice(runStart, runEnd));
+				runTier = tier;
+				runStart = i;
+			}
+			runEnd = i + step;
+			index++;
+			i += step;
+		}
+		if (runTier !== null && runEnd > runStart) out.push(compiled[runTier], text.slice(runStart, runEnd));
+	}
+}
+
+/** Paint one shimmered string with an optional palette. */
+export function paintShimmerText(
+	out: Out,
+	text: string,
+	theme: ShimmerTheme,
+	palette?: ShimmerPalette,
+	now: number = Date.now(),
+): void {
+	paintShimmerSegments(out, [{ text, palette }], theme, now);
 }

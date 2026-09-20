@@ -1,287 +1,244 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import * as url from "node:url";
 import { applyHyperlinkSetting } from "../src/render/hyperlink";
-import { getThemeByName, initTheme } from "@oh-my-pi/pi-tui/theme";
-import { readToolRenderer } from "@oh-my-pi/pi-tui/tools/read";
-
-function extractLinkUris(text: string): string[] {
-	return [...text.matchAll(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/g)].map(match => match[1]!);
-}
-
-function extractLinkTexts(text: string): string[] {
-	return [...text.matchAll(/\x1b\]8;[^;]*;[^\x1b]+\x1b\\([\s\S]*?)\x1b\]8;;\x1b\\/g)].map(match =>
-		Bun.stripANSI(match[1]!),
-	);
-}
-
-beforeAll(async () => {
-	await initTheme();
-});
+import { mountForTest } from "../src/testing";
+import { createToolCallModel } from "../src/tools/model";
+import { readToolView, type ReadRenderArgs, type ReadToolDetails } from "../src/tools/read";
+import { cellGrid } from "./cell-grid";
 
 afterEach(() => {
 	applyHyperlinkSetting("auto");
 });
 
-describe("readToolRenderer hyperlinks", () => {
-	it("links local-style read titles to the resolved filesystem path and selected line", async () => {
+describe("read tool view", () => {
+	it("renders the requested path as a selected filesystem link and a collapsed output preview", () => {
 		applyHyperlinkSetting("always");
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
+		const model = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-1",
+			toolName: "read",
+			label: "Read",
+		});
+		model.applyArgsChunk({ path: "local://handoff.md:2" });
+		model.applyResult({
+			content: [{ type: "text", text: "first line\nsecond line\nthird line" }],
+			details: { resolvedPath: "/tmp/handoff.md", contentType: "text/plain" },
+		});
 
-		const handoffPath = path.resolve("/tmp/omp-local/handoff.md");
-		const component = readToolRenderer.renderResult(
+		const root = mountForTest(() => readToolView.view(model), { width: 80 });
+		try {
+			const text = root.text().join("\n");
+			expect(text).toContain("local://handoff.md:2");
+			expect(text).toContain("first line");
+			expect(text).toContain("third line");
+			const links = cellGrid(root.rows(), 80).flatMap(row => row.map(cell => cell.link));
+			expect(links).toContain(url.pathToFileURL(path.resolve("/tmp/handoff.md")).href);
+		} finally {
+			root.dispose();
+		}
+	});
+
+	it("keeps streaming read output visible before the result settles", () => {
+		const model = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-streaming",
+			toolName: "read",
+			label: "Read",
+		});
+		model.applyArgsChunk({ path: "src/live.ts" });
+		model.markRunning();
+		model.applyResult(
 			{
-				content: [{ type: "text", text: "second line" }],
-				details: {
-					resolvedPath: handoffPath,
-					displayContent: { text: "second line", startLine: 2 },
-					contentType: "text/plain",
-				},
+				content: [{ type: "text", text: "export const streamed = true;" }],
+				details: { contentType: "text/typescript" },
 			},
-			{ expanded: false, isPartial: false },
-			theme!,
-			{ path: "local://handoff.md:2" },
+			{ partial: true },
 		);
 
-		const rendered = component.render(200).join("\n");
-		expect(rendered).toContain("local://handoff.md");
-		expect(rendered).toContain(":2");
-		const handoffUri = url.pathToFileURL(path.resolve(handoffPath)).href;
-		expect(extractLinkUris(rendered)).toContain(handoffUri);
-		expect(extractLinkTexts(rendered)).toContain("local://handoff.md");
-		expect(extractLinkTexts(rendered)).not.toContain("local://handoff.md:2");
+		const root = mountForTest(() => readToolView.view(model), { width: 80 });
+		try {
+			expect(root.text().join("\n")).toContain("export const streamed = true;");
+		} finally {
+			root.dispose();
+		}
 	});
 
-	it("links absolute read call paths to file URIs with selector lines", async () => {
-		applyHyperlinkSetting("always");
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
+	it("caps collapsed code output, preserves source line numbers, and expands the full document", () => {
+		const model = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-lines",
+			toolName: "read",
+			label: "Read",
+		});
+		const source = Array.from({ length: 14 }, (_, index) => `line-${index + 1}`).join("\n");
+		model.applyArgsChunk({ path: "src/lines.ts" });
+		model.applyResult({
+			content: [{ type: "text", text: source }],
+			details: { contentType: "text/typescript", displayContent: { text: source, startLine: 40 } },
+		});
 
-		const examplePath = path.resolve("/tmp/omp-read/example.ts");
-		const component = readToolRenderer.renderCall(
-			{ path: `${examplePath}:10-12` },
-			{ expanded: false, isPartial: false },
-			theme!,
-		);
+		const root = mountForTest(() => readToolView.view(model), { width: 80 });
+		try {
+			const collapsed = root.text().join("\n");
+			expect(collapsed).toContain("40 line-1");
+			expect(collapsed).toContain("line-12");
+			expect(collapsed).toContain("2 more lines");
+			expect(collapsed).not.toContain("line-13");
 
-		const rendered = component.render(200).join("\n");
-		expect(Bun.stripANSI(rendered)).toContain(`${examplePath}:10-12`);
-		const exampleUri = url.pathToFileURL(path.resolve(examplePath)).href;
-		expect(extractLinkUris(rendered)).toContain(exampleUri);
-		expect(extractLinkTexts(rendered)).toContain(examplePath);
-		expect(extractLinkTexts(rendered)).not.toContain(`${examplePath}:10-12`);
+			model.setUi({ expanded: true });
+			const expanded = root.text().join("\n");
+			expect(expanded).toContain("line-14");
+			expect(expanded).not.toContain("2 more lines");
+		} finally {
+			root.dispose();
+		}
 	});
 
-	it("links HTTP read result headers to the final URL", async () => {
-		applyHyperlinkSetting("always");
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
+	it("renders markdown documents unless a raw selector requests source text", () => {
+		const markdown = "# Heading\n\nThis is **bold** text.";
+		const rendered = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-markdown",
+			toolName: "read",
+			label: "Read",
+		});
+		rendered.applyArgsChunk({ path: "notes.md" });
+		rendered.applyResult({
+			content: [{ type: "text", text: markdown }],
+			details: { contentType: "text/markdown", displayContent: { text: markdown, startLine: 1 } },
+		});
+		rendered.setUi({ expanded: true });
 
-		const component = readToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "---\n\nhello" }],
-				details: {
-					kind: "url",
-					url: "http://example.com/start",
-					finalUrl: "http://example.com/final",
-					contentType: "text/plain",
-					method: "fetch",
-					truncated: false,
-					notes: [],
-				},
-			} as never,
-			{ expanded: false, isPartial: false },
-			theme!,
-			{ path: "http://example.com/start" },
-		);
+		const raw = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-markdown-raw",
+			toolName: "read",
+			label: "Read",
+		});
+		raw.applyArgsChunk({ path: "notes.md:raw" });
+		raw.applyResult({
+			content: [{ type: "text", text: markdown }],
+			details: { contentType: "text/markdown", displayContent: { text: markdown, startLine: 1 } },
+		});
+		raw.setUi({ expanded: true });
 
-		const rendered = component.render(200).join("\n");
-		expect(rendered).toContain("example.com /final");
-		expect(extractLinkUris(rendered)).toContain("http://example.com/final");
-	});
-});
-
-describe("readToolRenderer markdown content", () => {
-	it("renders text/markdown details through the markdown renderer", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-
-		const component = readToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "[notes.md#ABCD]\n1:# Heading\n2:\n3:This is **bold** text." }],
-				details: {
-					displayContent: { text: "# Heading\n\nThis is **bold** text.", startLine: 1 },
-					contentType: "text/markdown",
-				},
-			},
-			{ expanded: true, isPartial: false },
-			theme!,
-			{ path: "notes.md" },
-		);
-
-		const stripped = component
-			.render(100)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(stripped).toContain("Heading");
-		expect(stripped).toContain("This is bold text.");
-		expect(stripped).not.toContain("# Heading");
-		expect(stripped).not.toContain("**bold**");
+		const renderedRoot = mountForTest(() => readToolView.view(rendered), { width: 80 });
+		const rawRoot = mountForTest(() => readToolView.view(raw), { width: 80 });
+		try {
+			expect(renderedRoot.text().join("\n")).toContain("This is bold text.");
+			expect(renderedRoot.text().join("\n")).not.toContain("# Heading");
+			expect(rawRoot.text().join("\n")).toContain("# Heading");
+			expect(rawRoot.text().join("\n")).toContain("**bold**");
+		} finally {
+			renderedRoot.dispose();
+			rawRoot.dispose();
+		}
 	});
 
-	it("keeps untagged markdown source in the code renderer", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-
-		const component = readToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "[notes.md#ABCD]\n1:# Heading\n2:\n3:This is **bold** text." }],
-				details: {
-					displayContent: { text: "# Heading\n\nThis is **bold** text.", startLine: 1 },
-				},
-			},
-			{ expanded: true, isPartial: false },
-			theme!,
-			{ path: "notes.md" },
-		);
-
-		const stripped = component
-			.render(100)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(stripped).toContain("# Heading");
-		expect(stripped).toContain("**bold**");
-	});
-
-	it("keeps raw markdown selector reads in the code renderer", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-
-		const component = readToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "# Heading\n\nThis is **bold** text." }],
-				details: {
-					displayContent: { text: "# Heading\n\nThis is **bold** text.", startLine: 1 },
-					contentType: "text/markdown",
-				},
-			},
-			{ expanded: true, isPartial: false },
-			theme!,
-			{ path: "notes.md:raw" },
-		);
-
-		const stripped = component
-			.render(100)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(stripped).toContain("# Heading");
-		expect(stripped).toContain("**bold**");
-	});
-});
-
-describe("readToolRenderer error sanitization", () => {
-	it("strips Windows CRLF and expands tabs in ssh failure output", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-
-		// Windows ssh emits CRLF; a raw CR styled inside the color wrap rides
-		// past output-block trimming (it trims after wrapping) and moves the
-		// terminal cursor mid-row, tearing the framed block.
-		const component = readToolRenderer.renderResult(
-			{
-				content: [
-					{
-						type: "text",
-						text: "Failed to start SSH master for can.internal: The fingerprint for the ED25519 key sent by the remote host is\r\nSHA256:abc\tdef\r\nAdd correct host key in /root/.ssh/known_hosts to get rid of this message.\r\nHost key verification failed.",
+	it("renders image details and output warnings without losing the attached image block", () => {
+		const model = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-image",
+			toolName: "read",
+			label: "Read",
+		});
+		model.applyArgsChunk({ path: "local://shot.png" });
+		model.applyResult({
+			content: [
+				{ type: "text", text: "a\tb" },
+				{ type: "image", data: "not-a-real-image", mimeType: "image/png" },
+			],
+			details: {
+				contentType: "image/png",
+				meta: {
+					truncation: {
+						direction: "head",
+						truncatedBy: "lines",
+						totalLines: 3,
+						totalBytes: 20,
+						outputLines: 1,
+						outputBytes: 4,
 					},
-				],
-				isError: true,
-			},
-			{ expanded: false, isPartial: false },
-			theme!,
-			{ path: "ssh://can.internal/root/arc-smp-values.yaml" },
-		);
-
-		const raw = component.render(100).join("\n");
-		expect(raw).not.toContain("\t");
-		expect(raw).not.toContain("\r");
-		const stripped = Bun.stripANSI(raw);
-		expect(stripped).toContain("SHA256:abc");
-		expect(stripped).toContain("Host key verification failed.");
-	});
-
-	it("sanitizes URL read errors the same way", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-
-		const component = readToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "fetch failed:\tconn reset\r\nby peer" }],
-				isError: true,
-			},
-			{ expanded: false, isPartial: false },
-			theme!,
-			{ path: "http://example.com/file" },
-		);
-
-		const raw = component.render(100).join("\n");
-		expect(raw).not.toContain("\t");
-		expect(raw).not.toContain("\r");
-		expect(Bun.stripANSI(raw)).toContain("fetch failed:");
-	});
-});
-
-describe("readToolRenderer success-path sanitization", () => {
-	it("expands tabs in URL content previews", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-
-		const component = readToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "---\n\ncol1\tcol2\nrow2" }],
-				details: {
-					kind: "url",
-					url: "http://example.com/start",
-					finalUrl: "http://example.com/final",
-					contentType: "text/plain",
-					method: "fetch",
-					truncated: false,
-					notes: [],
 				},
-			} as never,
-			{ expanded: false, isPartial: false },
-			theme!,
-			{ path: "http://example.com/start" },
-		);
+			},
+		});
 
-		const raw = component.render(200).join("\n");
-		expect(raw).not.toContain("\t");
-		expect(raw).not.toContain("\r");
-		expect(Bun.stripANSI(raw)).toContain("col1");
+		const root = mountForTest(() => readToolView.view(model), { width: 80 });
+		try {
+			const text = root.text().join("\n");
+			expect(text).toContain("Details");
+			expect(text).toContain("a   b");
+			expect(text).toContain("Showing 1 of 3 lines");
+		} finally {
+			root.dispose();
+		}
 	});
 
-	it("expands tabs in image detail lines", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
+	it("restores URL metadata and a bounded content preview", () => {
+		const model = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-url",
+			toolName: "read",
+			label: "Read",
+		});
+		model.applyArgsChunk({ path: "http://example.com/start" });
+		model.applyResult({
+			content: [{ type: "text", text: "---\n\none\ntwo\nthree\nfour" }],
+			details: {
+				kind: "url",
+				url: "http://example.com/start",
+				finalUrl: "http://example.com/final",
+				contentType: "text/plain",
+				method: "GET",
+				truncated: true,
+				notes: ["redirect followed"],
+			},
+		});
 
-		const component = readToolRenderer.renderResult(
-			{
-				content: [
-					{ type: "text", text: "a\tb" },
-					{ type: "image", data: "", mimeType: "image/png" },
-				],
-				details: { contentType: "image/png" },
-				isError: false,
-			} as never,
-			{ expanded: false, isPartial: false },
-			theme!,
-			{ path: "local://shot.png" },
-		);
+		const root = mountForTest(() => readToolView.view(model), { width: 100 });
+		try {
+			const text = root.text().join("\n");
+			expect(text).toContain("example.com /final");
+			expect(text).toContain("Metadata");
+			expect(text).toContain("Content-Type: text/plain");
+			expect(text).toContain("Method: GET");
+			expect(text).toContain("Final URL: http://example.com/final");
+			expect(text).toContain("Lines: 4 lines");
+			expect(text).toContain("Chars: 18");
+			expect(text).toContain("Output truncated");
+			expect(text).toContain("Notes: redirect followed");
+			expect(text).toContain("Content Preview");
+			expect(text).toContain("… 1 more line");
+			expect(text).toContain("Expand");
+		} finally {
+			root.dispose();
+		}
+	});
 
-		const raw = component.render(100).join("\n");
-		expect(raw).not.toContain("\t");
-		expect(raw).not.toContain("\r");
-		expect(Bun.stripANSI(raw)).toContain("a");
+	it("marks failures and aborts without corrupting CRLF or tabs", () => {
+		const failure = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-error",
+			toolName: "read",
+			label: "Read",
+		});
+		failure.applyArgsChunk({ path: "ssh://host/config" });
+		failure.applyResult({
+			content: [{ type: "text", text: "Error: fetch failed:\treset\r\nby peer" }],
+			isError: true,
+		});
+
+		const aborted = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "read-aborted",
+			toolName: "read",
+			label: "Read",
+		});
+		aborted.applyArgsChunk({ path: "stopped.txt" });
+		aborted.applyResult({ content: [{ type: "text", text: "cancelled" }], status: "cancelled" });
+
+		const failureRoot = mountForTest(() => readToolView.view(failure), { width: 80 });
+		try {
+			const text = failureRoot.text().join("\n");
+			expect(text).toContain("fetch failed:   reset");
+			expect(text).toContain("by peer");
+			expect(text).not.toContain("\r");
+			expect(text).not.toContain("\t");
+			expect(readToolView.summary!(aborted).status).toBe("aborted");
+		} finally {
+			failureRoot.dispose();
+		}
 	});
 });

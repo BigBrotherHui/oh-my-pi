@@ -1,19 +1,25 @@
 import { describe, expect, it, vi } from "bun:test";
-import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import { RichText } from "../src/core/richtext";
+import { Style } from "../src/core/style";
+import { TUI, type TerminalFramePlan, type TerminalFrameProvider, type ViewportSize } from "../src/tui";
 import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualTerminal } from "./virtual-terminal";
 
 withoutTerminalMultiplexer();
 
-class RawLines implements Component {
-	#lines: string[];
-	constructor(lines: string[]) {
-		this.#lines = lines;
+class RawLines implements TerminalFrameProvider {
+	constructor(private readonly lines: readonly string[]) {}
+
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
+		const frame = new RichText();
+		for (const line of this.lines) {
+			frame.push(Style.NONE, line);
+			frame.br();
+		}
+		return { viewport: frame };
 	}
-	invalidate(): void {}
-	render(): string[] {
-		return this.#lines;
-	}
+
+	acknowledgeHistory(_id: number): void {}
 }
 
 async function settle(term: VirtualTerminal): Promise<void> {
@@ -46,7 +52,7 @@ describe("destructive reset erase order", () => {
 	it("emits ED2 before ED3 so tmux's clear-pushes-screen-into-history cannot survive the wipe", async () => {
 		const term = new VirtualTerminal(80, 10);
 		const tui = new TUI(term);
-		tui.addChild(new RawLines(["alpha", "beta", "gamma"]));
+		tui.setFrameProvider(new RawLines(["alpha", "beta", "gamma"]));
 		const writes = captureWrites(term);
 		try {
 			tui.start();

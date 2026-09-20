@@ -21,9 +21,9 @@ import type {
 	CancelOutcome,
 	CoordinationDetails,
 	JobSnapshot,
-} from "@oh-my-pi/pi-tui/tools/hub";
+} from "@oh-my-pi/pi-tui/tools/hub-contract";
 
-import { isWaitingPollDetails } from "@oh-my-pi/pi-tui/tools/hub";
+import { isWaitingPollDetails } from "@oh-my-pi/pi-tui/tools/hub-contract";
 
 /**
  * Resolve a list of job ids to job records visible to the calling agent.

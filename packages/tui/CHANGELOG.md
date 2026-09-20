@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **Universal Retained Reactive Renderer**: Complete migration of the core rendering contract from legacy imperative components (`Component`, `Mount`, `paint(out, width)`, `invalidate()`) to a fine-grained reactive retained host tree powered by SolidJS (`solid-js@1.9.15`, universal renderer). Views are authored as declarative Solid JSX components and no longer implement the `Component` interface or paint into an `Out` sink.
+- **Removed Custom JSX Runtime and Hooks**: Removed `@oh-my-pi/pi-tui/jsx-runtime` and the custom hook reconciler (`useState`, `useMemo`, `useEffect`, `useRef`). All `.tsx` views are compiled via the Solid universal JSX compiler; `/** @jsxImportSource */` pragmas are obsolete and deleted across the monorepo.
+- **Tool Presentation Contract**: Replaced the disparate `renderCall` / `renderResult` tool rendering hooks with a single unified reactive `toolView?: ToolViewDefinition<TArgs, TDetails>` contract (`@oh-my-pi/pi-tui/tools/view`). Tool views receive reactive `ToolViewProps` with streaming arguments, document outputs, and lifecycle phases.
+- **Theme and Styling**: String-based ANSI generators (`theme.fg`, `theme.bg`, `theme.styledSymbol`) and manual width calculations (`truncateToWidth`, `visibleWidth` in views) are removed from the view authoring model. Components style via semantic tokens (`ThemeColor`, `ThemeBg`), recipe presets, and `<row>` flex allocation.
+
 ### Added
 
 - Added gradient highlighting for "jevify" magic keyword in prompt prose

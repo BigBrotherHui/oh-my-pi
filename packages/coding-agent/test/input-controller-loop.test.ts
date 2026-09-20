@@ -61,7 +61,7 @@ function createLoopContext(options: {
 		},
 		setLoopPrompt,
 		pauseLoop,
-		flushPendingBashComponents: vi.fn(),
+		flushPendingExecutions: vi.fn(),
 		startPendingSubmission: vi.fn((input: { text: string }) => ({ ...input, cancelled: false, started: false })),
 		withLocalSubmission: async (_text: string, fn: () => unknown) => fn(),
 		updatePendingMessagesDisplay: vi.fn(),

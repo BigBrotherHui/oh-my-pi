@@ -1,3 +1,5 @@
+import { createToolCallModel } from "@oh-my-pi/pi-tui/tools/model";
+import { renderToRows } from "@oh-my-pi/pi-tui/testing";
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -5,16 +7,28 @@ import * as path from "node:path";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
-import type { EvalToolDetails } from "@oh-my-pi/pi-tui/tools/eval";
+import { evalToolView, type EvalRenderArgs, type EvalToolDetails } from "@oh-my-pi/pi-tui/tools/eval";
 import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
-import { evalToolRenderer } from "@oh-my-pi/pi-tui/tools/eval";
 import { stripOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { removeWithRetries, sanitizeText } from "@oh-my-pi/pi-utils";
+
+const evalView = {
+	renderResult(result: object, options: { expanded: boolean }, _theme: unknown) {
+		const model = createToolCallModel<EvalRenderArgs, EvalToolDetails>({
+			id: "eval-result",
+			toolName: "eval",
+			label: "Eval",
+		});
+		model.applyResult(result);
+		model.setUi({ expanded: options.expanded });
+		return () => evalToolView.view(model);
+	},
+};
 
 function makeSession(settings = Settings.isolated()): ToolSession {
 	return {
@@ -178,10 +192,7 @@ describe("EvalTool live stdout streaming", () => {
 				const uiTheme = await getThemeByName("dark");
 				if (!uiTheme) throw new Error("Expected dark theme");
 				const rendered = sanitizeText(
-					evalToolRenderer
-						.renderResult(result, { expanded: false, isPartial: false }, uiTheme)
-						.render(160)
-						.join("\n"),
+					renderToRows(evalView.renderResult(result, { expanded: false }, uiTheme), 160).join("\n"),
 				);
 				expect(rendered).toContain("not saved completely");
 				expect(rendered).not.toContain("artifact://");

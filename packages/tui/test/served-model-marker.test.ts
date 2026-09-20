@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai/types";
-import { detectServedModelMismatch, ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
+import {
+	detectServedModelMismatch,
+	ServedModelMarkerView,
+	ServedModelTracker,
+} from "@oh-my-pi/pi-tui/chat/served-model-marker";
+import { mountForTest } from "../src/testing";
+import { loadThemeSync } from "../src/theme/loader";
 
 function turn(parts: {
 	model: string;
@@ -83,5 +89,44 @@ describe("ServedModelTracker", () => {
 			"claude-sonnet-5",
 		);
 		expect(tracker.check(swapped)).toBeUndefined();
+	});
+});
+
+describe("ServedModelMarkerView", () => {
+	const info = {
+		served: "haiku",
+		requested: "opus",
+		provider: "openrouter",
+		upstreamProvider: "Bedrock",
+	};
+	const providerOnlyInfo = {
+		served: info.served,
+		requested: info.requested,
+		provider: info.provider,
+	};
+
+	it("preserves the legacy blank rows, warning label, and untruncated narrow layout", () => {
+		const root = mountForTest(() => ServedModelMarkerView({ info }), {
+			width: 100,
+			theme: loadThemeSync("dark", { mode: "truecolor", symbolPresetOverride: "unicode" }),
+		});
+		try {
+			expect(root.text()).toEqual(["", "────────── ⚠ served haiku · requested opus · via openrouter/Bedrock", ""]);
+			expect(root.text(12)).toEqual(["", "⚠ served haiku · requested opus · via openrouter/Bedrock", ""]);
+		} finally {
+			root.dispose();
+		}
+	});
+
+	it("uses the active symbol preset and provider-only route when no upstream is reported", () => {
+		const root = mountForTest(() => ServedModelMarkerView({ info: providerOnlyInfo }), {
+			width: 100,
+			theme: loadThemeSync("dark", { mode: "truecolor", symbolPresetOverride: "ascii" }),
+		});
+		try {
+			expect(root.text()).toEqual(["", "---------- [!] served haiku - requested opus - via openrouter", ""]);
+		} finally {
+			root.dispose();
+		}
 	});
 });

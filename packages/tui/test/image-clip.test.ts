@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Image, ImageBudget } from "@oh-my-pi/pi-tui/components/image";
+import { Style } from "../src/core/style";
+import { renderToRows } from "../src/testing";
+import { createImagePaintState, ImageBudget, ImageView } from "@oh-my-pi/pi-tui/components/image";
 import { getKittyGraphics, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
+import type { CellDimensions, TerminalId } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
-	type CellDimensions,
 	encodeKittyPlacementLine,
 	getCellDimensions,
 	ImageProtocol,
 	parseKittyDirectPlacementLine,
 	setCellDimensions,
+	setTerminalImageProtocol,
 	TERMINAL,
 	wrapTmuxPassthrough,
 } from "@oh-my-pi/pi-tui/terminal-capabilities";
@@ -15,11 +18,31 @@ import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 
 withoutTerminalMultiplexer();
 
-type MutableTerminalInfo = { id: string; imageProtocol: ImageProtocol | null };
-const terminal = TERMINAL as unknown as MutableTerminalInfo;
+function setTerminalProtocol(protocol: ImageProtocol | null): void {
+	setTerminalImageProtocol(protocol);
+}
+
+function overrideTerminalId(id: TerminalId): () => void {
+	const descriptor = Object.getOwnPropertyDescriptor(TERMINAL, "id");
+	Object.defineProperty(TERMINAL, "id", { configurable: true, value: id });
+	return () => {
+		if (descriptor) Object.defineProperty(TERMINAL, "id", descriptor);
+	};
+}
 
 const BASE64_ONE_PIXEL_PNG =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
+
+function imageRows(budget: ImageBudget, imageKey: string): string[] {
+	const state = createImagePaintState({
+		base64Data: BASE64_ONE_PIXEL_PNG,
+		mimeType: "image/png",
+		theme: { fallbackStyle: Style.NONE },
+		options: { maxWidthCells: 4, maxHeightCells: 6, budget, imageKey },
+		dimensions: { widthPx: 40, heightPx: 60 },
+	});
+	return renderToRows(() => ImageView({ state }), 40);
+}
 
 // Direct-placement contract: a straddling image block must be re-anchored at
 // its first visible row with the source rectangle clipped to the visible
@@ -28,38 +51,31 @@ const BASE64_ONE_PIXEL_PNG =
 // scrollback included — the permanently cropped images on WezTerm).
 
 const originalProtocol = TERMINAL.imageProtocol;
-const originalTerminalId = terminal.id;
 const originalGraphics = { ...getKittyGraphics() };
 let originalCellDims: CellDimensions;
+let restoreTerminalId: (() => void) | undefined;
 
 beforeEach(() => {
 	originalCellDims = getCellDimensions();
 	setCellDimensions({ widthPx: 10, heightPx: 10 });
-	terminal.imageProtocol = ImageProtocol.Kitty;
-	terminal.id = "wezterm";
+	setTerminalProtocol(ImageProtocol.Kitty);
+	restoreTerminalId = overrideTerminalId("wezterm");
 	setKittyGraphics({ unicodePlaceholders: false });
 });
 
 afterEach(() => {
 	setCellDimensions(originalCellDims);
-	terminal.imageProtocol = originalProtocol;
-	terminal.id = originalTerminalId;
+	setTerminalProtocol(originalProtocol);
+	restoreTerminalId?.();
 	setKittyGraphics(originalGraphics);
 });
 
 describe("kitty direct-placement wire format", () => {
 	it("round-trips the exact line Image renders for a direct placement", () => {
 		const budget = new ImageBudget(8, () => {});
-		const image = new Image(
-			BASE64_ONE_PIXEL_PNG,
-			"image/png",
-			{ fallbackColor: t => t },
-			{ maxWidthCells: 4, maxHeightCells: 6, budget, imageKey: "roundtrip" },
-			{ widthPx: 40, heightPx: 60 },
-		);
 		const imageId = budget.acquireId("roundtrip");
 		budget.beginPass();
-		const lines = image.render(40);
+		const lines = imageRows(budget, "roundtrip");
 		budget.endPass();
 		expect(lines.length).toBe(6);
 		const parsed = parseKittyDirectPlacementLine(lines[lines.length - 1]!);

@@ -13,12 +13,15 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
+import { StatusLineComponent, StatusLineView } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
 import type { SegmentContext } from "@oh-my-pi/pi-tui/status-line/segments";
 import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
+import { createSignal, onCleanup, runWithOwner } from "@oh-my-pi/pi-tui/reactive";
+import { type FakeClock, mountForTest } from "@oh-my-pi/pi-tui/testing";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import { StatusLineTestComponents } from "./helpers/status-line";
+import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
+import { renderStatus, StatusLineTestComponents } from "./helpers/status-line";
 
 const statusLines = new StatusLineTestComponents();
 beforeAll(async () => {
@@ -33,6 +36,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
+	statusLines.dispose();
 	vi.restoreAllMocks();
 });
 
@@ -125,8 +129,8 @@ describe("time_spent segment", () => {
 	it("renders active processing time and ignores wall-clock", () => {
 		const rendered = renderSegment("time_spent", createCtx(10_000));
 		expect(rendered.visible).toBe(true);
-		expect(rendered.content).toContain("10");
-		expect(rendered.content).toContain("s");
+		expect(renderStatus(rendered.content)).toContain("10");
+		expect(renderStatus(rendered.content)).toContain("s");
 	});
 
 	it("hides under one second of activity so the segment does not flash 0s at session start", () => {
@@ -137,9 +141,9 @@ describe("time_spent segment", () => {
 
 	it("scales beyond seconds: formatDuration produces minute/hour suffixes", () => {
 		const fiveMin = renderSegment("time_spent", createCtx(5 * 60_000));
-		expect(fiveMin.content).toContain("5m");
+		expect(renderStatus(fiveMin.content)).toContain("5m");
 		const twoHours = renderSegment("time_spent", createCtx(2 * 3_600_000));
-		expect(twoHours.content).toContain("2h");
+		expect(renderStatus(twoHours.content)).toContain("2h");
 	});
 });
 
@@ -358,5 +362,93 @@ describe("StatusLineComponent active-time accounting", () => {
 		// the meter must NOT reset.
 		(session as unknown as { sessionFile: string }).sessionFile = "/tmp/new-session.jsonl";
 		expect(c.getActiveMs()).toBe(5_000);
+	});
+
+	it("advances active status rows from the shared clock and tears its subscription down", () => {
+		let now = 1_000_000;
+		const [spinnerTick, setSpinnerTick] = createSignal(now, { equals: false });
+		let spinnerSubscribers = 0;
+		const clock: FakeClock = {
+			frameMs: 1_000 / 30,
+			now: () => now,
+			access(cadence, owner) {
+				if (cadence !== "spinner") return () => now;
+				spinnerSubscribers++;
+				if (owner) {
+					runWithOwner(owner, () =>
+						onCleanup(() => {
+							spinnerSubscribers--;
+						}),
+					);
+				}
+				return spinnerTick;
+			},
+			subscribe: () => () => {},
+			freeze(at = now) {
+				return {
+					at,
+					frame: Math.floor(at / (1_000 / 30)),
+					spinner: Math.floor(at / 80),
+					second: Math.floor(at / 1_000),
+				};
+			},
+			frozen() {
+				return this.freeze();
+			},
+			advance(ms) {
+				now += ms;
+				setSpinnerTick(now);
+			},
+			dispose: () => {},
+		};
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		const context = createInteractiveModeContext({
+			session: {
+				isStreaming: true,
+				state: { messages: [], model: undefined },
+				getAsyncJobSnapshot: () => null,
+				modelRegistry: { isUsingOAuth: () => false },
+			},
+		});
+		const c = statusLines.track(new StatusLineComponent(context.session, statusLineHost));
+		c.updateSettings({
+			preset: "custom",
+			leftSegments: ["pi", "time_spent"],
+			rightSegments: [],
+			separator: "none",
+			transparent: true,
+		});
+		c.setStandalone("full");
+
+		const root = mountForTest(() => StatusLineView({ source: c }), { width: 120, clock });
+		try {
+			c.markActivityStart();
+			const initial = root.text().join("\n");
+			expect(initial).toContain("0s");
+			expect(spinnerSubscribers).toBe(1);
+
+			clock.advance(80);
+			const nextSpinner = root.text().join("\n");
+			expect(nextSpinner).not.toBe(initial);
+
+			clock.advance(920);
+			expect(root.text().join("\n")).toContain("1s");
+
+			c.markActivityEnd();
+			const settled = root.text().join("\n");
+			expect(spinnerSubscribers).toBe(0);
+
+			clock.advance(1_000);
+			expect(root.text().join("\n")).toBe(settled);
+
+			c.markActivityStart();
+			root.text();
+			expect(spinnerSubscribers).toBe(1);
+			root.dispose();
+			expect(spinnerSubscribers).toBe(0);
+		} finally {
+			root.dispose();
+		}
 	});
 });

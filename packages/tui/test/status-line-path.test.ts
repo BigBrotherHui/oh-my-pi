@@ -6,6 +6,7 @@ import type { SegmentContext } from "../src/status-line/segments";
 import { renderSegment } from "../src/status-line/segments";
 import { initTheme, theme } from "../src/theme";
 import { getProjectDir, pathIsWithin, removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import { renderSegmentContent } from "./helpers/render-vnode";
 
 const originalProjectDir = getProjectDir();
 const SCRATCH_ROOT_PREFIXES: readonly string[] = [
@@ -134,9 +135,9 @@ describe("status line path segment", () => {
 			const expectedRelative = `${path.basename(realProjectDir)}${path.sep}nested`;
 
 			expect(rendered.visible).toBe(true);
-			expect(rendered.content).toContain(expectedRelative);
-			expect(rendered.content).not.toContain("home-link");
-			expect(rendered.content).not.toContain(`${path.sep}Projects${path.sep}`);
+			expect(renderSegmentContent(rendered)).toContain(expectedRelative);
+			expect(renderSegmentContent(rendered)).not.toContain("home-link");
+			expect(renderSegmentContent(rendered)).not.toContain(`${path.sep}Projects${path.sep}`);
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(aliasRoot);
@@ -152,11 +153,11 @@ describe("status line path segment", () => {
 
 			const rendered = renderSegment("path", createPathContext());
 			expect(rendered.visible).toBe(true);
-			expect(rendered.content).toContain(theme.icon.scratchFolder);
-			expect(rendered.content).not.toContain(theme.icon.folder);
+			expect(renderSegmentContent(rendered)).toContain(theme.icon.scratchFolder);
+			expect(renderSegmentContent(rendered)).not.toContain(theme.icon.folder);
 			// Display is just the scratch-relative tail — no leading tmpdir, no ancestor segments.
-			expectContentToContainPath(rendered.content, path.basename(getProjectDir()));
-			expect(rendered.content).not.toContain(os.tmpdir());
+			expectContentToContainPath(renderSegmentContent(rendered), path.basename(getProjectDir()));
+			expect(renderSegmentContent(rendered)).not.toContain(os.tmpdir());
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(scratchDir);
@@ -190,9 +191,9 @@ describe("status line path segment", () => {
 
 			const rendered = renderSegment("path", createPathContext());
 			const tail = `${path.basename(path.dirname(path.dirname(getProjectDir())))}${path.sep}sub${path.sep}deep`;
-			expect(rendered.content).toContain(theme.icon.scratchFolder);
-			expectContentToContainPath(rendered.content, tail);
-			expect(rendered.content).not.toContain(os.tmpdir());
+			expect(renderSegmentContent(rendered)).toContain(theme.icon.scratchFolder);
+			expectContentToContainPath(renderSegmentContent(rendered), tail);
+			expect(renderSegmentContent(rendered)).not.toContain(os.tmpdir());
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(scratchDir);
@@ -208,8 +209,8 @@ describe("status line path segment", () => {
 			ctx.options.path = { ...ctx.options.path, stripWorkPrefix: false };
 			const rendered = renderSegment("path", ctx);
 			expect(rendered.visible).toBe(true);
-			expect(rendered.content).toContain(theme.icon.folder);
-			expect(rendered.content).not.toContain(theme.icon.scratchFolder);
+			expect(renderSegmentContent(rendered)).toContain(theme.icon.folder);
+			expect(renderSegmentContent(rendered)).not.toContain(theme.icon.scratchFolder);
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(scratchDir);
@@ -224,8 +225,8 @@ describe("status line path segment", () => {
 
 			const rendered = renderSegment("path", createPathContext());
 			expect(rendered.visible).toBe(true);
-			expect(rendered.content).toContain(theme.icon.folder);
-			expect(rendered.content).not.toContain(theme.icon.scratchFolder);
+			expect(renderSegmentContent(rendered)).toContain(theme.icon.folder);
+			expect(renderSegmentContent(rendered)).not.toContain(theme.icon.scratchFolder);
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(realProjectDir);
@@ -250,8 +251,8 @@ describe("status line path segment", () => {
 			const rendered = renderSegment("path", ctx);
 			const expected = `${path.basename(getProjectDir())} ↳ pr-workspace`;
 			expect(rendered.visible).toBe(true);
-			expectContentToContainPath(rendered.content, expected);
-			expect(rendered.content).not.toContain(os.tmpdir());
+			expectContentToContainPath(renderSegmentContent(rendered), expected);
+			expect(renderSegmentContent(rendered)).not.toContain(os.tmpdir());
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(parentDir);
@@ -275,7 +276,7 @@ describe("status line path segment", () => {
 
 			const rendered = renderSegment("path", ctx);
 			expect(rendered.visible).toBe(true);
-			expect(rendered.content).toContain("↳ pr-workspace");
+			expect(renderSegmentContent(rendered)).toContain("↳ pr-workspace");
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(parentDir);
@@ -296,7 +297,7 @@ describe("status line path segment in a linked worktree", () => {
 
 	it("collapses to the project name and drops the worktree dir when it equals the branch", () => {
 		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "xx" }, "xx"));
-		const content = Bun.stripANSI(rendered.content);
+		const content = Bun.stripANSI(renderSegmentContent(rendered));
 		expect(rendered.visible).toBe(true);
 		expect(content).toBe(`${theme.icon.worktree} pi`);
 		// The base prefix, the worktree dir, and the folder icon are all gone.
@@ -307,12 +308,12 @@ describe("status line path segment in a linked worktree", () => {
 
 	it("keeps the worktree dir when it diverges from the branch", () => {
 		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "wt-icon" }, "icon"));
-		expect(Bun.stripANSI(rendered.content)).toBe(`${theme.icon.worktree} pi/wt-icon`);
+		expect(Bun.stripANSI(renderSegmentContent(rendered))).toBe(`${theme.icon.worktree} pi/wt-icon`);
 	});
 
 	it("keeps the worktree dir when no branch is shown", () => {
 		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "xx" }, null));
-		expect(Bun.stripANSI(rendered.content)).toBe(`${theme.icon.worktree} pi/xx`);
+		expect(Bun.stripANSI(renderSegmentContent(rendered))).toBe(`${theme.icon.worktree} pi/xx`);
 	});
 
 	it("falls back to the on-disk path when stripWorkPrefix is disabled", () => {
@@ -321,7 +322,7 @@ describe("status line path segment in a linked worktree", () => {
 			setProjectDir(scratchDir);
 			const ctx = worktreeContext({ projectName: "pi", worktreeName: "xx" }, "xx");
 			ctx.options.path = { ...ctx.options.path, stripWorkPrefix: false };
-			const content = Bun.stripANSI(renderSegment("path", ctx).content);
+			const content = Bun.stripANSI(renderSegmentContent(renderSegment("path", ctx)));
 			expect(content).not.toContain(theme.icon.worktree);
 			expect(content).toContain(theme.icon.folder);
 		} finally {
@@ -333,7 +334,9 @@ describe("status line path segment in a linked worktree", () => {
 	it("clamps a long worktree label to maxLength so overflow shrink works", () => {
 		const ctx = worktreeContext({ projectName: "very-long-project-name", worktreeName: "feature" }, "other");
 		ctx.options.path = { ...ctx.options.path, maxLength: 10 };
-		const label = Bun.stripANSI(renderSegment("path", ctx).content).slice(theme.icon.worktree.length + 1);
+		const label = Bun.stripANSI(renderSegmentContent(renderSegment("path", ctx))).slice(
+			theme.icon.worktree.length + 1,
+		);
 		expect(label.length).toBeLessThanOrEqual(10);
 		expect(label.startsWith("…")).toBe(true);
 		expect(label.endsWith("feature")).toBe(true);

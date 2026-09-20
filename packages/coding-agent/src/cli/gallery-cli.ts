@@ -1,24 +1,24 @@
 /**
- * `omp gallery` — render every built-in tool's renderer across its lifecycle.
+ * `omp gallery` — render public tool scenarios across their lifecycle.
  *
- * For each tool with a registered renderer, the gallery drives a real
- * {@link ToolExecutionComponent} through four states — streaming arguments,
- * arguments complete (in progress), success, and failure — and prints the
- * rendered output to stdout. It exists for visual QA of tool renderers without
- * having to provoke each state through a live agent session.
+ * For each tool scenario in the gallery inventory, the command drives a
+ * {@link ToolCallModel} through four states — streaming arguments, arguments
+ * complete (in progress), success, and failure — and prints the rendered output
+ * to stdout. It exists for visual QA without a live agent session.
  */
-import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { TUI } from "@oh-my-pi/pi-tui";
-import { getProjectDir } from "@oh-my-pi/pi-utils";
+import { renderSnapshot } from "@oh-my-pi/pi-tui/snapshot";
+import { ToolBlock } from "@oh-my-pi/pi-tui/chat/tool-block";
+import { createToolCallModel } from "@oh-my-pi/pi-tui/tools/model";
+import { resolveToolView, type ToolViewSource } from "@oh-my-pi/pi-tui/tools/registry";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { Settings } from "../config/settings";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import {
 	type GalleryFixture,
 	type GalleryPreviewEntry,
 	type GalleryResult,
 	galleryFixtures,
+	createFallbackGalleryFixture,
 	getComposerGalleryEntries,
 	getComposerGalleryInventory,
 	getSegmentGalleryEntries,
@@ -120,6 +120,8 @@ export interface GalleryCommandArgs {
 export interface GallerySection {
 	heading: string;
 	lines: string[];
+	/** A lifecycle variant failed to render; the command must exit unsuccessfully. */
+	failed?: boolean;
 }
 
 const GENERIC_ERROR: GalleryResult = {
@@ -127,38 +129,12 @@ const GENERIC_ERROR: GalleryResult = {
 	isError: true,
 };
 
-/**
- * Build the fake `AgentTool` the component needs for its label, edit mode, and —
- * for `customRendered` fixtures — the renderer functions that route it through
- * the same custom-tool branch production uses (see {@link GalleryFixture}).
- */
-function fakeToolFor(name: string, fixture: GalleryFixture | undefined): AgentTool | undefined {
-	if (!fixture?.label && !fixture?.editMode && !fixture?.customRendered) return undefined;
-	const tool: Record<string, unknown> = { name, label: fixture.label ?? name, mode: fixture.editMode };
-	if (fixture.customRendered) {
-		const renderer = toolRenderers[fixture.renderer ?? name] as
-			| { renderCall?: unknown; renderResult?: unknown; mergeCallAndResult?: unknown; inline?: unknown }
-			| undefined;
-		if (renderer) {
-			tool.renderCall = renderer.renderCall;
-			tool.renderResult = renderer.renderResult;
-			tool.mergeCallAndResult = renderer.mergeCallAndResult;
-			tool.inline = renderer.inline;
-		}
-	}
-	return tool as unknown as AgentTool;
-}
-
 /** The curated fixture for a tool, or a generic one for registry tools lacking sample data. */
 export function resolveFixture(name: string): GalleryFixture {
-	return (
-		galleryFixtures[name] ??
-		({
-			args: { note: `sample ${name} call` },
-			result: { content: [{ type: "text", text: `${name} completed` }] },
-		} satisfies GalleryFixture)
-	);
+	return galleryFixtures[name] ?? createFallbackGalleryFixture(name);
 }
+
+const galleryKeymap = KeybindingsManager.inMemory();
 
 /**
  * Render a single tool/state pair to lines. Builds a fresh component, drives it
@@ -176,46 +152,24 @@ export async function renderGalleryState(
 		return await fixture.renderState(state, width, expanded);
 	}
 
-	// A non-customRendered fixture may borrow another tool's built-in renderer
-	// (e.g. `edit_delete` → `edit`): drive the component under that real tool
-	// name so the sample exercises the exact production branch, not the
-	// custom-tool one (which tints/pads non-framed result rows).
-	const componentName = fixture.customRendered ? name : (fixture.renderer ?? name);
-	const tool = fakeToolFor(componentName, fixture);
+	const toolName = fixture.customRendered ? name : (fixture.renderer ?? name);
+	const source: ToolViewSource | undefined = fixture.customRendered
+		? { toolView: resolveToolView(fixture.renderer ?? name).definition }
+		: undefined;
 	const streamingArgs = state === "streaming" ? (fixture.streamingArgs ?? fixture.args) : fixture.args;
-	// The component only calls `requestRender`/`requestComponentRender` (via
-	// its loader) during a static render; `imageBudget` is consulted solely
-	// when images render, which the gallery disables. A cast avoids
-	// constructing a real terminal.
-	const ui = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
-	const component = new ToolExecutionComponent(
-		componentName,
-		streamingArgs,
-		{ showImages: false, useBuiltInRenderer: !fixture.customRendered },
-		tool,
-		ui,
-		getProjectDir(),
-	);
-	component.setExpanded(expanded);
 
-	if (state !== "streaming") {
-		component.setArgsComplete();
-		component.setExecutionStarted();
-	}
-	if (state === "success") {
-		component.updateResult(fixture.result, false);
-	} else if (state === "error") {
-		component.updateResult(fixture.errorResult ?? GENERIC_ERROR, false);
-	}
-
-	// Edit-like renderers compute their diff preview off the render path; wait
-	// for it to settle so the snapshot is deterministic instead of racing a tick.
-	// Static fixtures have no live batch source, so bound the wait tightly.
-	await component.whenPreviewSettled(50);
-
-	const lines = component.render(width);
-	component.stopAnimation();
-	return lines;
+	const model = createToolCallModel({
+		id: `gallery-${toolName}`,
+		toolName,
+		label: fixture.label ?? toolName,
+	});
+	const rows = process.stdout.rows ?? 24;
+	model.setUi({ expanded, showImages: false, allocation: rows });
+	if (streamingArgs) model.applyArgsChunk(streamingArgs);
+	if (state !== "streaming") model.markRunning();
+	if (state === "success") model.applyResult(fixture.result);
+	else if (state === "error") model.applyResult(fixture.errorResult ?? GENERIC_ERROR);
+	return renderSnapshot(() => ToolBlock({ model, source }), { columns: width, rows, keymap: galleryKeymap });
 }
 
 function resolveWidth(requested: number | undefined): number {
@@ -246,15 +200,17 @@ async function renderGallerySections(
 		const fixture = resolveFixture(name);
 		const heading = fixture.label && fixture.label !== name ? `${name} — ${fixture.label}` : name;
 		const lines: string[] = ["", sectionRule(heading, width)];
+		let failed = false;
 		for (const state of states) {
 			lines.push("", theme.fg("dim", `  · ${GALLERY_STATE_LABELS[state]}`));
 			try {
 				for (const line of await renderGalleryState(name, fixture, state, width, expanded)) lines.push(line);
 			} catch (err) {
+				failed = true;
 				lines.push(theme.fg("error", `  render failed: ${String(err)}`));
 			}
 		}
-		sections.push({ heading, lines });
+		sections.push({ heading, lines, ...(failed ? { failed } : {}) });
 	}
 	return sections;
 }
@@ -278,15 +234,17 @@ async function renderPreviewSections(
 	const sections: GallerySection[] = [];
 	for (const entry of entries) {
 		const lines = ["", sectionRule(entry.heading, width)];
+		let failed = false;
 		for (const variant of entry.variants) {
 			lines.push("", theme.fg("dim", `  · ${variant.label}`));
 			try {
 				for (const line of await variant.render(width, expanded)) lines.push(line);
 			} catch (err) {
+				failed = true;
 				lines.push(theme.fg("error", `  render failed: ${String(err)}`));
 			}
 		}
-		sections.push({ heading: entry.heading, lines });
+		sections.push({ heading: entry.heading, lines, ...(failed ? { failed } : {}) });
 	}
 	return sections;
 }
@@ -302,7 +260,7 @@ export async function renderGallerySurfaceSections(
 	const sections: GallerySection[] = [];
 
 	if (surfaces.includes("tool")) {
-		const allNames = Array.from(new Set([...Object.keys(toolRenderers), ...Object.keys(galleryFixtures)])).sort();
+		const allNames = Object.keys(galleryFixtures).sort();
 		const names = args.tool ? allNames.filter(name => name === args.tool) : allNames;
 		sections.push(...(await renderGallerySections(names, states, width, expanded)));
 	}
@@ -318,7 +276,7 @@ export async function renderGallerySurfaceSections(
 }
 
 /**
- * Render the gallery. Iterates the renderer registry (or a single tool),
+ * Render the gallery. Iterates the public scenario inventory (or a single tool),
  * printing each requested lifecycle state under a labeled section — or, with
  * `screenshot`, capturing the rendered output as PNG(s) via VHS.
  */
@@ -339,7 +297,7 @@ export async function runGalleryCommand(args: GalleryCommandArgs): Promise<void>
 	const width = resolveWidth(args.width);
 	const surfaces = resolveSurfaces(args);
 	if (surfaces.includes("tool") && args.tool) {
-		const knownTools = Array.from(new Set([...Object.keys(toolRenderers), ...Object.keys(galleryFixtures)])).sort();
+		const knownTools = Object.keys(galleryFixtures).sort();
 		if (!knownTools.includes(args.tool)) {
 			process.stdout.write(`Unknown tool '${args.tool}'. Known tools: ${knownTools.join(", ")}\n`);
 			return;
@@ -359,6 +317,7 @@ export async function runGalleryCommand(args: GalleryCommandArgs): Promise<void>
 	}
 
 	const sections = await renderGallerySurfaceSections(args, width);
+	if (sections.some(section => section.failed)) process.exitCode = 1;
 
 	if (args.screenshot) {
 		const paths = await captureGalleryScreenshots(sections, {

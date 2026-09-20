@@ -1146,7 +1146,7 @@ export class CollabHost {
 
 	#updateStatusSegment(): void {
 		this.#ctx.statusLine.setCollabStatus({ role: "host", participantCount: this.#peers.size + 1 });
-		this.#ctx.statusLine.invalidate();
+		this.#ctx.statusLine.ingestSession();
 		this.#ctx.ui.requestRender();
 	}
 }

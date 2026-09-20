@@ -1,12 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import {
-	analyzeBgFillLine,
-	DECSACE_DEFAULT,
-	DECSACE_RECT,
-	detectRectangularSgrSupport,
-	encodeDeccara,
-	planDeccaraFills,
-} from "@oh-my-pi/pi-tui";
+import { analyzeBgFillLine, DECSACE_DEFAULT, DECSACE_RECT, encodeDeccara, planDeccaraFills } from "../src/deccara";
+import { detectRectangularSgrSupport } from "../src/terminal-capabilities";
 
 // Truecolor background open token used throughout the integration tests.
 const BG_OPEN = "\x1b[48;2;10;20;30m";

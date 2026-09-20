@@ -1,3 +1,5 @@
+import { createToolCallModel } from "@oh-my-pi/pi-tui/tools/model";
+import { renderToRows } from "@oh-my-pi/pi-tui/testing";
 import { beforeAll, describe, expect, it, spyOn, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { type } from "@oh-my-pi/omptype";
@@ -11,9 +13,28 @@ import type {
 import { getThemeByName, initTheme, theme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { AskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
-import { askToolRenderer } from "@oh-my-pi/pi-tui/tools/ask";
+import { askToolView, type AskRenderArgs, type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
+
+function makeAskCallView(args: AskRenderArgs, options: { expanded: boolean }, _theme: Theme) {
+	const model = createToolCallModel<AskRenderArgs, AskToolDetails>({ id: "ask-call", toolName: "ask", label: "Ask" });
+	model.applyArgsChunk(args);
+	model.markQueued();
+	model.setUi({ expanded: options.expanded });
+	return () => askToolView.view(model);
+}
+
+function makeAskResultView(result: object, options: { expanded: boolean }, _theme: Theme) {
+	const model = createToolCallModel<AskRenderArgs, AskToolDetails>({
+		id: "ask-result",
+		toolName: "ask",
+		label: "Ask",
+	});
+	model.applyResult(result);
+	model.setUi({ expanded: options.expanded });
+	return () => askToolView.view(model);
+}
 
 function createSession(overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -467,7 +488,7 @@ describe("AskTool option descriptions", () => {
 
 	it("renders descriptions under labels in ask call previews", async () => {
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderCall(
+		const rendered = makeAskCallView(
 			{
 				question: "How should authentication continue?",
 				options: [
@@ -481,16 +502,16 @@ describe("AskTool option descriptions", () => {
 					},
 				],
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const renderedLines = stripAnsi(rendered.render(120).join("\n")).split("\n");
+		const renderedLines = stripAnsi(renderToRows(rendered, 120).join("\n")).split("\n");
 		const labelLine = renderedLines.findIndex(line => line.includes("Use local credentials"));
 		const descriptionLine = renderedLines.findIndex(line =>
 			line.includes("Authenticate with provider keys already configured"),
 		);
 		expect(labelLine).toBeGreaterThanOrEqual(0);
-		expect(descriptionLine).toBeGreaterThan(labelLine);
+		expect(descriptionLine).toBe(labelLine + 1);
 	});
 
 	it("forwards descriptions through multi-select and returns bare labels", async () => {
@@ -944,8 +965,8 @@ describe("AskTool custom input", () => {
 		expect(result.content[0].text).toContain("custom detail");
 
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme!);
-		const renderedText = stripAnsi(rendered.render(120).join("\n"));
+		const rendered = makeAskResultView(result, { expanded: true }, theme!);
+		const renderedText = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(renderedText).toContain("alpha");
 		expect(renderedText).toContain("custom detail");
 	});
@@ -1031,8 +1052,8 @@ describe("AskTool multiline custom input rendering", () => {
 		expect(result.details?.customInput).toBe(multilineText);
 
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme!);
-		const renderedText = stripAnsi(rendered.render(120).join("\n"));
+		const rendered = makeAskResultView(result, { expanded: true }, theme!);
+		const renderedText = stripAnsi(renderToRows(rendered, 120).join("\n"));
 
 		// All three lines should appear
 		expect(renderedText).toContain("first line");
@@ -1085,8 +1106,8 @@ describe("AskTool multiline custom input rendering", () => {
 		);
 
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme!);
-		const renderedText = stripAnsi(rendered.render(120).join("\n"));
+		const rendered = makeAskResultView(result, { expanded: true }, theme!);
+		const renderedText = stripAnsi(renderToRows(rendered, 120).join("\n"));
 
 		expect(renderedText).toContain("second line");
 		expect(renderedText).not.toContain("(empty)");
@@ -1339,24 +1360,24 @@ describe("AskTool multi-question navigation", () => {
 describe("AskTool option markers", () => {
 	it("renders single-choice call options with circular radio markers, not checkboxes", async () => {
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderCall(
+		const rendered = makeAskCallView(
 			{ question: "Pick one", options: [{ label: "Alpha" }, { label: "Beta" }] },
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(text).toContain(theme!.radio.unselected);
 		expect(text).not.toContain(theme!.checkbox.unchecked);
 	});
 
 	it("renders multi-select call options with rectangular checkbox markers, not radios", async () => {
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderCall(
+		const rendered = makeAskCallView(
 			{ question: "Pick many", options: [{ label: "Alpha" }, { label: "Beta" }], multi: true },
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(text).toContain(theme!.checkbox.unchecked);
 		expect(text).not.toContain(theme!.radio.unselected);
 	});
@@ -1375,19 +1396,19 @@ describe("AskTool option markers", () => {
 			{ label: "Swift" },
 			{ label: "Haskell" },
 		];
-		const renderedCall = askToolRenderer.renderCall(
+		const renderedCall = makeAskCallView(
 			{ questions: [{ id: "fav_lang", question: "Which programming language?", options }] },
-			{ expanded: true, isPartial: true },
+			{ expanded: true },
 			theme!,
 		);
 
-		const firstCall = stripAnsi(renderedCall.render(120).join("\n"));
-		const secondCall = stripAnsi(renderedCall.render(120).join("\n"));
+		const firstCall = stripAnsi(renderToRows(renderedCall, 120).join("\n"));
+		const secondCall = stripAnsi(renderToRows(renderedCall, 120).join("\n"));
 		expect(secondCall).toBe(firstCall);
 		expect(secondCall.match(/TypeScript/g)?.length).toBe(1);
 		expect(secondCall.match(/Haskell/g)?.length).toBe(1);
 
-		const renderedResult = askToolRenderer.renderResult(
+		const renderedResult = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: {
@@ -1402,11 +1423,11 @@ describe("AskTool option markers", () => {
 					],
 				},
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const firstResult = stripAnsi(renderedResult.render(120).join("\n"));
-		const secondResult = stripAnsi(renderedResult.render(120).join("\n"));
+		const firstResult = stripAnsi(renderToRows(renderedResult, 120).join("\n"));
+		const secondResult = stripAnsi(renderToRows(renderedResult, 120).join("\n"));
 		expect(secondResult).toBe(firstResult);
 		expect(secondResult.match(/TypeScript/g)?.length).toBe(1);
 		expect(secondResult.match(/Haskell/g)?.length).toBe(1);
@@ -1414,21 +1435,19 @@ describe("AskTool option markers", () => {
 
 	it("keeps single-question option rows stable across repeated renders", async () => {
 		const theme = darkTheme;
-		// The question body comes from the Markdown render cache, which returns
-		// the SAME array on every render of identical text at identical width.
-		// Appending option rows in place would poison that cached entry, so a
-		// second render of the component would duplicate the options.
-		const renderedCall = askToolRenderer.renderCall(
+		// A retained question subtree must not append a second option row when
+		// the same model is painted again at the same width.
+		const renderedCall = makeAskCallView(
 			{ question: "Which **language** do you prefer?", options: [{ label: "OptionDupCanary" }] },
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const first = stripAnsi(renderedCall.render(120).join("\n"));
-		const second = stripAnsi(renderedCall.render(120).join("\n"));
+		const first = stripAnsi(renderToRows(renderedCall, 120).join("\n"));
+		const second = stripAnsi(renderToRows(renderedCall, 120).join("\n"));
 		expect(second).toBe(first);
 		expect(second.match(/OptionDupCanary/g)?.length).toBe(1);
 
-		const renderedResult = askToolRenderer.renderResult(
+		const renderedResult = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: {
@@ -1438,46 +1457,90 @@ describe("AskTool option markers", () => {
 					selectedOptions: ["OptionDupCanary"],
 				},
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const firstResult = stripAnsi(renderedResult.render(120).join("\n"));
-		const secondResult = stripAnsi(renderedResult.render(120).join("\n"));
+		const firstResult = stripAnsi(renderToRows(renderedResult, 120).join("\n"));
+		const secondResult = stripAnsi(renderToRows(renderedResult, 120).join("\n"));
 		expect(secondResult).toBe(firstResult);
 		expect(secondResult.match(/OptionDupCanary/g)?.length).toBe(1);
 	});
 	it("renders single-choice result selection with a filled radio marker", async () => {
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderResult(
+		const rendered = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: { question: "Pick one", multi: false, selectedOptions: ["Alpha"] },
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(text).toContain(theme!.radio.selected);
 		expect(text).not.toContain(theme!.checkbox.checked);
 	});
 
 	it("renders multi-select result selections with checkbox markers", async () => {
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderResult(
+		const rendered = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: { question: "Pick many", multi: true, selectedOptions: ["Alpha", "Beta"] },
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(text).toContain(theme!.checkbox.checked);
 		expect(text).not.toContain(theme!.radio.selected);
 	});
 });
 
-describe("askToolRenderer malformed call args", () => {
+describe("Ask tool reactive presentation", () => {
+	it("uses a two-row compact preview rather than rendering every question and option", async () => {
+		const rendered = makeAskCallView(
+			{
+				questions: [
+					{ id: "first", question: "First question", options: [{ label: "Alpha" }, { label: "Beta" }] },
+					{ id: "second", question: "Second question", options: [{ label: "Gamma" }] },
+				],
+			},
+			{ expanded: false },
+			darkTheme!,
+		);
+
+		const text = stripAnsi(renderToRows(rendered, 80).join("\n"));
+		expect(text).toContain("First question");
+		expect(text).toContain("2 options");
+		expect(text).toContain("1 more question");
+		expect(text).not.toContain("Second question");
+		expect(text).not.toContain("Alpha");
+	});
+
+	it("shows an aborted result state while retaining the cancelled answer transcript", async () => {
+		const rendered = makeAskResultView(
+			{
+				status: "cancelled",
+				content: [{ type: "text", text: "" }],
+				details: {
+					question: "Proceed?",
+					options: ["Yes", "No"],
+					multi: false,
+					selectedOptions: [],
+				},
+			},
+			{ expanded: true },
+			darkTheme!,
+		);
+
+		const text = stripAnsi(renderToRows(rendered, 80).join("\n"));
+		expect(text).toContain(darkTheme!.status.aborted);
+		expect(text).toContain("Proceed?");
+		expect(text).toContain("Cancelled");
+	});
+});
+
+describe("Ask view malformed call args", () => {
 	it("renders double-encoded questions string instead of crashing the TUI", async () => {
 		const theme = darkTheme;
 		// Models occasionally JSON-encode the questions array as a string; a bare
@@ -1485,13 +1548,8 @@ describe("askToolRenderer malformed call args", () => {
 		const doubleEncoded = JSON.stringify([
 			{ id: "q1", question: "Pick one", options: [{ label: "Alpha" }, { label: "Beta" }] },
 		]);
-		const rendered = askToolRenderer.renderCall(
-			{ questions: doubleEncoded } as never,
-			{ expanded: true, isPartial: false },
-			theme!,
-		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
-		expect(text).toContain("[q1]");
+		const rendered = makeAskCallView({ questions: doubleEncoded } as never, { expanded: true }, theme!);
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(text).toContain("Pick one");
 		expect(text).toContain("Alpha");
 	});
@@ -1499,19 +1557,15 @@ describe("askToolRenderer malformed call args", () => {
 	it("falls back to the error frame for unparseable questions without throwing", async () => {
 		const theme = darkTheme;
 		for (const questions of ["[{trunc", 42, { 0: { id: "x" } }]) {
-			const rendered = askToolRenderer.renderCall(
-				{ questions } as never,
-				{ expanded: true, isPartial: true },
-				theme!,
-			);
-			const text = stripAnsi(rendered.render(120).join("\n"));
+			const rendered = makeAskCallView({ questions } as never, { expanded: true }, theme!);
+			const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 			expect(text).toContain("No question provided");
 		}
 	});
 
 	it("drops malformed question entries and option items while keeping valid ones", async () => {
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderCall(
+		const rendered = makeAskCallView(
 			{
 				questions: [
 					null,
@@ -1519,11 +1573,10 @@ describe("askToolRenderer malformed call args", () => {
 					{ id: "ok", question: "Real question", options: ["BareString", { label: "Proper" }, { nope: 1 }, 7] },
 				],
 			} as never,
-			{ expanded: true, isPartial: true },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
-		expect(text).toContain("[ok]");
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(text).toContain("Real question");
 		expect(text).toContain("BareString");
 		expect(text).toContain("Proper");
@@ -1888,24 +1941,23 @@ describe("AskTool carriage-return sanitization", () => {
 
 	it("sanitizes carriage returns in legacy question text and transcript question ids", async () => {
 		const theme = darkTheme;
-		const rendered = askToolRenderer.renderCall(
+		const rendered = makeAskCallView(
 			{
 				questions: [{ id: "q\r\r3a", question: "Q3\r\rA?", options: [{ label: "Alpha" }] }],
 			} as never,
-			{ expanded: true, isPartial: true },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
-		expect(text).toContain("[q 3a]");
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(text).toContain("Q3 A?");
 		expect(text).not.toContain("\r");
 
-		const legacy = askToolRenderer.renderCall(
+		const legacy = makeAskCallView(
 			{ question: "Idle\r\rloop?", options: [{ label: "Alpha" }] },
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const legacyText = stripAnsi(legacy.render(120).join("\n"));
+		const legacyText = stripAnsi(renderToRows(legacy, 120).join("\n"));
 		expect(legacyText).toContain("Idle loop?");
 		expect(legacyText).not.toContain("\r");
 	});
@@ -1931,7 +1983,7 @@ describe("AskTool carriage-return sanitization", () => {
 	it("sanitizes persisted result details so pre-fix transcripts render as prose", async () => {
 		const theme = darkTheme;
 		// Multi-part branch: `\r`-laden id/question/labels flow into section labels and Markdown.
-		const multi = askToolRenderer.renderResult(
+		const multi = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: {
@@ -1946,17 +1998,16 @@ describe("AskTool carriage-return sanitization", () => {
 					],
 				},
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const multiText = stripAnsi(multi.render(120).join("\n"));
-		expect(multiText).toContain("[q 3a]");
+		const multiText = stripAnsi(renderToRows(multi, 120).join("\n"));
 		expect(multiText).toContain("Q3 A?");
 		expect(multiText).toContain("Abort log");
 		expect(multiText).not.toContain("\r");
 
 		// Single-question branch plus user-authored echo fields.
-		const single = askToolRenderer.renderResult(
+		const single = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: {
@@ -1967,24 +2018,24 @@ describe("AskTool carriage-return sanitization", () => {
 					note: "a\r\rnote",
 				},
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const singleText = stripAnsi(single.render(120).join("\n"));
+		const singleText = stripAnsi(renderToRows(single, 120).join("\n"));
 		expect(singleText).toContain("Idle loop?");
 		expect(singleText).toContain("a note");
 		expect(singleText).not.toContain("\r");
 
 		// Chat-redirect branch.
-		const chat = askToolRenderer.renderResult(
+		const chat = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: { chatRedirect: true, questions: ["Chat\r\rabout?"] },
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const chatText = stripAnsi(chat.render(120).join("\n"));
+		const chatText = stripAnsi(renderToRows(chat, 120).join("\n"));
 		expect(chatText).toContain("Chat about?");
 		expect(chatText).not.toContain("\r");
 
@@ -1993,8 +2044,8 @@ describe("AskTool carriage-return sanitization", () => {
 			{ content: [{ type: "text", text: "stale\r\rtranscript" }] },
 			{ content: [{ type: "text", text: "stale\r\rtranscript" }], details: {} },
 		]) {
-			const fallback = askToolRenderer.renderResult(stale, { expanded: true, isPartial: false }, theme!);
-			const fallbackText = stripAnsi(fallback.render(120).join("\n"));
+			const fallback = makeAskResultView(stale, { expanded: true }, theme!);
+			const fallbackText = stripAnsi(renderToRows(fallback, 120).join("\n"));
 			expect(fallbackText).toContain("stale transcript");
 			expect(fallbackText).not.toContain("\r");
 		}
@@ -2005,7 +2056,7 @@ describe("AskTool carriage-return sanitization", () => {
 		// Pre-fix persisted result: distinct raw options merged by
 		// sanitization, only the second selected. Label matching would mark
 		// both rows; resolving against the raw labels keeps the marker right.
-		const rendered = askToolRenderer.renderResult(
+		const rendered = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: {
@@ -2020,10 +2071,10 @@ describe("AskTool carriage-return sanitization", () => {
 					],
 				},
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		expect(text).not.toContain("\r");
 		const rows = text.split("\n").filter(line => line.includes("Retry now"));
 		expect(rows).toHaveLength(2);
@@ -2037,7 +2088,7 @@ describe("AskTool carriage-return sanitization", () => {
 		// Before the duplicate-label guard, `options: ["A", "A"]` could record
 		// both rows selected. Each occurrence must consume a distinct index
 		// or replay unmarks history the old renderer showed as checked.
-		const rendered = askToolRenderer.renderResult(
+		const rendered = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: {
@@ -2052,10 +2103,10 @@ describe("AskTool carriage-return sanitization", () => {
 					],
 				},
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		const checked = theme!.checkbox.checked;
 		const unchecked = theme!.checkbox.unchecked;
 		const rows = text.split("\n").filter(line => line.includes(checked) || line.includes(unchecked));
@@ -2090,7 +2141,7 @@ describe("AskTool carriage-return sanitization", () => {
 		// The legacy selector recorded one occurrence for duplicate rows it
 		// marked together; the old label-keyed renderer showed both checked,
 		// so replay must too — not just the first index.
-		const rendered = askToolRenderer.renderResult(
+		const rendered = makeAskResultView(
 			{
 				content: [{ type: "text", text: "" }],
 				details: {
@@ -2105,10 +2156,10 @@ describe("AskTool carriage-return sanitization", () => {
 					],
 				},
 			},
-			{ expanded: true, isPartial: false },
+			{ expanded: true },
 			theme!,
 		);
-		const text = stripAnsi(rendered.render(120).join("\n"));
+		const text = stripAnsi(renderToRows(rendered, 120).join("\n"));
 		const checked = theme!.checkbox.checked;
 		const unchecked = theme!.checkbox.unchecked;
 		const rows = text.split("\n").filter(line => line.includes(checked) || line.includes(unchecked));

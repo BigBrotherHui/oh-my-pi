@@ -67,7 +67,7 @@ describe("tool path root alias", () => {
 	);
 
 	it("rejects local:/ (single-slash) as an internal URL", () => {
-		expect(() => resolveToCwd("local:/PLAN.md", tempDir)).toThrow("internal scheme");
+		expect(() => resolveToCwd("local://PLAN.md", tempDir)).toThrow("internal scheme");
 	});
 
 	it("rejects local:// as an internal URL", () => {
@@ -75,7 +75,7 @@ describe("tool path root alias", () => {
 	});
 
 	it("rejects @local:/ (at-prefix single-slash) as an internal URL", () => {
-		expect(() => resolveToCwd("@local:/PLAN.md", tempDir)).toThrow("internal scheme");
+		expect(() => resolveToCwd("@local://PLAN.md", tempDir)).toThrow("internal scheme");
 	});
 
 	it("rejects @local:// (at-prefix double-slash) as an internal URL", () => {

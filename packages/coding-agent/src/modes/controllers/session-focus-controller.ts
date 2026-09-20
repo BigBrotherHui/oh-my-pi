@@ -186,7 +186,7 @@ export class SessionFocusController {
 					message,
 					assistantMessageEvent: { type: "start", partial: message },
 				});
-				if (generation === this.#attachGeneration) this.ctx.eventController.restorePendingToolResults();
+				if (generation === this.#attachGeneration) this.ctx.eventController.restoreLiveTranscript();
 			};
 			this.ctx.unsubscribe = target.subscribe(async event => {
 				if (generation !== this.#attachGeneration) return;
@@ -217,7 +217,7 @@ export class SessionFocusController {
 			if (generation !== this.#attachGeneration) return false;
 			await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 			if (generation !== this.#attachGeneration) return false;
-			this.ctx.eventController.restorePendingToolResults();
+			this.ctx.eventController.restoreLiveTranscript();
 
 			const live = target.agent.state.streamMessage;
 			if (live?.role === "assistant") await restoreAssistant(live);
@@ -230,7 +230,6 @@ export class SessionFocusController {
 			if (generation !== this.#attachGeneration) return false;
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.updateEditorBorderColor();
-			this.ctx.ui.requestRender();
 			return true;
 		} catch (error) {
 			if (generation === this.#attachGeneration) {

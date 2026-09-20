@@ -1,5 +1,13 @@
-import { describe, expect, it } from "bun:test";
-import { expandPrettyDataLines } from "@oh-my-pi/pi-tui/apps/debug/raw-sse";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { expandPrettyDataLines, RawSseViewerView } from "@oh-my-pi/pi-tui/apps/debug/raw-sse";
+import { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
+import { dispatchKey, HostKeyEvent } from "../src/host/input";
+import { mountForTest } from "../src/testing";
+import { initTheme } from "../src/theme";
+
+beforeAll(async () => {
+	await initTheme();
+});
 
 // Wide enough that `truncateToWidth` would clip the payload in the viewer; matches
 // what real Codex `response.output_item.done` frames look like on the wire.
@@ -66,5 +74,42 @@ describe("expandPrettyDataLines", () => {
 		const wideEvent = `event: ${"x".repeat(300)}`;
 		const out = expandPrettyDataLines([wideComment, wideEvent]);
 		expect(out).toEqual([wideComment, wideEvent]);
+	});
+});
+
+describe("RawSseViewerView", () => {
+	it("refreshes captured frames and retains copy and close keyboard controls", () => {
+		const buffer = new RawSseDebugBuffer();
+		let clipboard = "";
+		let closed = 0;
+		const root = mountForTest(
+			() =>
+				RawSseViewerView({
+					deps: {
+						copyToClipboard: text => {
+							clipboard = text;
+						},
+					},
+					buffer,
+					onExit: () => {
+						closed++;
+					},
+				}),
+			{ width: 80, height: 14 },
+		);
+		try {
+			expect(root.text().join("\n")).toContain("No raw SSE frames captured yet.");
+
+			buffer.recordEvent({ event: "message", data: '{"delta":"hello"}', raw: ['data: {"delta":"hello"}'] });
+			expect(root.text().join("\n")).toContain('data: {"delta":"hello"}');
+
+			dispatchKey(root.root, new HostKeyEvent("\x03"));
+			expect(clipboard).toContain('data: {"delta":"hello"}');
+
+			dispatchKey(root.root, new HostKeyEvent("\x1b"));
+			expect(closed).toBe(1);
+		} finally {
+			root.dispose();
+		}
 	});
 });

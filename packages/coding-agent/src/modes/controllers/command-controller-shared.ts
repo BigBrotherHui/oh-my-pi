@@ -7,11 +7,9 @@
  * wording, and add-flow logic stay in the per-controller files because they
  * diverge in workflow.
  */
-import { Text } from "@oh-my-pi/pi-tui";
+import { NoticeView } from "../reactive-message-views";
 import type { SourceMeta } from "../../capability/types";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
-import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
-import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { parseCommandArgs } from "../../utils/command-args";
 import type { InteractiveModeContext } from "../types";
 
@@ -96,14 +94,7 @@ export function* groupBySource<T>(
 	}
 }
 
-/**
- * Render a message block (DynamicBorder / Text / DynamicBorder) into the chat
- * container and request a render.
- */
+/** Render one command result into the reactive transcript. */
 export function showCommandMessage(ctx: InteractiveModeContext, text: string): void {
-	const block = new TranscriptBlock();
-	block.addChild(new DynamicBorder());
-	block.addChild(new Text(text, 1, 1));
-	block.addChild(new DynamicBorder());
-	ctx.presentCommandOutput(block);
+	ctx.presentCommandOutput(NoticeView({ text }));
 }

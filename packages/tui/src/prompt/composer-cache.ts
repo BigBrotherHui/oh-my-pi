@@ -5,9 +5,62 @@ import { getComposerCacheDir } from "@oh-my-pi/pi-utils/dirs";
 import type { LspServerInfo, RecentSession } from "./welcome";
 import type { ComposerPreferences, ComposerStatusSnapshot } from "./composer";
 import type { SymbolPreset } from "../theme/theme";
+import { RichText, RunFlag } from "../core/richtext";
+import { type Color, Style } from "../core/style";
 
 const CACHE_VERSION = 1;
-const STATUS_CACHE_VERSION = 3;
+const STATUS_CACHE_VERSION = 4;
+
+type EncodedStyle = readonly [fg: number, bg: number, attrs: number, ul: number, link: number];
+type EncodedRun = readonly [text: string, style: EncodedStyle, width: number, flags: number];
+type EncodedRows = readonly (readonly EncodedRun[])[];
+
+function encodeStyle(style: Style): EncodedStyle {
+	return [style.fg, style.bg, style.attrs, style.ul, style.link];
+}
+
+function decodeStyle(value: unknown): Style | undefined {
+	if (!Array.isArray(value) || value.length !== 5 || !value.every(item => typeof item === "number")) return undefined;
+	return Style.of({ fg: value[0] as Color, bg: value[1] as Color, attrs: value[2] })
+		.withUl(value[3] as Color)
+		.withLink(value[4]);
+}
+
+function encodeRows(rows: RichText): EncodedRows {
+	return Array.from({ length: rows.rows }, (_, row) => {
+		const encoded: EncodedRun[] = [];
+		for (let run = rows.rowStart(row); run < rows.rowEnd[row]!; run++) {
+			encoded.push([rows.text[run]!, encodeStyle(rows.style[run]!), rows.width[run]!, rows.flags[run]!]);
+		}
+		return encoded;
+	});
+}
+
+function decodeRows(value: unknown): RichText | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const rows = new RichText();
+	for (const encodedRow of value) {
+		if (!Array.isArray(encodedRow)) return undefined;
+		for (const encodedRun of encodedRow) {
+			if (!Array.isArray(encodedRun) || encodedRun.length !== 4) return undefined;
+			const [text, rawStyle, width, flags] = encodedRun;
+			const style = decodeStyle(rawStyle);
+			if (
+				typeof text !== "string" ||
+				style === undefined ||
+				typeof width !== "number" ||
+				typeof flags !== "number"
+			) {
+				return undefined;
+			}
+			if (flags & RunFlag.Cursor) rows.cursor();
+			else if (flags & RunFlag.Raw) rows.raw(style, text, width, flags);
+			else rows.push(style, text);
+		}
+		rows.br();
+	}
+	return rows;
+}
 /** Theme inputs cached from the last resolved settings load for stable prepaint colors. */
 export interface ComposerThemePreferences {
 	readonly symbolPreset?: SymbolPreset;
@@ -131,32 +184,16 @@ function readStatus(file: string): ComposerStatusSnapshot | undefined {
 	if (field(parsed, "version") !== CACHE_VERSION) return undefined;
 	if (field(parsed, "statusVersion") !== STATUS_CACHE_VERSION) return undefined;
 	const shape = field(parsed, "shape");
-	const rawBorderColor = field(parsed, "borderColor");
+	const borderStyle = decodeStyle(field(parsed, "borderStyle"));
 	const rawTopBorder = field(parsed, "topBorder");
-	const bottomLines = field(parsed, "bottomLines");
-	if (
-		typeof shape !== "string" ||
-		!Array.isArray(bottomLines) ||
-		!bottomLines.every(line => typeof line === "string")
-	) {
-		return undefined;
-	}
-	let borderColor: ComposerStatusSnapshot["borderColor"];
-	if (rawBorderColor !== undefined) {
-		if (typeof rawBorderColor !== "object" || rawBorderColor === null || Array.isArray(rawBorderColor)) {
-			return undefined;
-		}
-		const prefix = field(rawBorderColor, "prefix");
-		const suffix = field(rawBorderColor, "suffix");
-		if (typeof prefix !== "string" || typeof suffix !== "string") return undefined;
-		borderColor = { prefix, suffix };
-	}
-	if (rawTopBorder === undefined) return { shape, borderColor, bottomLines };
+	const bottomRows = decodeRows(field(parsed, "bottomRows"));
+	if (typeof shape !== "string" || bottomRows === undefined) return undefined;
+	if (rawTopBorder === undefined) return { shape, borderStyle, bottomRows };
 	if (typeof rawTopBorder !== "object" || rawTopBorder === null || Array.isArray(rawTopBorder)) return undefined;
-	const borderContent = field(rawTopBorder, "content");
+	const borderContent = decodeRows(field(rawTopBorder, "content"));
 	const borderWidth = field(rawTopBorder, "width");
-	if (typeof borderContent !== "string" || typeof borderWidth !== "number") return undefined;
-	return { shape, borderColor, topBorder: { content: borderContent, width: borderWidth }, bottomLines };
+	if (borderContent === undefined || typeof borderWidth !== "number") return undefined;
+	return { shape, borderStyle, topBorder: { content: borderContent, width: borderWidth }, bottomRows };
 }
 
 function readUiState(file: string): { preferences: ComposerPreferences; theme: ComposerThemePreferences } | undefined {
@@ -282,7 +319,16 @@ export async function writeComposerWelcomeCache(cwd: string, welcome: ComposerWe
 export async function writeComposerStatusCache(cwd: string, status: ComposerStatusSnapshot): Promise<void> {
 	await Bun.write(
 		path.join(projectCacheDir(cwd), "status.json"),
-		JSON.stringify({ version: CACHE_VERSION, statusVersion: STATUS_CACHE_VERSION, ...status }),
+		JSON.stringify({
+			version: CACHE_VERSION,
+			statusVersion: STATUS_CACHE_VERSION,
+			shape: status.shape,
+			borderStyle: status.borderStyle ? encodeStyle(status.borderStyle) : undefined,
+			topBorder: status.topBorder
+				? { content: encodeRows(status.topBorder.content), width: status.topBorder.width }
+				: undefined,
+			bottomRows: encodeRows(status.bottomRows),
+		}),
 	);
 }
 

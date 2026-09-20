@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { TUI } from "@oh-my-pi/pi-tui";
+import { createComponent } from "../src/host/renderer";
+import { mountOverlay, Portal, type OverlayDisposer } from "../src/host/overlay";
 import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
 	createProcessTerminalRenderHarness,
@@ -13,11 +15,17 @@ import {
 // `CSI ? u`. Some terminals (Superset / xterm-on-Electron) answer DA1 first;
 // the kitty reply must still be honored regardless of ordering.
 
-class ModalProbe implements Component {
-	invalidate(): void {}
-	render(): string[] {
-		return ["modal"];
-	}
+function showFullscreenModal(tui: TUI): OverlayDisposer {
+	return mountOverlay(tui, () =>
+		createComponent(Portal, {
+			to: "overlay",
+			fullscreen: true,
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			children: "modal",
+		}),
+	);
 }
 const originalSshConnection = Bun.env.SSH_CONNECTION;
 const originalSshTty = Bun.env.SSH_TTY;
@@ -166,19 +174,14 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 		expect(harness.writes.join("")).toContain("\x1b[>4;2m");
 		harness.writes.length = 0;
 
-		const overlay = harness.tui.showOverlay(new ModalProbe(), {
-			fullscreen: true,
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-		});
+		const overlay = showFullscreenModal(harness.tui);
 		await harness.settle();
 
 		const enterOut = harness.writes.join("");
 		expect(enterOut).toContain("\x1b[?1049h\x1b[>4;2m");
 		harness.writes.length = 0;
 
-		overlay.hide();
+		overlay.dispose();
 		await harness.settle();
 
 		const exitOut = harness.writes.join("");
@@ -197,17 +200,12 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 		expect(harness.terminal.kittyProtocolActive).toBe(true);
 		harness.writes.length = 0;
 
-		const overlay = harness.tui.showOverlay(new ModalProbe(), {
-			fullscreen: true,
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-		});
+		const overlay = showFullscreenModal(harness.tui);
 		await harness.settle();
 		expect(harness.writes.join("")).toContain("\x1b[?1049h\x1b[>5u");
 		harness.writes.length = 0;
 
-		overlay.hide();
+		overlay.dispose();
 		await harness.settle();
 
 		const exitOut = harness.writes.join("");

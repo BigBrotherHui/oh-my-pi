@@ -18,8 +18,7 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { FetchImpl, Model, Static, TSchema } from "@oh-my-pi/pi-ai";
-import type { Component } from "@oh-my-pi/pi-tui";
-import type { RenderResultOptions } from "@oh-my-pi/pi-tui/tools/renderer";
+import type { ToolViewDefinition } from "@oh-my-pi/pi-tui/tools/view";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../../capability/rule";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -28,9 +27,9 @@ import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
 import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
-import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
 import type { TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
+import type { MessageView } from "../extensions/types";
 import type { RetryErrorUpdate } from "../shared-events";
 
 /** Alias for clarity */
@@ -40,8 +39,6 @@ export type CustomToolUIContext = HookUIContext;
 export type { ExecOptions, ExecResult } from "../../exec/exec";
 /** Re-export for custom tools to use in execute signature */
 export type { AgentToolResult, AgentToolUpdateCallback, ToolApproval, ToolApprovalDecision, ToolTier };
-/** Display state handed to `renderCall`/`renderResult`; owned by pi-tui. */
-export type { RenderResultOptions };
 
 /** Pending action entry consumed by the hidden resolve tool */
 export interface CustomToolPendingAction {
@@ -240,16 +237,12 @@ export interface CustomTool<TParams extends TSchema = TSchema, TDetails = any> {
 
 	/** Called on session lifecycle events - use to reconstruct state or cleanup resources */
 	onSession?: (event: CustomToolSessionEvent, ctx: CustomToolContext) => void | Promise<void>;
-	/** Custom rendering for tool call display - return a Component */
-	renderCall?: (args: Static<TParams>, options: RenderResultOptions, theme: Theme) => Component;
 
-	/** Custom rendering for tool result display - return a Component */
-	renderResult?: (
-		result: CustomToolResult<TDetails>,
-		options: RenderResultOptions,
-		theme: Theme,
-		args?: Static<TParams>,
-	) => Component;
+	/** Custom reactive tool presentation */
+	toolView?: ToolViewDefinition<Static<TParams>, TDetails>;
+
+	/** Custom reactive message view */
+	messageView?: MessageView<unknown>;
 }
 
 /** Factory function that creates a custom tool or array of tools */

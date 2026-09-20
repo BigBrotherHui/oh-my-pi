@@ -9,9 +9,8 @@
  *
  * Fixtures are grouped by subsystem into sibling modules and merged here.
  * Adding a tool to one of those groups is enough for the gallery to render it.
- * Tools present in the renderer registry but missing here fall back to a
- * generic fixture (see `gallery-cli.ts`), so the gallery never crashes on a
- * newly added tool — it just looks plain until a fixture is supplied.
+ * Minimal public-tool scenarios use createFallbackGalleryFixture. Internal
+ * renderer aliases are not separate user-facing gallery entries.
  */
 import { agenticFixtures } from "./agentic";
 import { codeintelFixtures } from "./codeintel";
@@ -24,12 +23,27 @@ import { searchFixtures } from "./search";
 import { shellFixtures } from "./shell";
 import { statusLineFixtures } from "./status-line";
 import { webFixtures } from "./web";
+import type { GalleryFixture } from "./types";
+
+/** Build a minimal public-tool sample when no richer scenario is available. */
+export function createFallbackGalleryFixture(name: string): GalleryFixture {
+	return {
+		args: { note: `sample ${name} call` },
+		result: { content: [{ type: "text", text: `${name} completed` }] },
+	};
+}
 
 export * from "./composer";
 export * from "./segments";
 export * from "./types";
 
 export const galleryFixtures = {
+	...Object.fromEntries(
+		["hub", "vibe_spawn", "vibe_send", "vibe_wait", "vibe_kill", "vibe_list"].map(name => [
+			name,
+			createFallbackGalleryFixture(name),
+		]),
+	),
 	...interactionFixtures,
 	...shellFixtures,
 	...fsFixtures,

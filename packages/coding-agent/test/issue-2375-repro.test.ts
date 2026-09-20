@@ -43,7 +43,6 @@ function createContext() {
 	const pasteText = vi.fn();
 	const insertText = vi.fn();
 	const insertAtom = vi.fn();
-	const requestRender = vi.fn();
 	const showStatus = vi.fn();
 	const ctx = {
 		editor: {
@@ -54,14 +53,14 @@ function createContext() {
 			pendingImages: [] as ImageContent[],
 			pendingImageLinks: [] as (string | undefined)[],
 		} as unknown as InteractiveModeContext["editor"],
-		ui: { requestRender, getFocused: () => null } as unknown as InteractiveModeContext["ui"],
+		ui: { getFocused: () => null } as unknown as InteractiveModeContext["ui"],
 		sessionManager: {
 			getCwd: () => process.cwd(),
 			putBlob: async () => ({ hash: "h", path: "/tmp/h.png", displayPath: "/tmp/h.png" }),
 		} as unknown as InteractiveModeContext["sessionManager"],
 		showStatus,
 	} as unknown as InteractiveModeContext;
-	return { ctx, spies: { pasteText, insertText, insertAtom, requestRender, showStatus } };
+	return { ctx, spies: { pasteText, insertText, insertAtom, showStatus } };
 }
 
 describe("InputController.handleImagePathPaste (issue #2375)", () => {
@@ -137,9 +136,10 @@ describe("InputController.handleImagePathPaste (issue #2375)", () => {
 		expect(status).not.toMatch(/[\x00-\x08\x0B-\x1F\x7F]/);
 		expect(status).not.toContain("\n");
 		expect(status).not.toContain("\t");
-		// The hostile path runs well past the status truncation budget; the
-		// displayed path must be clamped strictly inside that budget.
-		expect(status.length).toBeLessThan(hostile.length);
+		expect(status.startsWith("Image not found at ")).toBe(true);
+		const displayedPath = status.slice("Image not found at ".length);
+		expect(displayedPath.length).toBeLessThanOrEqual(80);
+		expect(displayedPath).toEndWith("…");
 	});
 
 	it("locally: attaches the clipboard image when the pasted path is a stale transient file (Win+Shift+S)", async () => {

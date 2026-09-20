@@ -1,5 +1,4 @@
-import { type UpdateNotesDetails } from "@oh-my-pi/pi-tui/tools/autoresearch";
-import { updateNotesToolRenderer } from "@oh-my-pi/pi-tui/tools/autoresearch";
+import { type UpdateNotesDetails, updateNotesToolView } from "@oh-my-pi/pi-tui/tools/autoresearch";
 import { type } from "@oh-my-pi/omptype";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
@@ -18,7 +17,7 @@ export function createUpdateNotesTool(
 	options: AutoresearchToolFactoryOptions,
 ): ToolDefinition<typeof updateNotesSchema, UpdateNotesDetails> {
 	return {
-		...updateNotesToolRenderer,
+		toolView: updateNotesToolView,
 		name: "update_notes",
 		label: "Update Notes",
 		description:
@@ -52,7 +51,7 @@ export function createUpdateNotesTool(
 			if (refreshed) {
 				runtime.state = buildExperimentState(refreshed, loggedRuns);
 			}
-			options.dashboard.updateWidget(ctx, runtime);
+			options.refreshDashboard(ctx);
 
 			return {
 				content: [

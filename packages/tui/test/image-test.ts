@@ -1,19 +1,18 @@
-import { getImageDimensions, TERMINAL } from "@oh-my-pi/pi-tui";
-import { Image } from "@oh-my-pi/pi-tui/components/image";
-import { Spacer } from "@oh-my-pi/pi-tui/components/spacer";
-import { Text } from "@oh-my-pi/pi-tui/components/text";
-import { ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
-import { TUI } from "@oh-my-pi/pi-tui/tui";
+import { ProcessTerminal } from "@oh-my-pi/pi-tui";
+import { getImageDimensions } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import { createImagePaintState, ImageView } from "@oh-my-pi/pi-tui/components/image";
+import { Style } from "../src/core/style";
+import { createElement, insert } from "../src/host/renderer";
+import { render } from "../src/root";
+import { loadThemeSync } from "../src/theme/loader";
 
 const testImagePath = Bun.argv[2] || "/tmp/test-image.png";
 
-console.log("Terminal capabilities:", TERMINAL);
 console.log("Loading image from:", testImagePath);
 
 let imageBuffer: Uint8Array;
 try {
-	const file = Bun.file(testImagePath);
-	imageBuffer = await file.bytes();
+	imageBuffer = await Bun.file(testImagePath).bytes();
 } catch {
 	console.error(`Failed to load image: ${testImagePath}`);
 	console.error("Usage: bun test/image-test.ts [path-to-image.png]");
@@ -22,35 +21,44 @@ try {
 
 const base64Data = imageBuffer.toBase64();
 const dims = getImageDimensions(base64Data, "image/png");
-
 console.log("Image dimensions:", dims);
 console.log("");
 
 const terminal = new ProcessTerminal();
-const tui = new TUI(terminal);
+const image = dims
+	? createImagePaintState({
+			base64Data,
+			mimeType: "image/png",
+			theme: { fallbackStyle: Style.NONE },
+			options: { maxWidthCells: 60 },
+			dimensions: dims,
+		})
+	: undefined;
 
-tui.addChild(new Text("Image Rendering Test", 1, 1));
-tui.addChild(new Spacer(1));
+const root = render(
+	() => {
+		const stack = createElement("stack");
+		insert(stack, () => {
+			const header = createElement("text");
+			insert(header, "Image Rendering Test");
+			const footer = createElement("text");
+			insert(footer, "Press Ctrl+C to exit");
+			if (image) return [header, ImageView({ state: image }), footer];
+			const error = createElement("text");
+			insert(error, "Could not parse image dimensions");
+			return [header, error, footer];
+		});
+		return stack;
+	},
+	{ terminal, theme: loadThemeSync("dark") },
+);
 
-if (dims) {
-	tui.addChild(
-		new Image(base64Data, "image/png", { fallbackColor: s => `\x1b[33m${s}\x1b[0m` }, { maxWidthCells: 60 }, dims),
-	);
-} else {
-	tui.addChild(new Text("Could not parse image dimensions", 1, 0));
+function stop(): void {
+	root.dispose();
+	process.exit(0);
 }
 
-tui.addChild(new Spacer(1));
-tui.addChild(new Text("Press Ctrl+C to exit", 1, 0));
-
-const editor = {
-	handleInput(data: string) {
-		if (data.charCodeAt(0) === 3) {
-			tui.stop();
-			process.exit(0);
-		}
-	},
-};
-
-tui.setFocus(editor as any);
-tui.start();
+root.tui.setHostInputHandler(data => {
+	if (data.charCodeAt(0) === 3) stop();
+});
+process.on("SIGINT", stop);

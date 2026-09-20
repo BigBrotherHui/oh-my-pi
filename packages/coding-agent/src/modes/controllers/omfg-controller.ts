@@ -4,7 +4,7 @@ import { invalidate as invalidateCapabilityCache } from "../../capability";
 import type { Rule } from "../../capability/rule";
 import omfgUserPrompt from "../../prompts/system/omfg-user.md" with { type: "text" };
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
-import { OmfgPanelComponent } from "@oh-my-pi/pi-tui/overlays/omfg-panel";
+import { openOmfgPanel, type OmfgPanelHandle } from "@oh-my-pi/pi-tui/overlays/omfg-panel";
 import type { InteractiveModeContext } from "../types";
 import {
 	buildOmfgRuleForPath,
@@ -16,7 +16,7 @@ import {
 } from "./omfg-rule";
 
 interface OmfgRequest {
-	component: OmfgPanelComponent;
+	component: OmfgPanelHandle;
 	abortController: AbortController;
 	complaint: string;
 }
@@ -72,13 +72,11 @@ export class OmfgController {
 		this.#closeActiveRequest({ abort: true });
 
 		const request: OmfgRequest = {
-			component: new OmfgPanelComponent({ complaint: trimmedComplaint, tui: this.ctx.ui }),
+			component: openOmfgPanel(this.ctx.ui, { complaint: trimmedComplaint, tui: this.ctx.ui }),
 			abortController: new AbortController(),
 			complaint: trimmedComplaint,
 		};
 		this.ctx.omfgContainer.clear();
-		this.ctx.omfgContainer.addChild(request.component);
-		this.ctx.ui.requestRender();
 		this.#activeRequest = request;
 		void this.#runRequest(request);
 	}
@@ -283,7 +281,6 @@ export class OmfgController {
 		}
 		request.component.close();
 		this.ctx.omfgContainer.clear();
-		this.ctx.ui.requestRender();
 	}
 
 	#isActiveRequest(request: OmfgRequest): boolean {

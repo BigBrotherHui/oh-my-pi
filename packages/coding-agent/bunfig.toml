@@ -1,0 +1,6 @@
+# Solid JSX transform + reactive solid-js resolution (see packages/tui/src/compiler).
+# Bun only reads the bunfig in the cwd, so each package that runs TSX needs this preload.
+preload = ["../tui/src/compiler/register.ts"]
+
+[test]
+preload = ["../tui/src/compiler/register.ts"]

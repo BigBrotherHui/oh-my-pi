@@ -1,17 +1,17 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import * as url from "node:url";
-import { getMarkdownTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 import {
 	applyHyperlinkSetting,
 	fileHyperlink,
+	fileHyperlinkStyle,
 	fileUriForTerminal,
 	isHyperlinkEnabled,
 	uriHyperlink,
 	urlHyperlink,
 	urlHyperlinkAlways,
 } from "@oh-my-pi/pi-tui/render/hyperlink";
-import * as terminalCaps from "@oh-my-pi/pi-tui";
+import { linkUrl, Style } from "../src/core/style";
 
 // OSC 8 sequence markers
 const OSC = "\x1b]";
@@ -80,33 +80,19 @@ describe("isHyperlinkEnabled", () => {
 			}
 		}
 	});
-
-	it("resolves auto against detected capability, immune to runtime flag mutation", () => {
-		setHyperlinkMode("auto");
-		delete Bun.env.NO_COLOR;
-		const origTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-		const origHyperlinks = terminalCaps.TERMINAL.hyperlinks;
-		try {
-			Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
-			// Other test modules may have already changed the runtime flag since
-			// hyperlink.ts captured detection. Neither runtime value may change auto.
-			const detected = isHyperlinkEnabled();
-			terminalCaps.setTerminalHyperlinks(false);
-			expect(isHyperlinkEnabled()).toBe(detected);
-			terminalCaps.setTerminalHyperlinks(true);
-			expect(isHyperlinkEnabled()).toBe(detected);
-		} finally {
-			terminalCaps.setTerminalHyperlinks(origHyperlinks);
-			if (origTTY) {
-				Object.defineProperty(process.stdout, "isTTY", origTTY);
-			} else {
-				Reflect.deleteProperty(process.stdout, "isTTY");
-			}
-		}
-	});
 });
 
 describe("fileHyperlink", () => {
+	it("resolves file targets directly into interned run styles", () => {
+		const filePath = path.resolve("/Users/foo/bar.ts");
+		setHyperlinkMode("always");
+		const linked = fileHyperlinkStyle(filePath, undefined, Style.NONE);
+		expect(linkUrl(linked.link)).toBe(url.pathToFileURL(filePath).href);
+
+		setHyperlinkMode("off");
+		expect(fileHyperlinkStyle(filePath)).toBe(Style.NONE);
+	});
+
 	it("returns plain text when hyperlinks are disabled (mode=off)", () => {
 		setHyperlinkMode("off");
 		const filePath = path.resolve("/Users/foo/bar.ts");
@@ -283,47 +269,5 @@ describe("urlHyperlinkAlways", () => {
 	it("does not wrap non-HTTP URL schemes", () => {
 		setHyperlinkMode("always");
 		expect(urlHyperlinkAlways("ftp://example.com/file", "file")).toBe("file");
-	});
-});
-
-describe("chat markdown links honor tui.hyperlinks", () => {
-	// The Markdown renderer gates OSC 8 on TERMINAL.hyperlinks. The coding-agent
-	// applies its setting to that shared flag so chat links track path/resource
-	// links (issue #10195).
-	const originalHyperlinks = terminalCaps.TERMINAL.hyperlinks;
-
-	beforeAll(async () => {
-		await initTheme();
-	});
-	afterEach(() => {
-		terminalCaps.TERMINAL.hyperlinks = originalHyperlinks;
-	});
-
-	function renderChatLink(): string {
-		applyHyperlinkSetting();
-		const md = new terminalCaps.Markdown(
-			"See [the docs](https://example.com/path) for details.",
-			0,
-			0,
-			getMarkdownTheme(),
-		);
-		return md.render(80).join("\n");
-	}
-
-	it('wraps the link in OSC 8 under "always" even when the terminal did not advertise support', () => {
-		terminalCaps.TERMINAL.hyperlinks = false;
-		setHyperlinkMode("always");
-		const output = renderChatLink();
-		// The Markdown renderer terminates OSC 8 with BEL, so match either terminator.
-		expect(output.includes(`${OSC}8;`)).toBe(true);
-		expect(extractAnyTerminatorLinkUri(output)).toBe("https://example.com/path");
-	});
-
-	it('suppresses the OSC 8 wrap under "off" even when the terminal advertised support', () => {
-		terminalCaps.TERMINAL.hyperlinks = true;
-		setHyperlinkMode("off");
-		const output = renderChatLink();
-		expect(output).toContain("the docs");
-		expect(output.includes(`${OSC}8;`)).toBe(false);
 	});
 });

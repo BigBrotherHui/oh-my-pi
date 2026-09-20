@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
@@ -29,10 +30,12 @@ describe("InteractiveMode tiny-title prewarm", () => {
 		initTheme();
 		tempDir = TempDir.createSync("@pi-interactive-mode-title-prewarm-");
 		authStorage = createInMemoryAuthStorage();
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 	});
 
 	beforeEach(async () => {
+		vi.spyOn(vcs, "watch").mockReturnValue(() => {});
 		// Keep ProcessTerminal.start() from writing escape queries to the real
 		// terminal; the test only drives the mode API, not real terminal I/O.
 		vi.spyOn(process.stdout, "write").mockReturnValue(true);
@@ -67,9 +70,6 @@ describe("InteractiveMode tiny-title prewarm", () => {
 			modelRegistry,
 		});
 		mode = new InteractiveMode(session, "test", undefined, () => {}, [], undefined, undefined);
-		// A real fs.watch on repo HEAD in a parallel Bun worker can trip a Bun
-		// SIGTRAP in the suite; this contract does not need branch watching.
-		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 	});
 
 	afterEach(async () => {

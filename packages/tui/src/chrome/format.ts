@@ -1,12 +1,14 @@
-import { renderProgressBar } from "../components/progress-bar";
-import { shimmerText } from "../theme/shimmer";
+import { paintShimmerText } from "../theme/shimmer";
 import { theme as currentTheme, type Theme } from "../theme/theme";
+import { emitRows } from "../core/emit";
+import { RichText } from "../core/richtext";
+import { DEFAULT_COLOR, Style } from "../core/style";
 
 /** Title-case a provider id for display (`openai-codex` → `Openai Codex`). */
 export function formatProviderName(provider: string): string {
 	return provider
 		.split(/[-_]/g)
-		.map(part => (part ? part[0].toUpperCase() + part.slice(1) : ""))
+		.map(part => (part ? part[0]!.toUpperCase() + part.slice(1) : ""))
 		.join(" ");
 }
 
@@ -18,49 +20,32 @@ export function formatCoarseDuration(ms: number): string {
 	if (minutes < 60) return `${minutes}m`;
 	const hours = Math.round(minutes / 60);
 	if (hours < 48) return `${hours}h`;
-	const days = Math.round(hours / 24);
-	return `${days}d`;
+	return `${Math.round(hours / 24)}d`;
 }
 
-type ProgressBarTheme = Pick<Theme, "bold" | "fg" | "getFgAnsi">;
+type ProgressBarTheme = Pick<Theme, "fgColor">;
 
 const unstyledProgressBarTheme: ProgressBarTheme = {
-	fg(_color, text) {
-		return text;
-	},
-	bold(text) {
-		return text;
-	},
-	getFgAnsi() {
-		return "";
+	fgColor() {
+		return DEFAULT_COLOR;
 	},
 };
 
-function resolveProgressBarTheme(uiTheme: ProgressBarTheme | undefined): ProgressBarTheme {
-	return uiTheme ?? currentTheme ?? unstyledProgressBarTheme;
-}
-
-/**
- * Render an ASCII progress bar with a trailing percent label.
- * `fraction` is clamped to `[0, 1]`. `undefined` renders a dotted placeholder.
- */
+/** Compatibility wrapper retained for coding-agent's plain-text reports. */
 export function renderAsciiBar(fraction: number | undefined, width = 24, uiTheme?: ProgressBarTheme): string {
-	const progressBarTheme = resolveProgressBarTheme(uiTheme);
-	const shimmer = (text: string): string => shimmerText(text, progressBarTheme);
-	if (fraction === undefined) {
-		return renderProgressBar(undefined, width, {
-			prefix: "[",
-			suffix: "]",
-			style: { filled: "·", empty: "·", indeterminate: "·", styleBar: shimmer },
-		});
-	}
-	return renderProgressBar(fraction, width, {
-		min: 0,
-		max: 1,
-		prefix: "[",
-		suffix: "]",
-		showPercentage: true,
-		formatPercentage: value => `${Math.round(value * 100)}%`,
-		style: { filled: "█", empty: "░", styleBar: shimmer },
-	});
+	const progressBarTheme = uiTheme ?? currentTheme ?? unstyledProgressBarTheme;
+	const bounded = Math.max(0, Math.trunc(width));
+	const clamped = fraction === undefined ? undefined : Math.max(0, Math.min(1, fraction));
+	const filled = clamped === undefined ? 0 : Math.round(clamped * bounded);
+	const bar = clamped === undefined ? "·".repeat(bounded) : `${"█".repeat(filled)}${"░".repeat(bounded - filled)}`;
+	const rich = new RichText();
+	rich.push(Style.NONE, "[");
+	paintShimmerText(rich, bar, progressBarTheme);
+	rich.push(Style.NONE, clamped === undefined ? "]" : `] ${Math.round(clamped * 100)}%`);
+	rich.br();
+	return (
+		emitRows(rich, {
+			mode: typeof currentTheme === "undefined" ? "truecolor" : currentTheme.getColorMode(),
+		})[0] ?? ""
+	);
 }

@@ -12,7 +12,7 @@ import {
 	isLightTheme,
 	setThemeInstance,
 } from "@oh-my-pi/pi-tui/theme";
-import { Editor } from "@oh-my-pi/pi-tui";
+import { DEFAULT_COLOR, parseColor } from "@oh-my-pi/pi-tui/core/style";
 import { getAgentDir, getCustomThemesDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 function createBaseThemes() {
@@ -76,10 +76,11 @@ describe("empty foreground contrast", () => {
 		);
 		try {
 			setThemeInstance(terminalDefault);
-			const surfaceColor = getEditorTheme().surfaceColor;
-			if (!surfaceColor) throw new Error("Editor surface color is unavailable");
+			const surfaceStyle = getEditorTheme().surfaceStyle;
+			if (!surfaceStyle) throw new Error("Editor surface style is unavailable");
 
-			expect(surfaceColor("typed")).toBe("\x1b[49m\x1b[39mtyped\x1b[39m\x1b[49m");
+			expect(surfaceStyle.fg).toBe(DEFAULT_COLOR);
+			expect(surfaceStyle.bg).toBe(DEFAULT_COLOR);
 		} finally {
 			setThemeInstance(dark);
 		}
@@ -89,57 +90,11 @@ describe("empty foreground contrast", () => {
 		const { light, dark } = createBaseThemes();
 		try {
 			setThemeInstance(light);
-			const surfaceColor = getEditorTheme().surfaceColor;
-			if (!surfaceColor) throw new Error("Editor surface color is unavailable");
+			const surfaceStyle = getEditorTheme().surfaceStyle;
+			if (!surfaceStyle) throw new Error("Editor surface style is unavailable");
 
-			expect(surfaceColor("typed")).toContain("\x1b[48;2;232;232;232m\x1b[38;2;0;0;0mtyped");
-		} finally {
-			setThemeInstance(dark);
-		}
-	});
-
-	it("uses the normal text token for transparent composer text", () => {
-		const { dark } = createBaseThemes();
-		const poimandresJson = getBuiltinThemes()["light-poimandres"];
-		if (!poimandresJson) throw new Error("Light Poimandres theme is unavailable");
-		try {
-			// poimandres `text` is #506477 → rgb(80,100,119); a transparent composer
-			// must paint typed text with it, never the `userMessageText` (#ffffff)
-			// reserved for the painted message background.
-			setThemeInstance(createTheme(poimandresJson, { mode: "truecolor" }));
-			const editor = new Editor(getEditorTheme());
-			editor.setText("typed");
-
-			expect(editor.render(40).join("\n")).toContain("\x1b[38;2;80;100;119mtyped");
-		} finally {
-			setThemeInstance(dark);
-		}
-	});
-
-	it("keeps filled composer text contrasted against its painted surface", () => {
-		const { dark } = createBaseThemes();
-		try {
-			setThemeInstance(createTheme(defaultThemes.porcelain, { mode: "truecolor" }));
-			const editor = new Editor(getEditorTheme());
-			editor.setBorderStyle("field");
-			editor.setText("typed");
-
-			expect(editor.render(40).join("\n")).toContain("\x1b[48;2;80;112;160m\x1b[38;2;229;229;231m typed");
-		} finally {
-			setThemeInstance(dark);
-		}
-	});
-
-	it("reapplies the editor surface foreground after nested decorator resets", () => {
-		const { light, dark } = createBaseThemes();
-		try {
-			setThemeInstance(light);
-			const surfaceColor = getEditorTheme().surfaceColor;
-			if (!surfaceColor) throw new Error("Editor surface color is unavailable");
-
-			const styled = surfaceColor("before\x1b[39mafter-default\x1b[0mafter-full");
-			expect(styled).toContain("\x1b[39m\x1b[38;2;0;0;0mafter-default");
-			expect(styled).toContain("\x1b[0m\x1b[48;2;232;232;232m\x1b[38;2;0;0;0mafter-full");
+			expect(surfaceStyle.fg).toBe(parseColor("#000000"));
+			expect(surfaceStyle.bg).toBe(parseColor("#e8e8e8"));
 		} finally {
 			setThemeInstance(dark);
 		}

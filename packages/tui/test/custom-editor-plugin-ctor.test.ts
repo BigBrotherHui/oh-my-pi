@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { ProcessTerminal, TUI } from "@oh-my-pi/pi-tui";
 import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
+import { renderToRows } from "../src/testing";
+import { EditorView } from "../src/components/editor";
 
 /**
  * Regression for issue #4766: plugins written against upstream pi subclass
@@ -17,9 +19,9 @@ describe("CustomEditor upstream-pi constructor compatibility (#4766)", () => {
 		const tui = new TUI(new ProcessTerminal());
 		const editor = new CustomEditor(tui, getEditorTheme(), {});
 		editor.setText("run this workflow");
-		expect(() => editor.render(80)).not.toThrow();
+		expect(() => renderToRows(() => EditorView({ editor }), 80)).not.toThrow();
 		// The rounded border glyphs from the resolved theme must reach the frame.
-		const frame = editor.render(80).join("\n");
+		const frame = renderToRows(() => EditorView({ editor }), 80).join("\n");
 		expect(frame).toContain(getEditorTheme().symbols.boxRound.horizontal);
 		// The leading TUI is captured so plugin overrides calling
 		// `this.tui.requestRender()` keep working.
@@ -30,7 +32,7 @@ describe("CustomEditor upstream-pi constructor compatibility (#4766)", () => {
 		await initTheme();
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setText("hello");
-		expect(() => editor.render(80)).not.toThrow();
+		expect(() => renderToRows(() => EditorView({ editor }), 80)).not.toThrow();
 		expect(editor.tui).toBeUndefined();
 	});
 });

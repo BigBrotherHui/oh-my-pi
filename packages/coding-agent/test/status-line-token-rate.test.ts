@@ -5,6 +5,7 @@ import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
 import type { SegmentContext } from "@oh-my-pi/pi-tui/status-line/types";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { calculateTokensPerSecond } from "@oh-my-pi/pi-coding-agent/utils/token-rate";
+import { renderStatus } from "./helpers/status-line";
 
 beforeAll(async () => {
 	await initTheme();
@@ -48,7 +49,7 @@ function ctxWithTokenRate(tokensPerSecond: number | null): SegmentContext {
 describe("token_rate status-line segment", () => {
 	it("renders per-second throughput without a numeric slash path", () => {
 		const rendered = renderSegment("token_rate", ctxWithTokenRate(35.5));
-		const content = stripVTControlCharacters(rendered.content);
+		const content = stripVTControlCharacters(renderStatus(rendered.content));
 
 		expect(rendered.visible).toBe(true);
 		expect(content).toContain("35.5");

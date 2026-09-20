@@ -11,6 +11,7 @@ import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { renderStatus, renderStatusLine } from "./helpers/status-line";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -92,7 +93,7 @@ describe("status line segment padding", () => {
 		const component = makeComponent();
 		try {
 			component.markActivityStart();
-			const bar = component.renderBottomBar(80, "full");
+			const bar = renderStatusLine(component, 80, "plain-full");
 			expect(firstSeparatorGap(bar)).toEqual({ before: 1, after: 1 });
 		} finally {
 			component.dispose();
@@ -102,7 +103,7 @@ describe("status line segment padding", () => {
 	it("keeps a single-space gap at the first separator when idle", () => {
 		const component = makeComponent();
 		try {
-			const bar = component.renderBottomBar(80, "full");
+			const bar = renderStatusLine(component, 80, "plain-full");
 			expect(firstSeparatorGap(bar)).toEqual({ before: 1, after: 1 });
 		} finally {
 			component.dispose();

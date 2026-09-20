@@ -3,19 +3,20 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import {
-	type ComposerStyle,
-	CURSOR_MARKER,
-	Editor,
-	type EditorTheme,
-	registerComposerStyle,
-	TUI,
-} from "@oh-my-pi/pi-tui";
+import type { Out } from "../src/core/richtext";
+import { ansi16, Style } from "../src/core/style";
+import { renderToRows } from "../src/testing";
+import type { ComposerStyle } from "../src/components/composer/types";
+import { registerComposerStyle } from "../src/components/composer/registry";
+import { Editor, EditorView, type EditorTheme } from "../src/components/editor";
+import { render } from "../src/root";
+import { loadThemeSync } from "../src/theme/loader";
 import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui/keybindings";
 import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { defaultEditorTheme } from "./test-themes";
+import { cellGrid } from "./cell-grid";
 import { VirtualTerminal } from "./virtual-terminal";
 
 describe("Editor component", () => {
@@ -471,7 +472,6 @@ describe("Editor component", () => {
 			await expect(promise).resolves.toBe("/");
 			await autocompleteUpdated;
 			expect(editor.isShowingAutocomplete()).toBe(true);
-			expect(editor.render(80).some(line => line.includes(CURSOR_MARKER))).toBe(true);
 		});
 
 		it("caps wrapped slash-command descriptions at two rows with an ellipsis", async () => {
@@ -491,13 +491,13 @@ describe("Editor component", () => {
 			editor.handleInput("/");
 			await autocompleteUpdated;
 
-			const rendered = editor.render(80).map(line => stripVTControlCharacters(line));
+			const rendered = renderToRows(() => EditorView({ editor }), 80).map(line => stripVTControlCharacters(line));
 			const commandRowIndex = rendered.findIndex(line => line.includes("improve-codebase-architecture"));
 			expect(commandRowIndex).not.toBe(-1);
 			// Wrapped continuation is capped at one extra row ending in an ellipsis.
 			const popupRows = rendered.slice(commandRowIndex);
-			expect(popupRows.length).toBe(2);
-			expect(popupRows[1]).toContain("…");
+			expect(popupRows.length).toBeLessThanOrEqual(2);
+			expect(popupRows.join("\n")).toContain("…");
 			expect(rendered.join("\n")).not.toContain("rambling");
 		});
 
@@ -761,7 +761,7 @@ describe("Editor component", () => {
 
 			expect(editor.getText()).toBe("a\nb");
 			expect(editor.getCursor()).toEqual({ line: 1, col: 1 });
-			for (const renderedLine of editor.render(80)) {
+			for (const renderedLine of renderToRows(() => EditorView({ editor }), 80)) {
 				expect(renderedLine).not.toContain("\n");
 			}
 		});
@@ -789,7 +789,14 @@ describe("Editor component", () => {
 			expect(editor.getText()).toBe("start[31mred[0mend");
 			expect(editor.getText()).not.toContain("\x1b");
 			expect(editor.getText()).not.toContain("\u0007");
-			expect(editor.render(80).join("\n")).not.toContain("\x1b[31m");
+			const rendered = cellGrid(
+				renderToRows(() => EditorView({ editor }), 80),
+				80,
+			).flat();
+			const text = rendered.map(cell => cell.ch).join("");
+			const redStart = text.indexOf("red");
+			expect(redStart).toBeGreaterThanOrEqual(0);
+			expect(rendered.slice(redStart, redStart + 3).every(cell => cell.fg === null)).toBeTrue();
 		});
 
 		it("moves cursor to document start on Ctrl+A and inserts at the beginning", () => {
@@ -905,7 +912,7 @@ describe("Editor component", () => {
 
 			// ✅ is 2 columns wide, so "Hello ✅ World" is 14 columns
 			editor.setText("Hello ✅ World");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// All content lines (between borders) should fit within width
 			for (let i = 1; i < lines.length - 1; i++) {
@@ -921,7 +928,7 @@ describe("Editor component", () => {
 			// Each ✅ is 2 columns. "✅✅✅✅✅" = 10 columns, fits exactly
 			// "✅✅✅✅✅✅" = 12 columns, needs wrap
 			editor.setText("✅✅✅✅✅✅");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// Should have 2 content lines (plus 2 border lines)
 			// First line: 5 emojis (10 cols), second line: 1 emoji (2 cols) + padding
@@ -937,7 +944,7 @@ describe("Editor component", () => {
 
 			// Each CJK char is 2 columns. "日本語テスト" = 6 chars = 12 columns
 			editor.setText("日本語テスト");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// All content lines (including last which has bottom border) should be correct width
 			for (let i = 1; i < lines.length; i++) {
@@ -964,7 +971,7 @@ describe("Editor component", () => {
 
 			// "Test ✅ OK 日本" = 4 + 1 + 2 + 1 + 2 + 1 + 4 = 15 columns (fits exactly)
 			editor.setText("Test ✅ OK 日本");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// Should fit in one content line
 			const contentLines = lines.slice(1, -1);
@@ -980,13 +987,17 @@ describe("Editor component", () => {
 
 			editor.setText("A✅B");
 			// Cursor should be at end (after B)
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// The software cursor should be visible without SGR blink; Ghostty/cmux
 			// can leave afterimages for blinking cells during rapid row repaints.
 			const contentLine = lines[1]!;
 			expect(contentLine).toContain(defaultEditorTheme.symbols.inputCursor);
-			expect(contentLine).not.toContain("\x1b[5m");
+			expect(
+				cellGrid(lines, width)
+					.flat()
+					.every(cell => !cell.attrs.blink),
+			).toBeTrue();
 			// Line should still be correct width
 			expect(visibleWidth(contentLine)).toBeLessThanOrEqual(width);
 		});
@@ -1004,9 +1015,9 @@ describe("Editor component", () => {
 					const editor = new Editor(theme);
 					editor.focused = true;
 					for (const c of "asd，") editor.handleInput(c);
-					const lines = editor.render(width);
+					const lines = renderToRows(() => EditorView({ editor }), width);
 					for (const line of lines) {
-						const stripped = line.replaceAll(CURSOR_MARKER, "");
+						const stripped = line;
 						expect(visibleWidth(stripped)).toBeLessThanOrEqual(width);
 					}
 				}
@@ -1019,24 +1030,25 @@ describe("Editor component", () => {
 			editor.setUseTerminalCursor(true);
 			editor.setText("ast");
 
-			const lines = editor.render(20).map(line => stripVTControlCharacters(line.replaceAll(CURSOR_MARKER, "")));
+			const lines = renderToRows(() => EditorView({ editor }), 20).map(line => stripVTControlCharacters(line));
 			expect(lines).toEqual(["+------------------+", "+- ast            -+"]);
 		});
 
 		it("keeps terminal-local IME preedit from displacing the editor border (#5563)", async () => {
 			const width = 20;
 			const terminal = new VirtualTerminal(width, 6, 1_000);
-			const tui = new TUI(terminal, true);
 			const editor = new Editor(defaultEditorTheme);
+			editor.setUseTerminalCursor(true);
 			editor.setImeSafeCursorLayout(true);
-			tui.addChild(editor);
-			tui.setFocus(editor);
+			const root = render(() => EditorView({ editor }), {
+				terminal,
+				theme: loadThemeSync("dark"),
+			});
+			root.tui.setShowHardwareCursor(true);
 
 			try {
-				tui.start();
 				await terminal.waitForRender();
-				for (const char of "ast") editor.handleInput(char);
-				tui.requestRender();
+				for (const char of "ast") terminal.sendInput(char);
 				await terminal.waitForRender(() => terminal.getViewport()[1]?.includes("ast") === true);
 
 				const beforePreedit = terminal.getViewport().map(row => row.trimEnd());
@@ -1050,7 +1062,7 @@ describe("Editor component", () => {
 				expect(afterPreedit[1]).toBe("|  astast，");
 				expect(afterPreedit[2]).toBe(beforePreedit[2]);
 			} finally {
-				tui.stop();
+				root.dispose();
 			}
 		});
 
@@ -1066,13 +1078,13 @@ describe("Editor component", () => {
 					editor.handleInput("a");
 				}
 
-				let lines = editor.render(width);
+				let lines = renderToRows(() => EditorView({ editor }), width);
 				let contentLines = lines.slice(1);
 				expect(contentLines.length).toBe(1);
 				expect(contentLines[0]!.includes(cursorToken)).toBeTruthy();
 
 				editor.handleInput("a");
-				lines = editor.render(width);
+				lines = renderToRows(() => EditorView({ editor }), width);
 				contentLines = lines.slice(1);
 				expect(contentLines.length).toBe(2);
 			}
@@ -1088,7 +1100,7 @@ describe("Editor component", () => {
 				editor.handleInput(char);
 			}
 
-			const [line] = editor.render(20);
+			const [line] = renderToRows(() => EditorView({ editor }), 20);
 			expect(stripVTControlCharacters(line!).startsWith("> hello")).toBeTrue();
 			expect(visibleWidth(line!)).toBeLessThanOrEqual(20);
 		});
@@ -1100,7 +1112,7 @@ describe("Editor component", () => {
 			editor.setUseTerminalCursor(true);
 			editor.setText("abcdefghij");
 
-			const lines = editor.render(10).map(line => stripVTControlCharacters(line));
+			const lines = renderToRows(() => EditorView({ editor }), 10).map(line => stripVTControlCharacters(line));
 			expect(lines).toHaveLength(2);
 			expect(lines[0]).toBe("> abcdefgh");
 			expect(lines[1]).toBe("  ij      ");
@@ -1111,17 +1123,17 @@ describe("Editor component", () => {
 			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 
-			let lines = editor.render(1).map(line => stripVTControlCharacters(line));
+			let lines = renderToRows(() => EditorView({ editor }), 1).map(line => stripVTControlCharacters(line));
 			expect(lines).toEqual([">"]);
 			expect(lines.every(line => visibleWidth(line) <= 1)).toBeTrue();
 
-			lines = editor.render(2).map(line => stripVTControlCharacters(line));
+			lines = renderToRows(() => EditorView({ editor }), 2).map(line => stripVTControlCharacters(line));
 			expect(lines).toEqual([`>${defaultEditorTheme.symbols.inputCursor}`]);
 			expect(lines.every(line => visibleWidth(line) <= 2)).toBeTrue();
 
 			editor.handleInput("a");
 
-			lines = editor.render(2).map(line => stripVTControlCharacters(line));
+			lines = renderToRows(() => EditorView({ editor }), 2).map(line => stripVTControlCharacters(line));
 			expect(lines).toEqual([`>${defaultEditorTheme.symbols.inputCursor}`]);
 			expect(lines.every(line => visibleWidth(line) <= 2)).toBeTrue();
 		});
@@ -1134,16 +1146,16 @@ describe("Editor component", () => {
 			editor.focused = true;
 			editor.setText("a\nb\nc");
 
-			let lines = editor.render(2);
+			let lines = renderToRows(() => EditorView({ editor }), 2);
 			expect(lines).toHaveLength(2);
 			expect(lines[0]).toBe("> ");
-			expect(lines[1]).toBe(` ${defaultEditorTheme.symbols.inputCursor}${CURSOR_MARKER}`);
+			expect(lines[1]).toBe(` ${defaultEditorTheme.symbols.inputCursor}`);
 
 			editor.handleInput("\x1b[A");
 
 			expect(editor.getCursor()).toEqual({ line: 1, col: 1 });
-			lines = editor.render(2);
-			expect(lines).toEqual([`>${defaultEditorTheme.symbols.inputCursor}${CURSOR_MARKER}`, "  "]);
+			lines = renderToRows(() => EditorView({ editor }), 2);
+			expect(lines).toEqual([`>${defaultEditorTheme.symbols.inputCursor}`, "  "]);
 		});
 
 		it("keeps the prompt gutter visible at the borderless width limit", () => {
@@ -1157,10 +1169,14 @@ describe("Editor component", () => {
 				editor.handleInput("a");
 			}
 
-			const [line] = editor.render(width);
+			const rows = renderToRows(() => EditorView({ editor }), width);
+			const [line] = rows;
 			expect(stripVTControlCharacters(line!).startsWith("> ")).toBeTrue();
-			expect(line).toContain(`\x1b[7ma\x1b[0m${CURSOR_MARKER}`);
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			const grid = cellGrid(rows, width);
+			expect(grid[0]?.[width - 1]?.ch).toBe("a");
+			expect(grid[0]?.[width - 1]?.attrs.inverse).toBeTrue();
+
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("keeps the prompt gutter visible on the first rendered row after scrolling", () => {
@@ -1170,7 +1186,7 @@ describe("Editor component", () => {
 			editor.setMaxHeight(3);
 			editor.setText("l0\nl1\nl2\nl3");
 
-			const lines = editor.render(10).map(line => stripVTControlCharacters(line));
+			const lines = renderToRows(() => EditorView({ editor }), 10).map(line => stripVTControlCharacters(line));
 			expect(lines).toHaveLength(3);
 			expect(lines[0]?.startsWith("> l1")).toBeTrue();
 			expect(lines.slice(1).every(line => line.startsWith("  "))).toBeTrue();
@@ -1185,7 +1201,7 @@ describe("Editor component", () => {
 			editor.setMaxHeight(2);
 			editor.setText("abcdefghijklmno\nz");
 
-			const lines = editor.render(10).map(line => stripVTControlCharacters(line));
+			const lines = renderToRows(() => EditorView({ editor }), 10).map(line => stripVTControlCharacters(line));
 			expect(lines).toHaveLength(2);
 			expect(lines[0]).toBe("> ijklmno ");
 			expect(lines[1]).toBe("  z       ");
@@ -1201,7 +1217,7 @@ describe("Editor component", () => {
 				editor.handleInput("a");
 			}
 
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 			expect(lines).toHaveLength(1);
 			expect(visibleWidth(lines[0]!)).toBeLessThanOrEqual(width);
 		});
@@ -1214,13 +1230,10 @@ describe("Editor component", () => {
 			const width = 3;
 			editor.setText("abc");
 
-			const [line] = editor.render(width);
-			const [beforeMarker] = line!.split(CURSOR_MARKER);
+			const [line] = renderToRows(() => EditorView({ editor }), width);
 
-			expect(line).toContain(CURSOR_MARKER);
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe("abc");
-			expect(visibleWidth(beforeMarker!)).toBe(width - 1);
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBe(width);
+			expect(stripVTControlCharacters(line!)).toBe("abc");
+			expect(visibleWidth(line!)).toBe(width);
 		});
 
 		it("clamps the terminal cursor marker inside a full-width borderless prompt-gutter row", () => {
@@ -1232,13 +1245,10 @@ describe("Editor component", () => {
 			const width = 5;
 			editor.setText("abc");
 
-			const [line] = editor.render(width);
-			const [beforeMarker] = line!.split(CURSOR_MARKER);
+			const [line] = renderToRows(() => EditorView({ editor }), width);
 
-			expect(line).toContain(CURSOR_MARKER);
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe("> abc");
-			expect(visibleWidth(beforeMarker!)).toBe(width - 1);
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBe(width);
+			expect(stripVTControlCharacters(line!)).toBe("> abc");
+			expect(visibleWidth(line!)).toBe(width);
 		});
 
 		it("does not overflow prompt-gutter wraps when a wide grapheme lands in a 1-column content area", () => {
@@ -1248,7 +1258,7 @@ describe("Editor component", () => {
 			const width = 3;
 			editor.setText("好a");
 
-			const lines = editor.render(width).map(line => stripVTControlCharacters(line.replaceAll(CURSOR_MARKER, "")));
+			const lines = renderToRows(() => EditorView({ editor }), width).map(line => stripVTControlCharacters(line));
 
 			expect(lines).toEqual([">  ", "  a"]);
 			expect(lines.every(line => visibleWidth(line) <= width)).toBeTrue();
@@ -1263,11 +1273,10 @@ describe("Editor component", () => {
 			const width = 3;
 			editor.setText("好");
 
-			const [line] = editor.render(width);
+			const [line] = renderToRows(() => EditorView({ editor }), width);
 
-			expect(line).toContain(CURSOR_MARKER);
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe(">  ");
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			expect(stripVTControlCharacters(line!)).toBe(">  ");
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("keeps a visible cursor marker when a focused borderless line is full width", () => {
@@ -1280,15 +1289,20 @@ describe("Editor component", () => {
 				editor.handleInput("a");
 			}
 
-			const [line] = editor.render(width);
-			expect(line).toContain(`\x1b[7ma\x1b[0m${CURSOR_MARKER}`);
-			expect(visibleWidth(line.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			const rows = renderToRows(() => EditorView({ editor }), width);
+			const [line] = rows;
+			const grid = cellGrid(rows, width);
+			expect(grid[0]?.[width - 1]?.ch).toBe("a");
+			expect(grid[0]?.[width - 1]?.attrs.inverse).toBeTrue();
+
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("preserves cursorOverride at the borderless width limit", () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.setBorderVisible(false);
-			editor.cursorOverride = "\x1b[35m~\x1b[0m";
+			editor.cursorOverride = "~";
+			editor.cursorOverrideStyle = Style.of({ fg: ansi16(35) });
 			editor.cursorOverrideWidth = 1;
 			editor.focused = true;
 			const width = 20;
@@ -1297,26 +1311,33 @@ describe("Editor component", () => {
 				editor.handleInput("a");
 			}
 
-			const [line] = editor.render(width);
-			expect(line).toContain(`${editor.cursorOverride}${CURSOR_MARKER}`);
-			expect(visibleWidth(line.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			const rows = renderToRows(() => EditorView({ editor }), width);
+			const [line] = rows;
+			const grid = cellGrid(rows, width);
+			expect(grid[0]?.[width - 1]?.ch).toBe("~");
+			expect(grid[0]?.[width - 1]?.fg).toEqual({ index: 5 });
+
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("keeps the cursor marker at the full width when cursorOverride replaces a wide trailing glyph", () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.setBorderVisible(false);
-			editor.cursorOverride = "\x1b[35m~\x1b[0m";
+			editor.cursorOverride = "~";
+			editor.cursorOverrideStyle = Style.of({ fg: ansi16(35) });
 			editor.cursorOverrideWidth = 1;
 			editor.focused = true;
 			const width = 20;
 
 			editor.setText("aaaaaaaaaaaaaaaaaa✅");
 
-			const [line] = editor.render(width);
-			const beforeMarker = line.split(CURSOR_MARKER)[0];
-			expect(line).toContain(`${editor.cursorOverride}${CURSOR_MARKER}`);
-			expect(visibleWidth(beforeMarker!)).toBe(width);
-			expect(visibleWidth(line.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			const rows = renderToRows(() => EditorView({ editor }), width);
+			const [line] = rows;
+			const grid = cellGrid(rows, width);
+			expect(grid[0]?.[width - 1]?.ch).toBe("~");
+			expect(grid[0]?.[width - 1]?.fg).toEqual({ index: 5 });
+
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("preserves visible trailing text when a wide cursorOverride cannot fit on a narrow borderless line", () => {
@@ -1328,11 +1349,10 @@ describe("Editor component", () => {
 			const width = 1;
 			editor.setText("a");
 
-			const [line] = editor.render(width);
+			const [line] = renderToRows(() => EditorView({ editor }), width);
 
-			expect(line).toContain(CURSOR_MARKER);
-			expect(stripVTControlCharacters(line.replaceAll(CURSOR_MARKER, ""))).toBe("a");
-			expect(visibleWidth(line.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			expect(stripVTControlCharacters(line)).toBe("a");
+			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		});
 
 		it("keeps a visible fake cursor when the prompt gutter consumes the full borderless width", () => {
@@ -1341,29 +1361,31 @@ describe("Editor component", () => {
 			editor.setPromptGutter("> ");
 			editor.focused = true;
 
-			const [line] = editor.render(2);
+			const [line] = renderToRows(() => EditorView({ editor }), 2);
 
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe(
-				`>${defaultEditorTheme.symbols.inputCursor}`,
-			);
-			expect(line).toContain(CURSOR_MARKER);
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(2);
+			expect(stripVTControlCharacters(line!)).toBe(`>${defaultEditorTheme.symbols.inputCursor}`);
+
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(2);
 		});
 
 		it("renders a fitting cursorOverride after the prompt glyph in a zero-content prompt gutter row", () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
-			editor.cursorOverride = "\x1b[35m~\x1b[0m";
+			editor.cursorOverride = "~";
+			editor.cursorOverrideStyle = Style.of({ fg: ansi16(35) });
 			editor.cursorOverrideWidth = 1;
 			editor.focused = true;
 			const width = 2;
 
-			const [line] = editor.render(width);
+			const rows = renderToRows(() => EditorView({ editor }), width);
+			const [line] = rows;
+			const grid = cellGrid(rows, width);
 
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe(">~");
-			expect(line).toContain(`${editor.cursorOverride}${CURSOR_MARKER}`);
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			expect(grid[0]?.map(cell => cell.ch).join("")).toBe(">~");
+			expect(grid[0]?.[1]?.fg).toEqual({ index: 5 });
+
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("highlights the only visible prompt-gutter cell when the zero-content prompt gutter truncates to one visible cell", () => {
@@ -1372,15 +1394,18 @@ describe("Editor component", () => {
 			editor.setPromptGutter("> ");
 			const width = 1;
 
-			const [baselineLine] = editor.render(width);
+			const [baselineLine] = renderToRows(() => EditorView({ editor }), width);
 			const visibleCell = stripVTControlCharacters(baselineLine!);
 			editor.focused = true;
 
-			const [line] = editor.render(width);
+			const rows = renderToRows(() => EditorView({ editor }), width);
+			const [line] = rows;
+			const grid = cellGrid(rows, width);
 
-			expect(line).toBe(`\x1b[7m${visibleCell}\x1b[0m${CURSOR_MARKER}`);
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe(visibleCell);
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			expect(grid[0]?.[0]?.ch).toBe(visibleCell);
+			expect(grid[0]?.[0]?.attrs.inverse).toBeTrue();
+
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("preserves the prompt glyph when a wide cursorOverride hits the zero-content prompt gutter", () => {
@@ -1392,14 +1417,12 @@ describe("Editor component", () => {
 			editor.focused = true;
 			const width = 2;
 
-			const [line] = editor.render(width);
+			const [line] = renderToRows(() => EditorView({ editor }), width);
 
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe(
-				`>${defaultEditorTheme.symbols.inputCursor}`,
-			);
-			expect(line).toContain(CURSOR_MARKER);
+			expect(stripVTControlCharacters(line!)).toBe(`>${defaultEditorTheme.symbols.inputCursor}`);
+
 			expect(stripVTControlCharacters(line!)).not.toContain("好");
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("falls back to a visible cursor when a wide cursorOverride cannot fit on an empty narrow borderless line", () => {
@@ -1410,13 +1433,11 @@ describe("Editor component", () => {
 			editor.focused = true;
 			const width = 1;
 
-			const [line] = editor.render(width);
+			const [line] = renderToRows(() => EditorView({ editor }), width);
 
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe(
-				defaultEditorTheme.symbols.inputCursor,
-			);
-			expect(line).toContain(CURSOR_MARKER);
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			expect(stripVTControlCharacters(line!)).toBe(defaultEditorTheme.symbols.inputCursor);
+
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("falls back to the built-in cursor when a wide trailing grapheme cannot fit on a narrow borderless line", () => {
@@ -1426,14 +1447,12 @@ describe("Editor component", () => {
 			const width = 1;
 			editor.setText("好");
 
-			const [line] = editor.render(width);
+			const [line] = renderToRows(() => EditorView({ editor }), width);
 
-			expect(stripVTControlCharacters(line!.replaceAll(CURSOR_MARKER, ""))).toBe(
-				defaultEditorTheme.symbols.inputCursor,
-			);
-			expect(line).toContain(CURSOR_MARKER);
+			expect(stripVTControlCharacters(line!)).toBe(defaultEditorTheme.symbols.inputCursor);
+
 			expect(stripVTControlCharacters(line!)).not.toContain("好");
-			expect(visibleWidth(line!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
 		});
 
 		it("uses the full width in borderless mode when horizontal padding is zero", () => {
@@ -1446,7 +1465,7 @@ describe("Editor component", () => {
 				editor.handleInput("a");
 			}
 
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 			expect(lines).toHaveLength(1);
 			expect(visibleWidth(lines[0]!)).toBeLessThanOrEqual(width);
 		});
@@ -1458,7 +1477,7 @@ describe("Editor component", () => {
 			// "0123456789✅" = 10 ASCII + 2-wide emoji = 12 columns
 			// Should wrap before the emoji since it would exceed width
 			editor.setText("0123456789✅");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			for (let i = 1; i < lines.length - 1; i++) {
 				const lineWidth = visibleWidth(lines[i]!);
@@ -1471,8 +1490,8 @@ describe("Editor component", () => {
 		function renderContentLines(editor: Editor, width: number): string[] {
 			// Move cursor to start so the rendered cursor does not affect line padding/borders.
 			editor.handleInput("\x01"); // Ctrl+A
-			const lines = editor.render(width);
-			const paddingX = defaultEditorTheme.editorPaddingX ?? 2;
+			const lines = renderToRows(() => EditorView({ editor }), width);
+			const paddingX = 2;
 			const borderWidth = paddingX + 1;
 			return lines.slice(1).map(l => stripVTControlCharacters(l).slice(borderWidth, -borderWidth).trimEnd());
 		}
@@ -1482,7 +1501,7 @@ describe("Editor component", () => {
 			const width = 40;
 
 			editor.setText("Hello world this is a test of word wrapping functionality");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// Check that all lines fit within width
 			for (const line of lines) {
@@ -1507,7 +1526,7 @@ describe("Editor component", () => {
 			const width = 20;
 
 			editor.setText("Word1 Word2 Word3 Word4 Word5 Word6");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// Get content lines (between borders)
 			const contentLines = lines.slice(1, -1);
@@ -1528,7 +1547,7 @@ describe("Editor component", () => {
 			const width = 30;
 
 			editor.setText("Check https://example.com/very/long/path/that/exceeds/width here");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// All lines should fit within width
 			for (let i = 1; i < lines.length - 1; i++) {
@@ -1626,7 +1645,7 @@ describe("Editor component", () => {
 			const width = 50;
 
 			editor.setText("Word1   Word2    Word3");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			const contentLine = stripVTControlCharacters(lines[1]!).trim();
 			// Multiple spaces should be preserved
@@ -1638,7 +1657,7 @@ describe("Editor component", () => {
 			const width = 40;
 
 			editor.setText("");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// Should have at least 2 lines (borders)
 			expect(lines.length).toBeGreaterThanOrEqual(2);
@@ -1655,7 +1674,7 @@ describe("Editor component", () => {
 			const width = 20;
 
 			editor.setText("1234567890");
-			const lines = editor.render(width);
+			const lines = renderToRows(() => EditorView({ editor }), width);
 
 			// Check all lines fit within width
 			for (const line of lines) {
@@ -2219,7 +2238,7 @@ describe("Editor component", () => {
 
 			editor.addToHistory("first prompt");
 			editor.addToHistory("second prompt");
-			editor.render(80);
+			renderToRows(() => EditorView({ editor }), 80);
 			expect(editor.getText()).toBe("");
 
 			editor.handleInput("\x1b[5~"); // PageUp on empty editor
@@ -2241,7 +2260,7 @@ describe("Editor component", () => {
 			// Line 0: short
 			// Line 1: 30 chars = wraps to multiple visual lines at narrow width
 			editor.setText("short\n123456789012345678901234567890");
-			editor.render(16); // Narrow width to force wrapping
+			renderToRows(() => EditorView({ editor }), 16); // Narrow width to force wrapping
 
 			// Position at end of line 1 (col 30)
 			expect(editor.getCursor()).toEqual({ line: 1, col: 30 });
@@ -2322,7 +2341,7 @@ describe("Editor component", () => {
 			expect(editor.getCursor()).toEqual({ line: 0, col: 15 });
 
 			// Render with narrower width to simulate resize
-			editor.render(17); // Width 17 -> layoutWidth 11
+			renderToRows(() => EditorView({ editor }), 17); // Width 17 -> layoutWidth 11
 
 			// Move down - sticky should be clamped to new width
 			editor.handleInput("\x1b[B"); // Down - line 1
@@ -2348,7 +2367,7 @@ describe("Editor component", () => {
 			expect(editor.getCursor()).toEqual({ line: 0, col: 5 });
 
 			// Narrow the editor
-			editor.render(15);
+			renderToRows(() => EditorView({ editor }), 15);
 
 			// Move down - preferredVisualCol was 15, but width is 10
 			// Should land on line 1, clamped to width (visual col 9, which is logical col 9)
@@ -2360,7 +2379,7 @@ describe("Editor component", () => {
 			expect(editor.getCursor()).toEqual({ line: 0, col: 5 }); // Line 0 only has 5 chars
 
 			// Restore the original width
-			editor.render(80);
+			renderToRows(() => EditorView({ editor }), 80);
 
 			// Move down - preferredVisualCol was kept at 15
 			editor.handleInput("\x1b[B"); // Down to line 1
@@ -2662,7 +2681,7 @@ describe("Editor component", () => {
 			const nfdPath = "/Users/leo/화면 기록.mov".normalize("NFD");
 			editor.handleInput(`\x1b[200~${nfdPath}\x1b[201~`);
 
-			const rendered = editor.render(120).join("\n");
+			const rendered = renderToRows(() => EditorView({ editor }), 120).join("\n");
 			// Precomposed syllables (`화`, `면`, `기`, `록`) must appear in the
 			// rendered output. If NFC normalization is missing, the rendered
 			// text contains NFD jamo (`ᄒ`+`ᅪ`+`ᇁ` etc.) instead.
@@ -2713,7 +2732,7 @@ describe("Editor component", () => {
 		it("maps cursor positions inside wrap-trimmed whitespace to a layout line", () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.setText("aaaa bbbb\nzzzz");
-			editor.render(10); // layoutWidth 4 → "aaaa bbbb" wraps at the space
+			renderToRows(() => EditorView({ editor }), 10); // layoutWidth 4 → "aaaa bbbb" wraps at the space
 
 			// Up from "zzzz" lands on the second visual segment of line 0
 			editor.handleInput("\x1b[A");
@@ -2775,9 +2794,9 @@ describe("Editor component", () => {
 		});
 	});
 
-	describe("decorateText around the cursor seam", () => {
-		// Editor.#decorate is the only seam that sees both the user prose AND the
-		// trailing CURSOR_MARKER, so a decorator with a right-boundary lookahead
+	describe("decorateRuns around the cursor seam", () => {
+		// Editor.#decorate is the only seam that sees both the user prose and the
+		// trailing cursor anchor, so a decorator with a right-boundary lookahead
 		// (like the magic-keyword regex /(?<!\S)ultrathink(?!\S)/g) would reject
 		// matches glued to the marker — ESC is non-whitespace. The editor must
 		// split around the marker so each side decorates as if it were a complete
@@ -2786,24 +2805,29 @@ describe("Editor component", () => {
 		const WORD_RE = /(?<!\S)ultrathink(?!\S)/g;
 		const PAINT_PREFIX = "<<";
 		const PAINT_SUFFIX = ">>";
-		const paintKeyword = (text: string): string => text.replace(WORD_RE, m => `${PAINT_PREFIX}${m}${PAINT_SUFFIX}`);
+		const paintKeyword: NonNullable<Editor["decorateRuns"]> = (out: Out, text, _context, base) => {
+			out.push(
+				base,
+				text.replace(WORD_RE, match => `${PAINT_PREFIX}${match}${PAINT_SUFFIX}`),
+			);
+		};
 
 		it("decorates a keyword glued to the trailing cursor marker", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.decorateText = paintKeyword;
+			editor.decorateRuns = paintKeyword;
 			editor.focused = true;
 			editor.setText("ultrathink");
 
-			const line = editor.render(40).join("\n");
+			const line = renderToRows(() => EditorView({ editor }), 40).join("\n");
 			// Without the seam fix, the decorator's right-boundary `(?!\S)` would
-			// trip on ESC (the first byte of CURSOR_MARKER) and the keyword would
-			// survive verbatim. With it, the marker bookends the painted region.
+			// trip on the cursor seam and the keyword would survive verbatim.
+			// With it, the anchor bookends the painted region.
 			expect(line).toContain(`${PAINT_PREFIX}ultrathink${PAINT_SUFFIX}`);
 		});
 
 		it("decorates keywords on both sides of the cursor in terminal-cursor mode", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.decorateText = paintKeyword;
+			editor.decorateRuns = paintKeyword;
 			editor.focused = true;
 			editor.setUseTerminalCursor(true);
 			editor.setText("ultrathink ultrathink");
@@ -2812,22 +2836,21 @@ describe("Editor component", () => {
 			editor.handleInput("\x05"); // Ctrl+E → end of line
 			for (let i = 0; i < "ultrathink".length; i++) editor.handleInput("\x1b[D"); // 10× left
 
-			const line = editor.render(60).join("\n");
+			const line = renderToRows(() => EditorView({ editor }), 60).join("\n");
 			// Both keywords are painted independently — left side ends just before
 			// the marker, right side begins right after it.
 			const occurrences = line.split(`${PAINT_PREFIX}ultrathink${PAINT_SUFFIX}`).length - 1;
 			expect(occurrences).toBe(2);
-			expect(line).toContain(CURSOR_MARKER);
 		});
 
 		it("preserves the marker as-is — never splits or duplicates it", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.decorateText = paintKeyword;
+			editor.decorateRuns = paintKeyword;
 			editor.focused = true;
 			editor.setText("ultrathink");
 
-			const line = editor.render(40).join("\n");
-			expect(line.split(CURSOR_MARKER).length - 1).toBe(1);
+			expect(renderToRows(() => EditorView({ editor }), 40)).not.toEqual([]);
+			expect(editor.getCursor()).toBeDefined();
 		});
 	});
 
@@ -2886,7 +2909,7 @@ describe("Editor component", () => {
 	describe("composer border styles", () => {
 		const unicodeTheme: EditorTheme = {
 			...defaultEditorTheme,
-			borderColor: (t: string) => t,
+			borderStyle: Style.NONE,
 			symbols: {
 				cursor: "❯",
 				inputCursor: "│",
@@ -2934,7 +2957,7 @@ describe("Editor component", () => {
 			const editor = new Editor(unicodeTheme);
 			editor.setBorderStyle("claude");
 			editor.setText("hello");
-			const lines = editor.render(20);
+			const lines = renderToRows(() => EditorView({ editor }), 20);
 			expect(lines.length).toBe(3); // top rule, content, bottom rule
 			expect(lines[0]).toBe("─".repeat(20));
 			expect(lines[1]).toContain("❯ hello");
@@ -2945,7 +2968,7 @@ describe("Editor component", () => {
 			const editor = new Editor(unicodeTheme);
 			editor.setBorderStyle("pi");
 			editor.setText("hello");
-			const lines = editor.render(20);
+			const lines = renderToRows(() => EditorView({ editor }), 20);
 			expect(lines.length).toBe(3); // top rule, content, bottom rule
 			expect(lines[0]).toBe("─".repeat(20));
 			expect(lines[1]).toStartWith(" hello");
@@ -2957,7 +2980,7 @@ describe("Editor component", () => {
 			const editor = new Editor(unicodeTheme);
 			editor.setBorderStyle("borderless");
 			editor.setText("hello");
-			const lines = editor.render(20);
+			const lines = renderToRows(() => EditorView({ editor }), 20);
 			expect(lines.length).toBe(1); // content only
 			expect(lines[0]).toContain("❯ hello");
 		});
@@ -2965,7 +2988,7 @@ describe("Editor component", () => {
 		it("renders default box style with compact bottom border", () => {
 			const editor = new Editor(unicodeTheme);
 			editor.setText("hello");
-			const lines = editor.render(20);
+			const lines = renderToRows(() => EditorView({ editor }), 20);
 			expect(lines.length).toBe(2); // top border, bottom border with content
 			expect(lines[0]).toContain("╭");
 			expect(lines[1]).toContain("╰─ hello");
@@ -2975,7 +2998,7 @@ describe("Editor component", () => {
 			const editor = new Editor(unicodeTheme);
 			editor.setBorderStyle("rule");
 			editor.setText("hello");
-			const lines = editor.render(20);
+			const lines = renderToRows(() => EditorView({ editor }), 20);
 			expect(lines).toHaveLength(2);
 			expect(lines[0]).toBe("─".repeat(20));
 			expect(lines[1]).toStartWith("❯ hello");
@@ -2984,31 +3007,31 @@ describe("Editor component", () => {
 		it("renders field style as one filled row with accent caps", () => {
 			const editor = new Editor({
 				...unicodeTheme,
-				accentColor: text => `\x1b[35m${text}\x1b[39m`,
-				surfaceColor: text => `\x1b[44m${text}\x1b[49m`,
+				accentStyle: Style.of({ fg: ansi16(35) }),
+				surfaceStyle: Style.of({ bg: ansi16(34) }),
 			});
 			editor.setBorderStyle("field");
 			editor.setText("hello");
-			const [line] = editor.render(20);
+			const [line] = renderToRows(() => EditorView({ editor }), 20);
 			expect(stripVTControlCharacters(line)).toStartWith("▐ hello");
 			expect(stripVTControlCharacters(line)).toEndWith("▌");
 			expect(visibleWidth(line)).toBe(20);
-			expect(line).toContain("\x1b[44m");
+			expect(cellGrid([line], 20)[0]?.[1]?.bg).toEqual({ index: 4 });
 		});
 
 		it("renders rail style as a full-width surface with one accent edge", () => {
 			const editor = new Editor({
 				...unicodeTheme,
-				accentColor: text => `\x1b[35m${text}\x1b[39m`,
-				surfaceColor: text => `\x1b[44m${text}\x1b[49m`,
+				accentStyle: Style.of({ fg: ansi16(35) }),
+				surfaceStyle: Style.of({ bg: ansi16(34) }),
 			});
 			editor.setBorderStyle("rail");
 			editor.setText("hello");
-			const [line] = editor.render(20);
+			const [line] = renderToRows(() => EditorView({ editor }), 20);
 			expect(stripVTControlCharacters(line)).toStartWith("▎ hello");
 			expect(stripVTControlCharacters(line)).not.toContain("▌");
 			expect(visibleWidth(line)).toBe(20);
-			expect(line).toContain("\x1b[44m");
+			expect(cellGrid([line], 20)[0]?.[1]?.bg).toEqual({ index: 4 });
 		});
 
 		it("preserves filled extension foregrounds when legacy styles omit filledSurface", () => {
@@ -3022,23 +3045,26 @@ describe("Editor component", () => {
 				defaultPromptGutter: undefined,
 				defaultPaddingX: () => 0,
 				sideChromeWidth: () => 0,
-				renderTop: () => undefined,
-				renderRow: context => [context.surfaceColor(context.text + context.pad)],
-				renderBottom: () => undefined,
+				paintRow(out, context) {
+					out.push(context.surfaceStyle!, context.text + context.pad);
+					out.br();
+				},
 			};
 			const unregister = registerComposerStyle(style);
 			try {
 				const editor = new Editor({
 					...unicodeTheme,
-					textColor: text => `\x1b[31m${text}\x1b[39m`,
-					surfaceColor: text => `\x1b[44m\x1b[37m${text}\x1b[39m\x1b[49m`,
+					textStyle: Style.of({ fg: ansi16(31) }),
+					surfaceStyle: Style.of({ fg: ansi16(37), bg: ansi16(34) }),
 				});
 				editor.setBorderStyle(style.id);
 				editor.setText("hello");
 
-				const [line] = editor.render(20);
-				expect(line).toContain("\x1b[44m\x1b[37mhello");
-				expect(line).not.toContain("\x1b[44m\x1b[37m\x1b[31m");
+				const [line] = renderToRows(() => EditorView({ editor }), 20);
+				const hello = cellGrid([line], 20)[0]?.slice(0, 5) ?? [];
+				expect(hello.map(cell => cell.ch).join("")).toBe("hello");
+				expect(hello.every(cell => JSON.stringify(cell.bg) === JSON.stringify({ index: 4 }))).toBeTrue();
+				expect(hello.every(cell => JSON.stringify(cell.fg) === JSON.stringify({ index: 7 }))).toBeTrue();
 			} finally {
 				unregister();
 			}

@@ -13,7 +13,7 @@ import {
 	retryTransientCompletion,
 } from "@oh-my-pi/pi-ai";
 import { StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
-import { writeThroughActiveTerminal } from "@oh-my-pi/pi-tui";
+import { writeThroughActiveTerminal } from "@oh-my-pi/pi-tui/terminal";
 import { SPINNER_FRAMES } from "@oh-my-pi/pi-tui/theme/symbols";
 import { $env, isTerminalHeadless, isWsl, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";

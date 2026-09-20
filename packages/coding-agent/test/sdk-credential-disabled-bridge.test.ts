@@ -508,6 +508,7 @@ describe("createAgentSession credential_disabled subscription", () => {
 				assistantThinkingRenderers: [],
 				fileWriteFallbackHandlers: [],
 				fileDeleteFallbackHandlers: [],
+				messageViews: new Map(),
 				messageRenderers: new Map(),
 				composerShapes: new Map(),
 				commands: new Map(),

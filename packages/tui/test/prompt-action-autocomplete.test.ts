@@ -4,8 +4,10 @@ import { KeybindingsManager as AppKeybindingsManager, setKeyHintPlatform } from 
 import type { ModelBrowserItem } from "@oh-my-pi/pi-tui/overlays/model-browser";
 import { setInternalUrlCompletionHost } from "@oh-my-pi/pi-tui/prompt/internal-url-autocomplete";
 import { createPromptActionAutocompleteProvider } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
-import { getSelectListTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { KeybindingsManager, SelectList, setKeybindings, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui";
+import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui";
+import { Editor, EditorView } from "../src/components/editor";
+import { mountForTest } from "../src/testing";
 
 function modelMentionItem(provider: string, id: string, name: string): ModelBrowserItem {
 	return {
@@ -25,6 +27,17 @@ function modelMentionItem(provider: string, id: string, name: string): ModelBrow
 			maxTokens: 1024,
 		}),
 	};
+}
+
+function onceAutocompleteUpdate(editor: Editor): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const previous = editor.onAutocompleteUpdate;
+	editor.onAutocompleteUpdate = () => {
+		editor.onAutocompleteUpdate = previous;
+		previous?.();
+		resolve();
+	};
+	return promise;
 }
 
 describe("prompt action autocomplete", () => {
@@ -71,29 +84,35 @@ describe("prompt action autocomplete", () => {
 			moveCursorToLineEnd: () => {},
 		});
 
-		const suggestions = await provider.getSuggestions(["#"], 0, 1);
-		expect(suggestions).not.toBeNull();
-		expect(suggestions?.prefix).toBe("#");
-		expect(suggestions?.items.map(item => item.label)).toEqual([
-			"Copy current line",
-			"Copy whole prompt",
-			"Undo",
-			"Move cursor to message end",
-			"Move cursor to message start",
-			"Move cursor to line start",
-			"Move cursor to line end",
-		]);
-		const rendered = new SelectList(suggestions?.items ?? [], 10, getSelectListTheme()).render(80).join("\n");
-		for (const item of suggestions?.items ?? []) {
-			expect(rendered).toContain(item.label);
+		const editor = new Editor(getEditorTheme());
+		editor.setAutocompleteProvider(provider);
+		const updated = onceAutocompleteUpdate(editor);
+		editor.handleInput("#");
+		await updated;
+
+		const root = mountForTest(() => EditorView({ editor }), { width: 80 });
+		try {
+			expect(editor.isShowingAutocomplete()).toBe(true);
+			const rendered = root.text().join("\n");
+			for (const label of [
+				"Copy current line",
+				"Copy whole prompt",
+				"Undo",
+				"Move cursor to message end",
+				"Move cursor to message start",
+				"Move cursor to line start",
+				"Move cursor to line end",
+			]) {
+				expect(rendered).toContain(label);
+			}
+			expect(rendered).toContain("Ctrl+Shift+L");
+			expect(rendered).toContain("Alt+Shift+C/Ctrl+Shift+C");
+			expect(rendered).toContain("Home/F6");
+			expect(rendered).toContain("F7");
+			expect(rendered).toContain("F8");
+		} finally {
+			root.dispose();
 		}
-		expect(suggestions?.items.find(item => item.label === "Copy current line")?.description).toBe("Ctrl+Shift+L");
-		expect(suggestions?.items.find(item => item.label === "Copy whole prompt")?.description).toBe(
-			"Alt+Shift+C/Ctrl+Shift+C",
-		);
-		expect(suggestions?.items.find(item => item.label === "Move cursor to line start")?.description).toBe("Home/F6");
-		expect(suggestions?.items.find(item => item.label === "Move cursor to line end")?.description).toBe("F7");
-		expect(suggestions?.items.find(item => item.label === "Undo")?.description).toBe("F8");
 	});
 
 	it("passes the typed trigger to undo and leaves text removal to the editor", async () => {

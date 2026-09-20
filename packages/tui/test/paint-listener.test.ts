@@ -1,5 +1,7 @@
 import { expect, it } from "bun:test";
 import {
+	RichText,
+	Style,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
 	TUI,
@@ -7,6 +9,15 @@ import {
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
+
+function textFrame(rows: readonly string[]): RichText {
+	const frame = new RichText();
+	for (const row of rows) {
+		frame.push(Style.NONE, row);
+		frame.br();
+	}
+	return frame;
+}
 
 class Provider implements TerminalFrameProvider {
 	plan: TerminalFramePlan;
@@ -42,14 +53,14 @@ function plain(rows: readonly string[]): string[] {
 
 it("reports complete diff, history-append, and destructive-reset paints", () => {
 	const terminal = new VirtualTerminal(20, 4);
-	const provider = new Provider({ viewport: ["initial", "status"] });
+	const provider = new Provider({ viewport: textFrame(["initial", "status"]) });
 	const paints: TuiPaint[] = [];
 	const recordPaint = (paint: TuiPaint) => paints.push(paint);
 	const tui = new TUI(terminal, undefined, { renderScheduler: scheduler, onPaint: recordPaint });
 	tui.setFrameProvider(provider);
 	paints.length = 0;
 
-	provider.plan = { viewport: ["diff", "status changed"] };
+	provider.plan = { viewport: textFrame(["diff", "status changed"]) };
 	tui.requestRender();
 	expect(paints).toHaveLength(1);
 	expect(plain(paints[0]!.history)).toEqual([]);
@@ -57,14 +68,14 @@ it("reports complete diff, history-append, and destructive-reset paints", () => 
 	expect(paints[0]).toMatchObject({ reset: false, alt: false, columns: 20, rows: 4 });
 
 	paints.length = 0;
-	provider.plan = { history: { id: 1, rows: ["finished block"] }, viewport: ["next", "status"] };
+	provider.plan = { history: { id: 1, rows: ["finished block"] }, viewport: textFrame(["next", "status"]) };
 	tui.requestRender(true);
 	expect(plain(paints[0]!.history)).toEqual(["finished block"]);
 	expect(plain(paints[0]!.viewport)).toEqual(["next", "status"]);
 	expect(paints[0]).toMatchObject({ reset: false, alt: false, columns: 20, rows: 4 });
 
 	paints.length = 0;
-	provider.plan = { viewport: ["replacement", "status"] };
+	provider.plan = { viewport: textFrame(["replacement", "status"]) };
 	tui.requestRender(true, { clearScrollback: true });
 	expect(paints).toHaveLength(1);
 	expect(plain(paints[0]!.history)).toEqual([]);

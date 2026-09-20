@@ -1,5 +1,5 @@
-import { Spacer } from "@oh-my-pi/pi-tui";
 import { APP_NAME, formatAge } from "@oh-my-pi/pi-utils";
+import { CollabQrCodeView, QrCode, collabBrowserLink } from "@oh-my-pi/pi-tui";
 import { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
 import { type CollabHostSnapshot, listCollabHosts } from "../collab/registry";
@@ -16,7 +16,6 @@ import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui
 import { openPath } from "../utils/open";
 import { copyToClipboard } from "../utils/clipboard";
 import { refreshStatusLine } from "./builtin-modes";
-import { CollabQrCodeComponent, collabBrowserLink } from "@oh-my-pi/pi-tui/chrome/collab-qrcode";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
 
@@ -40,17 +39,10 @@ function collabLinkHint(host: CollabHost, heading: string, view = false): string
 	].join("\n");
 }
 
-function showCollabQrCode(ctx: InteractiveModeContext, webLink: string): void {
-	try {
-		ctx.present([new Spacer(1), new CollabQrCodeComponent(webLink)]);
-	} catch (err) {
-		ctx.showError(`Failed to render collab QR code: ${errorMessage(err)}`);
-	}
-}
-
 function showCollabLink(ctx: InteractiveModeContext, host: CollabHost, heading: string, view = false): void {
+	const webLink = view ? host.webViewLink : host.webLink;
 	ctx.showStatus(collabLinkHint(host, heading, view), { dim: false });
-	showCollabQrCode(ctx, view ? host.webViewLink : host.webLink);
+	ctx.present(CollabQrCodeView({ url: webLink, qr: QrCode.encodeText(webLink, "M") }));
 }
 
 export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [

@@ -1,13 +1,16 @@
 import { scheduler } from "node:timers/promises";
-import type { Terminal } from "@oh-my-pi/pi-tui";
-import * as logger from "@oh-my-pi/pi-utils/logger";
-import type { LspServerInfo, RecentSession } from "@oh-my-pi/pi-tui/prompt/welcome";
+import { ProcessTerminal, type Terminal } from "@oh-my-pi/pi-tui/terminal";
+import { render, type RootHandle } from "@oh-my-pi/pi-tui/root";
 import {
 	COMPOSER_DEFAULTS,
-	Composer,
+	ComposerChromeView,
+	createComposerChromeStore,
+	type ComposerChromeStore,
 	type ComposerPreferences,
 	type ComposerWelcomeUpdate,
 } from "@oh-my-pi/pi-tui/prompt/composer";
+import { createTranscriptStore } from "@oh-my-pi/pi-tui/chat/transcript-store";
+import type { LspServerInfo, RecentSession } from "@oh-my-pi/pi-tui/prompt/welcome";
 import {
 	type ComposerThemePreferences,
 	readComposerStartupCache,
@@ -15,12 +18,12 @@ import {
 	writeComposerRecentSessionsCache,
 	writeComposerUiCache,
 } from "@oh-my-pi/pi-tui/prompt/composer-cache";
-import { initThemeSync } from "@oh-my-pi/pi-tui/theme";
+import { initThemeSync, theme } from "@oh-my-pi/pi-tui/theme";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 
 /** Inputs available at the CLI prepaint boundary before command modules load. */
 export interface PrepaintComposerOptions {
 	readonly terminal?: Terminal;
-	readonly exit?: (code: number) => void;
 	readonly now?: () => number;
 	readonly version?: string;
 	readonly cwd?: string;
@@ -28,56 +31,59 @@ export interface PrepaintComposerOptions {
 	readonly theme?: ComposerThemePreferences;
 	readonly recentSessions?: () => Promise<RecentSession[]>;
 	readonly cache?: boolean;
+	/** Clear native terminal history before drawing the speculative first frame. */
+	readonly clearScrollback?: boolean;
 }
 
-/** Final settings pushed into the live composer after Settings and the theme resolve. */
+/** Final settings pushed into the live chrome after Settings and the theme resolve. */
 export interface PrepaintComposerPreferences extends ComposerPreferences {
 	readonly theme: ComposerThemePreferences;
 }
 
-interface PendingComposer {
-	readonly composer: Composer;
+interface PendingPrepaintRoot {
+	readonly root: RootHandle;
+	readonly terminal: Terminal;
+	readonly chrome: ComposerChromeStore;
 	readonly cwd: string;
 	readonly cache: boolean;
 	recentSessions?: Promise<RecentSession[] | undefined>;
 }
 
-let pendingComposer: PendingComposer | undefined;
+let pendingPrepaintRoot: PendingPrepaintRoot | undefined;
 
-/** Ownership token that transfers one already-started Composer to InteractiveMode. */
+/** Ownership token for the root that drew the speculative first frame. */
 export class ComposerLease {
-	readonly composer: Composer;
+	readonly root: RootHandle;
+	readonly terminal: Terminal;
+	readonly chrome: ComposerChromeStore;
 	/** Recent-session rows already loading in parallel with the runtime module graph. */
 	readonly recentSessions?: Promise<RecentSession[] | undefined>;
 	#adopted = false;
 
-	constructor(composer: Composer, recentSessions?: Promise<RecentSession[] | undefined>) {
-		this.composer = composer;
-		this.recentSessions = recentSessions;
+	constructor(pending: PendingPrepaintRoot) {
+		this.root = pending.root;
+		this.terminal = pending.terminal;
+		this.chrome = pending.chrome;
+		this.recentSessions = pending.recentSessions;
 	}
 
-	/** Transfer terminal ownership exactly once. */
+	/** Mark the caller as the root owner without interrupting terminal input. */
 	adopt(): void {
-		if (this.#adopted) return;
-		// Safety net: startup paths that never applied resolved settings must
-		// still hand InteractiveMode a raw-input terminal.
-		this.composer.enableInput();
-		this.composer.transfer();
 		this.#adopted = true;
 	}
 
-	/** Stop an unadopted composer when startup exits before InteractiveMode. */
+	/** Dispose a root that never reached interactive mode. */
 	dispose(): void {
-		if (!this.#adopted) this.composer.stop();
+		if (!this.#adopted) this.root.dispose();
 	}
 }
 
-/** Start the canonical Composer with speculative cached state, then refresh recent sessions. */
+/** Start the reactive terminal root with cached startup data before command modules load. */
 export function beginStartupComposer(options: PrepaintComposerOptions = {}): void {
-	if (pendingComposer) throw new Error("A prepaint composer is already active");
+	if (pendingPrepaintRoot) throw new Error("A prepaint root is already active");
 	const cwd = options.cwd ?? process.cwd();
-	const useCache = options.cache !== false;
-	const cached = useCache
+	const cache = options.cache !== false;
+	const cached = cache
 		? readComposerStartupCache(cwd)
 		: {
 				preferences: undefined,
@@ -87,8 +93,13 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 				lspServers: [],
 				status: undefined,
 			};
-	const theme = { ...cached.theme, ...options.theme };
-	initThemeSync(theme.symbolPreset, theme.colorBlindMode, theme.darkTheme, theme.lightTheme);
+	const themePreferences = { ...cached.theme, ...options.theme };
+	initThemeSync(
+		themePreferences.symbolPreset,
+		themePreferences.colorBlindMode,
+		themePreferences.darkTheme,
+		themePreferences.lightTheme,
+	);
 	const preferences = { ...COMPOSER_DEFAULTS, ...cached.preferences, ...options.preferences };
 	const welcome: ComposerWelcomeUpdate = {
 		version: options.version ?? "",
@@ -97,45 +108,38 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 		recentSessions: cached.recentSessions,
 		lspServers: cached.lspServers,
 	};
-	const composer = new Composer({
-		terminal: options.terminal,
-		exit: options.exit,
-		now: options.now,
-		preferences,
-		welcome,
-		status: cached.status,
+	const terminal = options.terminal ?? new ProcessTerminal();
+	const chrome = createComposerChromeStore({ transcript: createTranscriptStore(), preferences, welcome });
+	const root = render(() => ComposerChromeView({ store: chrome }), {
+		terminal,
+		theme,
+		clearScrollback: options.clearScrollback,
+		deferInput: true,
 	});
-	try {
-		composer.start({ clearScrollback: true, deferInput: true });
-	} catch (error) {
-		try {
-			composer.stop();
-		} catch {}
-		throw error;
-	}
-	const pending: PendingComposer = { composer, cwd, cache: useCache };
-	pendingComposer = pending;
-	// Keep filesystem discovery out of the synchronous prepaint turn. Composer.start()
-	// has queued the first frame; recents can begin once the event loop yields.
+	root.tui.setResizeScrollback(preferences.resizeScrollback);
+	const pending: PendingPrepaintRoot = { root, terminal, chrome, cwd, cache };
+	pendingPrepaintRoot = pending;
+	// Keep filesystem discovery out of the synchronous prepaint turn. render()
+	// already queued the first frame; recents can begin once the event loop yields.
 	pending.recentSessions = loadRecentSessionsAfterFirstFrame(pending, options.recentSessions);
 }
 
-/** Take the live prepaint composer away from the module-level startup owner. */
+/** Take the live prepaint root away from the module-level startup owner. */
 export function takeStartupComposerLease(): ComposerLease | undefined {
-	const pending = pendingComposer;
-	pendingComposer = undefined;
-	return pending ? new ComposerLease(pending.composer, pending.recentSessions) : undefined;
+	const pending = pendingPrepaintRoot;
+	pendingPrepaintRoot = undefined;
+	return pending ? new ComposerLease(pending) : undefined;
 }
 
-/** Stop and forget any prepaint composer that never reached InteractiveMode. */
+/** Stop and forget any prepaint root that never reached InteractiveMode. */
 export function stopPendingStartupComposer(): void {
-	pendingComposer?.composer.stop();
-	pendingComposer = undefined;
+	pendingPrepaintRoot?.root.dispose();
+	pendingPrepaintRoot = undefined;
 }
 
-/** Apply final settings to the pending Composer and cache them for the next first frame. */
+/** Apply final settings to the pending chrome and cache them for the next first frame. */
 export function applyStartupComposerPreferences(update: PrepaintComposerPreferences): void {
-	const pending = pendingComposer;
+	const pending = pendingPrepaintRoot;
 	if (!pending) return;
 	const preferences: ComposerPreferences = {
 		quiet: update.quiet,
@@ -149,11 +153,8 @@ export function applyStartupComposerPreferences(update: PrepaintComposerPreferen
 		spellingAutocomplete: update.spellingAutocomplete,
 		spellingAutocorrect: update.spellingAutocorrect,
 	};
-	pending.composer.setPreferences(preferences);
-	// Settings resolved means the module graph is loaded and the event loop is
-	// responsive again: take raw-input ownership now. The kernel echoed (and
-	// buffered) everything typed during the load; the editor replays it here.
-	pending.composer.enableInput();
+	pending.chrome.setPreferences(preferences);
+	pending.root.tui.setResizeScrollback(preferences.resizeScrollback);
 	if (pending.cache) {
 		void writeComposerUiCache(pending.cwd, preferences, update.theme).catch(error => {
 			logger.debug("composer UI cache write failed", { error });
@@ -163,9 +164,9 @@ export function applyStartupComposerPreferences(update: PrepaintComposerPreferen
 
 /** Apply discovered project LSP rows and cache them for the next first frame. */
 export function setStartupComposerLspServers(servers: LspServerInfo[]): void {
-	const pending = pendingComposer;
+	const pending = pendingPrepaintRoot;
 	if (!pending) return;
-	pending.composer.updateWelcome({ lspServers: servers });
+	pending.chrome.updateWelcome({ lspServers: servers });
 	if (pending.cache) {
 		void writeComposerLspCache(pending.cwd, servers).catch(error => {
 			logger.debug("composer LSP cache write failed", { error });
@@ -174,7 +175,7 @@ export function setStartupComposerLspServers(servers: LspServerInfo[]): void {
 }
 
 async function loadRecentSessionsAfterFirstFrame(
-	pending: PendingComposer,
+	pending: PendingPrepaintRoot,
 	loadOverride: (() => Promise<RecentSession[]>) | undefined,
 ): Promise<RecentSession[] | undefined> {
 	await scheduler.yield();
@@ -185,9 +186,7 @@ async function loadRecentSessionsAfterFirstFrame(
 				logger.debug("composer recent sessions cache write failed", { error });
 			});
 		}
-		if (pendingComposer === pending) {
-			pending.composer.updateWelcome({ recentSessions: sessions });
-		}
+		if (pendingPrepaintRoot === pending) pending.chrome.updateWelcome({ recentSessions: sessions });
 		return sessions;
 	} catch (error) {
 		logger.debug("composer recent sessions load failed", { error });

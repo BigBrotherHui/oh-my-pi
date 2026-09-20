@@ -71,8 +71,6 @@ function createContext(): {
 		hasActiveOmfg: Spy;
 		onInputCallback: Spy;
 		prompt: Spy;
-		requestRender: Spy;
-		resetDisplay: Spy;
 		shutdown: Spy;
 		showStatus: Spy;
 		startPendingSubmission: StartPendingSubmissionSpy;
@@ -91,8 +89,6 @@ function createContext(): {
 	const clearQueue = vi.fn(() => ({ steering: [], followUp: [] }));
 	const getQueuedMessages = vi.fn(() => ({ steering: [], followUp: [] }));
 	const onInputCallback = vi.fn();
-	const requestRender = vi.fn();
-	const resetDisplay = vi.fn();
 	const showStatus = vi.fn();
 	const inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const sessionListeners: Array<(event: { type: string }) => void> = [];
@@ -133,8 +129,6 @@ function createContext(): {
 	const ctx = {
 		editor: editor as unknown as InteractiveModeContext["editor"],
 		ui: {
-			requestRender,
-			resetDisplay,
 			addInputListener: vi.fn(listener => {
 				inputListeners.push(listener as (data: string) => { consume?: boolean; data?: string } | undefined);
 				return () => {};
@@ -200,7 +194,7 @@ function createContext(): {
 		cancelPendingSubmission,
 		ensureLoadingAnimation,
 		finishPendingSubmission: vi.fn(),
-		flushPendingBashComponents: vi.fn(),
+		flushPendingExecutions: vi.fn(),
 		markPendingSubmissionStarted: vi.fn(() => true),
 		startPendingSubmission,
 		updatePendingMessagesDisplay,
@@ -248,8 +242,6 @@ function createContext(): {
 			hasActiveOmfg,
 			onInputCallback,
 			prompt,
-			requestRender,
-			resetDisplay,
 			showStatus,
 			shutdown: ctx.shutdown as Spy,
 			startPendingSubmission,
@@ -339,7 +331,6 @@ describe("InputController escape behavior", () => {
 		expect(order).toEqual(["abort", "refresh"]);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
-		expect(spies.requestRender).toHaveBeenCalledTimes(1);
 	});
 	it("runs /btw as a builtin side request instead of steering the active stream", async () => {
 		const { ctx, editor, spies } = createContext();
@@ -675,8 +666,8 @@ describe("InputController escape behavior", () => {
 		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
 		expect(ctx.focusParentSession).not.toHaveBeenCalled();
 	});
-	it("opens the rewind selector and forces a viewport repaint on default double-Esc", () => {
-		const { ctx, editor, spies } = createContext();
+	it("opens the rewind selector on default double-Esc", () => {
+		const { ctx, editor } = createContext();
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -685,16 +676,11 @@ describe("InputController escape behavior", () => {
 
 		expect(ctx.showUserMessageSelector).toHaveBeenCalledTimes(1);
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
-		// Never `resetDisplay()`: that replays the whole transcript and wedges
-		// double-Esc on long sessions (invisible selector behind a multi-second
-		// scrollback replay).
-		expect(spies.requestRender).toHaveBeenCalledWith(true);
-		expect(spies.resetDisplay).not.toHaveBeenCalled();
 	});
 
 	it("ignores double-Esc when the action is disabled", () => {
 		Settings.instance.override("doubleEscapeAction", "none");
-		const { ctx, editor, spies } = createContext();
+		const { ctx, editor } = createContext();
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -703,12 +689,11 @@ describe("InputController escape behavior", () => {
 
 		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
-		expect(spies.resetDisplay).not.toHaveBeenCalled();
 	});
 
 	it("opens the session tree on double-Esc when the action is tree", () => {
 		Settings.instance.override("doubleEscapeAction", "tree");
-		const { ctx, editor, spies } = createContext();
+		const { ctx, editor } = createContext();
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -717,11 +702,6 @@ describe("InputController escape behavior", () => {
 
 		expect(ctx.showTreeSelector).toHaveBeenCalledTimes(1);
 		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
-		// Same forced viewport repaint as the rewind path: without it the
-		// overlay paint is deferred past the escape input grace and double-Esc
-		// reads as dead on long sessions.
-		expect(spies.requestRender).toHaveBeenCalledWith(true);
-		expect(spies.resetDisplay).not.toHaveBeenCalled();
 	});
 	it("preserves typed editor text on Esc without opening selectors or aborting", () => {
 		const { ctx, editor, spies } = createContext();
@@ -732,10 +712,8 @@ describe("InputController escape behavior", () => {
 		editor.onEscape?.();
 
 		expect(editor.getText()).toBe("draft message");
-		expect(spies.requestRender).not.toHaveBeenCalled();
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
-		expect(spies.resetDisplay).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
@@ -784,7 +762,6 @@ describe("InputController escape behavior", () => {
 		expect(clear).toHaveBeenCalledTimes(1);
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
-		expect(spies.resetDisplay).not.toHaveBeenCalled();
 
 		// A second Esc after silence must NOT immediately fire the double-Esc
 		// gesture — the first press consumed the arm.

@@ -1,10 +1,15 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { renderUsageReports } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
+import { UsageReportsView } from "@oh-my-pi/pi-coding-agent/modes/components/command-feedback-views";
+import { renderSnapshot } from "@oh-my-pi/pi-tui/snapshot";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
 
-describe("renderUsageReports content", () => {
+function renderUsage(reports: UsageReport[], now: number, columns: number): string {
+	return renderSnapshot(() => UsageReportsView({ reports, now }), { columns, theme }).join("\n");
+}
+
+describe("retained usage reports", () => {
 	beforeAll(async () => {
 		const darkTheme = await getThemeByName("dark");
 		if (!darkTheme) throw new Error("Expected dark theme");
@@ -30,7 +35,7 @@ describe("renderUsageReports content", () => {
 			},
 		];
 
-		const output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 98));
+		const output = stripVTControlCharacters(renderUsage(reports, Date.now(), 98));
 		expect(output).toContain("25% free");
 		expect(output).toContain("█");
 		expect(output).not.toContain("··········");
@@ -63,7 +68,7 @@ describe("renderUsageReports content", () => {
 			},
 		];
 
-		const output = stripVTControlCharacters(renderUsageReports(reports, theme, now, 98));
+		const output = stripVTControlCharacters(renderUsage(reports, now, 98));
 		expect(output).toContain("Cursor");
 		expect(output).toContain("gpt-4 requests");
 		expect(output).toContain("70% free");
@@ -88,7 +93,7 @@ describe("renderUsageReports content", () => {
 			},
 		];
 
-		const output = stripVTControlCharacters(renderUsageReports(reports, theme, now, 98));
+		const output = stripVTControlCharacters(renderUsage(reports, now, 98));
 		expect(output).toContain("Saved rate-limit resets");
 		expect(output).toContain("user@example.com: 2 saved resets");
 		expect(output).toContain(`expires in`);
@@ -116,7 +121,7 @@ describe("renderUsageReports content", () => {
 			],
 		});
 
-		const output = stripVTControlCharacters(renderUsageReports([keyReport(100), keyReport(100)], theme, now, 98));
+		const output = stripVTControlCharacters(renderUsage([keyReport(100), keyReport(100)], now, 98));
 		expect(output).toContain("100 credits left");
 		expect(output).not.toContain("200 credits left");
 		// The balance must reach the user at all: a remaining-only limit used
@@ -160,7 +165,7 @@ describe("renderUsageReports content", () => {
 			},
 		];
 
-		const output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120));
+		const output = stripVTControlCharacters(renderUsage(reports, Date.now(), 120));
 
 		expect(output.match(/Claude & GPT \(shared\)/g)).toHaveLength(2);
 		expect(output.match(/Gemini/g)).toHaveLength(2);

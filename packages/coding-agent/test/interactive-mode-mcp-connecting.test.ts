@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
@@ -35,6 +36,7 @@ describe("InteractiveMode MCP connection status", () => {
 	});
 
 	beforeEach(async () => {
+		vi.spyOn(vcs, "watch").mockReturnValue(() => {});
 		// Keep ProcessTerminal.start() from probing the real terminal; the test
 		// only drives the event bus and spies on showStatus.
 		vi.spyOn(process.stdout, "write").mockReturnValue(true);
@@ -70,9 +72,6 @@ describe("InteractiveMode MCP connection status", () => {
 		});
 		eventBus = new EventBus();
 		mode = new InteractiveMode(session, "test", undefined, () => {}, [], undefined, eventBus);
-		// This contract is the banner wiring, not git branch watching; a real
-		// fs.watch in a parallel Bun worker can trip an unrelated-worker SIGTRAP.
-		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 	});
 
 	afterEach(async () => {

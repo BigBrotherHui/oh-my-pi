@@ -7,6 +7,7 @@ import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { renderStatus, renderStatusLine } from "./helpers/status-line";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -66,11 +67,11 @@ function fixture() {
 		component,
 		state,
 		showCost,
-		render: () => stripVTControlCharacters(component.renderBottomBar(80, "full")),
+		render: () => stripVTControlCharacters(renderStatusLine(component, 80, "plain-full")),
 		useFlatModel: () => {
 			const { timeBased: _schedule, ...cost } = model.cost;
 			state.model = { ...model, provider: "openrouter", cost };
-			component.invalidate();
+			component.ingestSession();
 		},
 	};
 }
@@ -82,12 +83,10 @@ describe("status line tariff boundary wakeup", () => {
 		vi.spyOn(Date, "now").mockImplementation(() => now);
 		const timers = vi.spyOn(globalThis, "setTimeout");
 		const { component, render } = fixture();
-		const paints: string[] = [];
 		try {
-			component.watchBranch(() => paints.push(render()));
 			expect(render()).toContain("$1.25 ↑");
-			const revision = component.getTopBorder(80).revision;
-			component.invalidate();
+			const revision = component.revision();
+			component.ingestSession();
 			render();
 			expect(timers).toHaveBeenCalledTimes(1);
 			const timer = timers.mock.results[0]!.value as NodeJS.Timeout;
@@ -95,15 +94,13 @@ describe("status line tariff boundary wakeup", () => {
 
 			now += 1000;
 			vi.advanceTimersByTime(1000);
-			expect(paints).toHaveLength(1);
-			expect(paints[0]).toContain("$1.25 ↓");
-			expect(component.getTopBorder(80).revision).toBeGreaterThan(revision);
+			expect(render()).toContain("$1.25 ↓");
+			expect(component.revision()).toBeGreaterThan(revision);
 			expect(timers).toHaveBeenCalledTimes(2);
 
 			now += 2 * 60 * 60 * 1000;
 			vi.advanceTimersByTime(2 * 60 * 60 * 1000);
-			expect(paints).toHaveLength(2);
-			expect(paints[1]).toContain("$1.25 ↑");
+			expect(render()).toContain("$1.25 ↑");
 			expect(timers).toHaveBeenCalledTimes(3);
 		} finally {
 			component.dispose();
@@ -115,9 +112,7 @@ describe("status line tariff boundary wakeup", () => {
 		let now = Date.parse("2026-09-10T03:59:59Z");
 		vi.spyOn(Date, "now").mockImplementation(() => now);
 		const { component, render, useFlatModel } = fixture();
-		const repaint = vi.fn();
 		try {
-			component.watchBranch(repaint);
 			expect(render()).toContain("$1.25 ↑");
 			useFlatModel();
 			const flat = render();
@@ -125,7 +120,7 @@ describe("status line tariff boundary wakeup", () => {
 			expect(flat).not.toMatch(/[↑↓]/);
 			now += 1000;
 			vi.advanceTimersByTime(1000);
-			expect(repaint).not.toHaveBeenCalled();
+			expect(render()).toContain("$1.25");
 		} finally {
 			component.dispose();
 		}
@@ -136,27 +131,25 @@ describe("status line tariff boundary wakeup", () => {
 		let now = Date.parse("2026-09-10T03:59:59Z");
 		vi.spyOn(Date, "now").mockImplementation(() => now);
 		const { component, render, showCost } = fixture();
-		const repaint = vi.fn();
 		try {
-			component.watchBranch(repaint);
 			expect(render()).toContain("$1.25 ↑");
 			component.updateSettings({ preset: "custom", leftSegments: [], rightSegments: [] });
 			expect(render()).not.toContain("$1.25");
 			now += 1000;
 			vi.advanceTimersByTime(1000);
-			expect(repaint).not.toHaveBeenCalled();
+			expect(render()).not.toContain("$1.25");
 
 			showCost();
 			expect(render()).toContain("$1.25 ↓");
 			now += 2 * 60 * 60 * 1000;
 			vi.advanceTimersByTime(2 * 60 * 60 * 1000);
-			expect(repaint).toHaveBeenCalledTimes(1);
+			expect(render()).toContain("$1.25 ↑");
 			component.dispose();
-			component.invalidate();
-			render();
+			const revision = component.revision();
+			component.ingestSession();
 			now += 4 * 60 * 60 * 1000;
 			vi.advanceTimersByTime(4 * 60 * 60 * 1000);
-			expect(repaint).toHaveBeenCalledTimes(1);
+			expect(component.revision()).toBe(revision);
 		} finally {
 			component.dispose();
 		}

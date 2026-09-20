@@ -1,10 +1,30 @@
-/**
- * Upstream-pi composer: full-width horizontal rules above and below plain
- * padded text — no side borders, no prompt gutter. The status bar renders as
- * a plain standalone bottom bar with both segment groups.
- */
-import { padding } from "../../utils";
-import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from "./types";
+import { spaces } from "../../core/out";
+import type { Out } from "../../core/richtext";
+import { Style } from "../../core/style";
+import {
+	type ComposerChromeContext,
+	type ComposerRowContext,
+	type ComposerStyle,
+	paintComposerContent,
+	paintComposerStyled,
+	paintComposerText,
+} from "./types";
+
+export function paintPiRule(out: Out, ctx: ComposerChromeContext): boolean {
+	paintComposerStyled(out, ctx.box.horizontal.repeat(ctx.width), ctx.borderStyle);
+	out.br();
+	return true;
+}
+
+export function paintPiRow(out: Out, ctx: ComposerRowContext): void {
+	const inset = piComposerStyle.sideChromeWidth(ctx.paddingX);
+	if (inset > 0) out.push(Style.NONE, spaces(inset));
+	if (ctx.gutterStyle) out.push(ctx.gutterStyle, ctx.gutter);
+	else paintComposerText(out, ctx.gutter);
+	paintComposerContent(out, ctx);
+	paintComposerText(out, ctx.pad);
+	out.br();
+}
 
 export const piComposerStyle: ComposerStyle = {
 	id: "pi",
@@ -14,24 +34,13 @@ export const piComposerStyle: ComposerStyle = {
 	bottomBar: "full",
 	bottomBarGap: false,
 	defaultPromptGutter: undefined,
-
-	defaultPaddingX(): number {
+	defaultPaddingX() {
 		return 1;
 	},
-
-	sideChromeWidth(paddingX: number): number {
+	sideChromeWidth(paddingX) {
 		return paddingX;
 	},
-
-	renderTop(ctx: ComposerChromeContext): string {
-		return ctx.borderColor(ctx.box.horizontal.repeat(ctx.width));
-	},
-
-	renderRow(ctx: ComposerRowContext): string[] {
-		return [padding(this.sideChromeWidth(ctx.paddingX)) + ctx.gutter + ctx.text + ctx.pad];
-	},
-
-	renderBottom(ctx: ComposerChromeContext): string {
-		return ctx.borderColor(ctx.box.horizontal.repeat(ctx.width));
-	},
+	paintTop: paintPiRule,
+	paintRow: paintPiRow,
+	paintBottom: paintPiRule,
 };

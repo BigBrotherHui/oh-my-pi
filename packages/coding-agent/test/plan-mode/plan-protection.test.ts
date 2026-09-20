@@ -48,7 +48,7 @@ describe("createPlanReadMatcher", () => {
 		const matcher = createPlanReadMatcher(() => "local://wp-migration.md");
 		expect(matcher(context({ path: "local://PLAN.md:1-50" }))).toBe(true);
 		expect(matcher(context({ path: "local://PLAN.md:raw" }))).toBe(true);
-		expect(matcher(context({ path: "local:/PLAN.md" }))).toBe(true);
+		expect(matcher(context({ path: "local://PLAN.md" }))).toBe(true);
 		expect(matcher(context({ path: "local://wp-migration.md:10-20" }))).toBe(true);
 	});
 

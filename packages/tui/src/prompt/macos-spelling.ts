@@ -1,11 +1,12 @@
 import * as native from "@oh-my-pi/pi-natives";
-import { TERMINAL } from "../index";
+import { TERMINAL } from "../terminal-capabilities";
 import type { EditorInlineReplacement, EditorTextAssistProvider, EditorWordReplacements } from "../components/editor";
 import { logger } from "@oh-my-pi/pi-utils";
 import { maskNonProse } from "./markdown-prose";
+import { Attr, rgb, Style } from "../core/style";
 
 /** Styled underline: red curly undercurl via colon-subparameter SGR (4:3 + SGR 58 color). */
-const STYLED_TYPO_MARKS = { start: "\x1b[4:3m\x1b[58:2::255:95:95m", end: "\x1b[4:0m\x1b[59m" } as const;
+const STYLED_TYPO_MARKS = { start: "\x1b[4:3m\x1b[58:2::255:95:95m", end: "\x1b[24m\x1b[59m" } as const;
 /**
  * Flat underline: legacy CSI 4 m / CSI 24 m only, no SGR 58/59. Used where the
  * terminal lacks styled underlines — Apple Terminal paints CSI 4 : 0 m (the
@@ -35,6 +36,12 @@ export interface SpellingDecorationContext {
 	lines: readonly string[];
 	line: number;
 	startCol: number;
+}
+
+/** One style computation consumed by the editor's run-decoration seam. */
+export interface SpellingRun {
+	readonly text: string;
+	readonly style: Style;
 }
 
 /** Native spelling operations used by {@link MacOSSpellingProvider}. */
@@ -127,6 +134,7 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 			this.#available = typeof this.backend.isAvailable === "function" && this.backend.isAvailable();
 		}
 		this.#clearCaches();
+		this.onUpdate?.();
 	}
 
 	/** Add red undercurls to misspellings while preserving visible text width. */
@@ -167,6 +175,40 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 			cursor = end;
 		}
 		return rendered + decorate(text.slice(cursor));
+	}
+
+	/** Compute typo-decoration slices while preserving nested foreground styles. */
+	typoRuns(text: string, context: SpellingDecorationContext, base: Style = Style.NONE): readonly SpellingRun[] {
+		if (
+			!this.#available ||
+			!this.#features.typoDetection ||
+			text.length === 0 ||
+			!this.#sourceRangeIsProse(context, context.startCol, context.startCol + text.length)
+		) {
+			return [{ text, style: base }];
+		}
+		const lane = `${context.line}:${context.startCol}`;
+		const cached = this.#typoCache.get(text);
+		if (cached === undefined) this.#scheduleTypoRanges(text, lane);
+		else this.#automaticTypoQueue.delete(lane);
+		const ranges = cached ?? this.#projectTypoRanges(text);
+		if (!ranges || ranges.length === 0) return [{ text, style: base }];
+		const typoStyle =
+			this.#marks === STYLED_TYPO_MARKS
+				? base.plus(Attr.Undercurl).withUl(rgb(255, 95, 95))
+				: base.plus(Attr.Underline);
+		const runs: SpellingRun[] = [];
+		let cursor = 0;
+		for (const range of ranges) {
+			const end = range.start + range.length;
+			if (range.start < cursor || end > text.length) continue;
+			if (!this.#sourceRangeIsProse(context, context.startCol + range.start, context.startCol + end)) continue;
+			if (range.start > cursor) runs.push({ text: text.slice(cursor, range.start), style: base });
+			runs.push({ text: text.slice(range.start, end), style: typoStyle });
+			cursor = end;
+		}
+		if (cursor < text.length) runs.push({ text: text.slice(cursor), style: base });
+		return runs;
 	}
 
 	/** Return the cached macOS completion suffix for the word ending at the cursor. */
@@ -451,6 +493,7 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		if (!this.#available) return;
 		this.#available = false;
 		this.#clearCaches();
+		this.onUpdate?.();
 		logger.warn("macOS spelling service failed; disabling editor spelling assistance", { error: String(error) });
 	}
 }

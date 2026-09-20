@@ -1,748 +1,231 @@
 # @oh-my-pi/pi-tui
 
-Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications.
+Fine-grained reactive terminal UI framework for Node.js and Bun, powered by **SolidJS** (`solid-js@1.9.15`), a retained universal host tree renderer, and differential synchronized terminal output.
 
 ## Features
 
-- **Differential Rendering**: Three-strategy rendering system that only updates what changed
-- **Synchronized Output**: Uses CSI 2026 for atomic screen updates (no flicker)
-- **Bracketed Paste Mode**: Handles large pastes correctly with markers for >10 line pastes
-- **Component-based**: Simple Component interface with render() method
-- **Theme Support**: Components accept theme interfaces for customizable styling
-- **Built-in Components**: Text, TruncatedText, Input, Editor, Markdown, Loader, SelectList, SettingsList, Spacer, Image, Box, Container
-- **Inline Images**: Renders images in terminals that support Kitty or iTerm2 graphics protocols
-- **Autocomplete Support**: File paths and slash commands
+- **Fine-Grained Reactivity**: State updates mutate only affected host nodes and text runs directly; component functions run once and never re-render.
+- **Universal Retained Host Tree**: Solid universal renderer maintains a lightweight tree of `HostNode` objects with damage classification (`Paint`, `Text`, `Layout`, `Link`, `Interaction`).
+- **Cached Run Painting**: Clean subtrees replay cached cell-native `RichText` runs; the compositor repaints only damaged nodes.
+- **Row-Based Flex Layout**: `<row>` and `<stack>` containers allocate column widths across children with `grow`, `shrink`, `minWidth`, and `maxWidth`.
+- **Semantic Theme Tokens**: No raw ANSI escape strings in views. Styles resolve through a cascading token hierarchy (`ThemeColor`, `ThemeBg`, recipes).
+- **Streaming Document System**: `TextDocument` and `OutputDocument` stream code, diffs, and markdown with range-invalidated syntax token caches.
+- **Synchronized Terminal Output**: Atomic screen updates via `CSI 2026` eliminate terminal tearing and flicker.
+- **Headless Testing Substrate**: In-memory test root (`mountForTest`) with fine-grained performance counters and deterministic clocks.
+
+---
 
 ## Quick Start
 
-```typescript
-import { TUI, Text, Editor, ProcessTerminal } from "@oh-my-pi/pi-tui";
+```tsx
+import { render } from "@oh-my-pi/pi-tui/root";
+import { createSignal, onMount, onCleanup } from "@oh-my-pi/pi-tui/reactive";
+import { ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
 
-// Create terminal
-const terminal = new ProcessTerminal();
+function CounterApp() {
+  const [count, setCount] = createSignal(0);
 
-// Create TUI
-const tui = new TUI(terminal);
+  const timer = setInterval(() => {
+    setCount((c) => c + 1);
+  }, 1000);
 
-// Add components
-tui.addChild(new Text("Welcome to my app!"));
+  onCleanup(() => clearInterval(timer));
 
-const editor = new Editor(editorTheme);
-editor.onSubmit = (text) => {
-	console.log("Submitted:", text);
-	tui.addChild(new Text(`You said: ${text}`));
+  return (
+    <box padding={1} background="surface">
+      <frame title="Live Counter">
+        <stack gap={1}>
+          <row gap={1}>
+            <text color="muted">Elapsed Seconds:</text>
+            <text color="accent" bold>{count()}</text>
+          </row>
+          <status value="running" />
+        </stack>
+      </frame>
+    </box>
+  );
+}
+
+// Start reactive application
+const handle = render(() => <CounterApp />, {
+  terminal: new ProcessTerminal(),
+  theme: loadThemeSync("dark"),
+});
+
+// Clean up and restore terminal on exit
+process.on("SIGINT", () => {
+  handle.dispose();
+  process.exit(0);
+});
+```
+
+---
+
+## Core Authoring Model
+
+### 1. Render Root (`@oh-my-pi/pi-tui/root`)
+
+Terminal applications mount via `render(view, options)`:
+
+```ts
+import { render, type RootOptions, type RootHandle } from "@oh-my-pi/pi-tui/root";
+
+export interface RootOptions {
+  readonly terminal: Terminal;
+  readonly theme: Theme;
+  readonly keymap?: Keymap;
+  readonly clock?: Clock;
+  readonly capabilities?: TerminalCapabilities;
+}
+
+export interface RootHandle {
+  readonly tui: TUI;
+  dispose(): void;
+}
+```
+
+`render()` initializes the Solid root, mounts the retained host tree, wires keyboard/mouse listeners, and connects the compositor to `TUI`. Calling `handle.dispose()` unmounts the host tree, runs all reactive cleanup handlers, and restores the terminal.
+
+### 2. Reactive Surface (`@oh-my-pi/pi-tui/reactive`)
+
+Feature code imports reactive primitives exclusively from `@oh-my-pi/pi-tui/reactive` (never directly from `solid-js`):
+
+- **Solid Primitives**: `createSignal`, `createMemo`, `createEffect`, `createRoot`, `createStore`, `produce`, `reconcile`, `onMount`, `onCleanup`, `batch`, `untrack`.
+- **Control Flow**: `<Show>`, `<For>`, `<Index>`, `<Switch>`, `<Match>`, `<ErrorBoundary>`, `<Suspense>`.
+- **TUI Hooks**:
+  - `useClock(cadence)`: Subscribes to the root clock (`"frame"`, `"spinner"`, or `"second"`). Automatically unregisters when the component unmounts or freezes.
+  - `useTheme()`: Accesses reactive semantic color tokens (`theme.token("accent")`) and symbols (`theme.symbol("check")`).
+  - `useKeymap()`: Resolves keybinding display hints (`keymap.hint("expand")`).
+  - `useFocus()`: Bind its `tabIndex` to a host element before calling `focus()`. Native `<input>` and `<editor>` controls are focusable by default; new roots and overlays initially focus the first innermost control.
+  - `createLayoutEffect(fn)`: Executes synchronously after subtree measurement/layout.
+  - `createCommitEffect(fn)`: Executes after terminal frame output has been emitted.
+
+### 3. Element Vocabulary
+
+The JSX namespace declares intrinsics compiled by the Solid universal transform:
+
+| Category | Elements | Description |
+|---|---|---|
+| **Layout & Containers** | `<stack>`, `<row>`, `<box>`, `<sized>`, `<rail>`, `<scroll>`, `<split>`, `<frame>`, `<hr>` | Row allocation with `grow`/`shrink`, padding, borders, dividers, scrollable viewports. |
+| **Text & Inline** | `<text>`, `<span>`, `<br>`, `<cursor>`, `<raw>`, `<path>`, `<link>` | Word-wrapping text, middle-ellipsis file paths (`<path>`), OSC 8 hyperlinks, cursor anchors. |
+| **Presentation & Tokens** | `<icon>`, `<status>`, `<badge>`, `<meta>`, `<preview>`, `<code>`, `<pre>`, `<diff>`, `<markdown>`, `<json>`, `<table>`, `<progress>`, `<spinner>`, `<shimmer>`, `<duration>`, `<timestamp>`, `<choice>`, `<select>`, `<tabs>`, `<tree>` | Semantic status indicators, syntax highlighting, diffs, tables, animated spinners. |
+| **Interactive & Resources** | `<input>`, `<editor>`, `<terminal>`, `<image>`, `<qr>` | Text input, multi-line editor, headless PTY terminal, Kitty/iTerm2 images, QR codes. |
+| **Transcript Structure** | `<transcript>`, `<transcript-block>` | Transcript container with append-only streaming and retirement boundaries. |
+
+Transcript entries become `settled` when their displayed operation returns, independently of background execution tracking. Completed read groups remain appendable until retired; adding a pending read reactivates the group. Following prose closes the run, and reads arriving after retirement start a new group.
+
+Tool entries may supply a lazy, one-row `compactView`, used only while that tool is active and its own output exceeds the transcript viewport. Completed tools and fitting active tools are never compacted to make room for prose. Scrollback always uses the full `view`; explicit replay refreshes retired document caches for later background results.
+
+Streaming assistant entries use `createStreamingAssistantMessageView`: construct its state outside rendering, then pass its lazy `view`, `stableView`, and `onResetStableRows` to an `appendOnly` transcript entry. Forward `onStableRows` publications through `store.replace`. Both view factories mount beneath the TUI owner; parser-frozen Markdown prefixes retire during streaming, and finalization retires the remaining text or images without duplicating earlier rows.
+
+### 4. Shared UI Compositions
+
+High-level function components are provided in `@oh-my-pi/pi-tui/view/*`:
+
+- `ToolCard`: Framed tool presentation with phase-driven tinting and collapse headers.
+- `ToolHeader`: Standard tool title row with status icon, duration, and labels.
+- `Card`, `Section`: Grouping and surface containers.
+- `KeyValue`: Label-value grid with automatic column alignment.
+- `List`, `TreeList`, `FileList`: Uniform item list presentations.
+- `DiagnosticTree`: File-grouped diagnostics with severity ordering, preserved multiline indentation, and a shared collapsed-item budget.
+- `JsonTree`: Interactive expandable JSON explorer.
+- `Kbd`, `Hints`: Keyboard shortcut badges and hint bars.
+- `StatusIcon`: Resolves execution states to theme icons and colors.
+- `DiffStats`: Displays line modification counts (`+12 -3`).
+- `TruncationNotice`: Summary indicator for truncated outputs.
+
+### 5. Styling Tokens and Cascade
+
+Styling is based on semantic tokens:
+- **Foreground tokens (`ThemeColor`)**: `"text"`, `"muted"`, `"dim"`, `"accent"`, `"success"`, `"error"`, `"warning"`, `"info"`, etc.
+- **Background tokens (`ThemeBg`)**: `"surface"`, `"surface.tool"`, `"surface.muted"`, `"selected"`, `"toolPendingBg"`, etc.
+
+**Cascade Precedence (lowest to highest):**
+1. Element Defaults
+2. Inherited Text Properties (`color`, `bold`, `dim`, `italic`, `underline`, `strike`, `link`)
+3. Element Variant / State
+4. Named Recipe (`recipe="..."`)
+5. Local Style (`style={Style}`)
+6. Explicit Props (`color="accent"`, `bold={true}`)
+
+Use `<ThemeScope theme={customTheme}>` to re-theme a nested subtree.
+
+### 6. Streaming Documents
+
+Large texts (diffs, markdown, code, command output) use `TextDocument` or `OutputDocument`:
+
+```ts
+import { createDocument, createOutputDocument } from "@oh-my-pi/pi-tui/document/document";
+
+const doc = createOutputDocument("Initial content\n");
+doc.apply({ kind: "append", text: "New streaming line\n" });
+```
+
+Document-aware elements (`<code>`, `<diff>`, `<markdown>`, `<preview>`) bind to documents via `doc={doc}` and invalidate syntax-highlighting caches incrementally.
+
+### 7. Tool Presentation (`ToolViewDefinition`)
+
+Tool views implement `ToolViewDefinition<TArgs, TDetails>` from `@oh-my-pi/pi-tui/tools/view`:
+
+```tsx
+import type { ToolViewDefinition, ToolViewProps } from "@oh-my-pi/pi-tui/tools/view";
+import { ToolCard } from "@oh-my-pi/pi-tui/view/tool-card";
+import { ToolHeader } from "@oh-my-pi/pi-tui/view/tool-header";
+import { registerToolView } from "@oh-my-pi/pi-tui/tools/registry";
+
+export const MyToolView: ToolViewDefinition<{ query: string }, { count: number }> = {
+  view: (props: ToolViewProps<{ query: string }, { count: number }>) => (
+    <ToolCard phase={props.phase} outcome={props.outcome}>
+      <ToolHeader toolName={props.toolName} label={props.label} phase={props.phase} outcome={props.outcome} />
+      <box paddingX={1}>
+        <text color="accent">Query: {props.args.query}</text>
+      </box>
+    </ToolCard>
+  ),
+  summary: (props) => ({
+    label: props.label,
+    detail: props.args.query,
+    status: props.phase === "running" ? "running" : props.outcome === "success" ? "done" : "error",
+  }),
 };
-tui.addChild(editor);
 
-// Start
-tui.start();
+registerToolView("my_tool", MyToolView);
 ```
 
-## Core API
+### 8. Testing Substrate (`@oh-my-pi/pi-tui/testing`)
 
-### TUI
+Inspect and assert components in headless unit tests:
 
-Main container that manages components and rendering.
+```ts
+import { mountForTest, renderToRows, type TestRoot } from "@oh-my-pi/pi-tui/testing";
 
-```typescript
-const tui = new TUI(terminal);
-tui.addChild(component);
-tui.removeChild(component);
-tui.start();
-tui.stop();
-tui.requestRender(); // Request a re-render
-tui.requestComponentRender(component); // Re-render only the root subtree containing `component` when safe (falls back to a full render on resize, overlays, images, or concurrent full requests)
+const root: TestRoot = mountForTest(() => <MyView value={signal()} />, { width: 80 });
 
-// Global debug key handler (Shift+Ctrl+D)
-tui.onDebug = () => console.log("Debug triggered");
+// Assert visible row text:
+expect(root.text()).toContain("Expected Row");
+
+// Check fine-grained performance counters:
+const initial = root.counters().nodesCreated;
+setSignal("updated");
+root.flush();
+expect(root.counters().nodesCreated).toBe(initial); // Zero DOM re-creations!
+
+root.dispose();
 ```
 
-### Component Interface
-
-All components implement:
-
-```typescript
-interface Component {
-	render(width: number): readonly string[];
-	handleInput?(data: string): void;
-	invalidate?(): void;
-}
-```
-
-| Method               | Description                                                                                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `render(width)`      | Returns an array of strings, one per line. Each line **must not exceed `width`** or the TUI will error. Use `truncateToWidth()` or manual wrapping to ensure this. The result is component-owned and immutable to callers; return the same array reference when unchanged (enables renderer memoization) and a new array when content changed. |
-| `handleInput?(data)` | Called when the component has focus and receives keyboard input. The `data` string contains raw terminal input (may include ANSI escape sequences).                |
-| `invalidate?()`      | Called to clear any cached render state. Components should re-render from scratch on the next `render()` call.                                                     |
-
-## Built-in Components
-
-### Composition
-
-Build screens from persistent components and update their data, selection, expansion, or size through setters. Layouts own child bounds and mouse-coordinate translation; controllers retain domain workflows and asynchronous operations. Propagate `invalidate()` after theme changes and `dispose()` when removing an owned component tree.
-
-| Family | Components | Import |
-| --- | --- | --- |
-| Layout | `Stack`, `Row`, `SplitPane` | package root |
-| Panels | `OverlayPanel`, `PanelRows`, `PanelDivider` | `/chrome` |
-| Menus | `SelectList`, `MenuSelection` | package root |
-| Forms | `Form`, `FormField`, `TextFormField`, `SelectFormField`, `SettingsFormField` | package root |
-| Wizard steps | `WizardStep` | package root |
-| Viewports | `ScrollView`, including child rendering, follow-tail, and keyed range anchoring | package root |
-| Trees | `TreeView` | package root |
-| Disclosure | `Disclosure`, with lazy summary/detail children | package root |
-| Messages | `FramedMessageComponent`, `MessageNoticeComponent`, `MessageDividerComponent` | `/chrome` |
-| Tool output | `ToolCard`, `framedToolCard`, `plainToolCard`, `OutputPane` | `/render` |
-| Transcripts | `TranscriptBrowser` | package root |
-| Data | `MetricRow`, `ProgressBar`, `Table`, `KeyValueList`, `Section` | package root |
-
-```typescript
-import { Disclosure, SplitPane, Text } from "@oh-my-pi/pi-tui";
-
-const diagnostics = new Disclosure({
-	summary: new Text("2 build diagnostics", 0, 0),
-	body: () => new Text("src/index.ts:12 — unused import\nsrc/config.ts:8 — missing property", 0, 0),
-});
-
-const view = new SplitPane({
-	left: new Text("Build diagnostics", 0, 0),
-	right: diagnostics,
-	leftSize: { fixed: 24 },
-	rightMinWidth: 30,
-	splitAt: 60,
-	narrowPane: "right",
-	height: 12,
-});
-
-diagnostics.setExpanded(true);
-view.setHeight(16);
-```
-
-`ScrollView.revealRange()` preserves manual scrolling while a selection is unchanged; `mode: "once"` supports asynchronously arriving initial selections. `OutputPane.append()` accepts incremental terminal output, including carriage-return updates; call `finish()` when the stream ends.
-
-### Container
-
-Groups child components.
-
-```typescript
-const container = new Container();
-container.addChild(component);
-container.removeChild(component);
-```
-
-### Box
-
-Container that applies padding and background color to all children.
-
-```typescript
-const box = new Box(
-	1, // paddingX (default: 1)
-	1, // paddingY (default: 1)
-	(text) => chalk.bgGray(text), // optional background function
-);
-box.addChild(new Text("Content"));
-box.setBgFn((text) => chalk.bgBlue(text)); // Change background dynamically
-```
-
-### Text
-
-Displays multi-line text with word wrapping and padding.
-
-```typescript
-const text = new Text(
-	"Hello World", // text content
-	1, // paddingX (default: 1)
-	1, // paddingY (default: 1)
-	(text) => chalk.bgGray(text), // optional background function
-);
-text.setText("Updated text");
-text.setCustomBgFn((text) => chalk.bgBlue(text));
-```
-
-### TruncatedText
-
-Single-line text that truncates to fit viewport width. Useful for status lines and headers.
-
-```typescript
-const truncated = new TruncatedText(
-	"This is a very long line that will be truncated...",
-	0, // paddingX (default: 0)
-	0, // paddingY (default: 0)
-);
-```
-
-### Input
-
-Single-line text input with horizontal scrolling.
-
-```typescript
-const input = new Input();
-input.onSubmit = (value) => console.log(value);
-input.setValue("initial");
-input.getValue();
-```
-
-**Key Bindings:**
-
-- `Enter` - Submit
-- `Ctrl+A` / `Ctrl+E` - Line start/end
-- `Ctrl+W` or `Alt+Backspace` - Delete word backwards
-- `Ctrl+U` - Delete to start of line
-- `Ctrl+K` - Delete to end of line
-- `Ctrl+Left` / `Ctrl+Right` - Word navigation
-- `Alt+Left` / `Alt+Right` - Word navigation
-- Arrow keys, Backspace, Delete work as expected
-
-### Editor
-
-Multi-line text editor with autocomplete, file completion, and paste handling.
-
-```typescript
-interface SymbolTheme {
-	cursor: string;
-	ellipsis: string;
-	boxRound: {
-		topLeft: string;
-		topRight: string;
-		bottomLeft: string;
-		bottomRight: string;
-		horizontal: string;
-		vertical: string;
-	};
-	boxSharp: {
-		topLeft: string;
-		topRight: string;
-		bottomLeft: string;
-		bottomRight: string;
-		horizontal: string;
-		vertical: string;
-		teeDown: string;
-		teeUp: string;
-		teeLeft: string;
-		teeRight: string;
-		cross: string;
-	};
-	table: {
-		topLeft: string;
-		topRight: string;
-		bottomLeft: string;
-		bottomRight: string;
-		horizontal: string;
-		vertical: string;
-		teeDown: string;
-		teeUp: string;
-		teeLeft: string;
-		teeRight: string;
-		cross: string;
-	};
-	quoteBorder: string;
-	hrChar: string;
-	spinnerFrames: string[];
-}
-
-interface EditorTheme {
-	borderColor: (str: string) => string;
-	selectList: SelectListTheme;
-	symbols: SymbolTheme;
-}
-
-const editor = new Editor(theme);
-editor.onSubmit = (text) => console.log(text);
-editor.onChange = (text) => console.log("Changed:", text);
-editor.disableSubmit = true; // Disable submit temporarily
-editor.setAutocompleteProvider(provider);
-editor.borderColor = (s) => chalk.blue(s); // Change border dynamically
-```
-
-**Features:**
-
-- Multi-line editing with word wrap
-- Slash command autocomplete (type `/`)
-- File path autocomplete (press `Tab`)
-- Large paste handling (>10 lines creates `[paste #1 +50 lines]` marker)
-- Horizontal lines above/below editor
-- Fake cursor rendering (hidden real cursor)
-
-**Key Bindings:**
-
-- `Enter` - Submit
-- `Shift+Enter`, `Ctrl+Enter`, or `Alt+Enter` - New line (terminal-dependent, Alt+Enter most reliable)
-- `Tab` - Autocomplete
-- `Ctrl+K` - Delete line
-- `Alt+D` / `Alt+Delete` - Delete word forward
-- `Ctrl+A` / `Ctrl+E` - Line start/end
-- `Ctrl+-` - Undo last edit
-- Arrow keys, Backspace, Delete work as expected
-
-### Markdown
-
-Renders markdown with syntax highlighting and theming support.
-
-```typescript
-interface MarkdownTheme {
-	heading: (text: string) => string;
-	link: (text: string) => string;
-	linkUrl: (text: string) => string;
-	code: (text: string) => string;
-	codeBlock: (text: string) => string;
-	codeBlockBorder: (text: string) => string;
-	quote: (text: string) => string;
-	quoteBorder: (text: string) => string;
-	hr: (text: string) => string;
-	listBullet: (text: string) => string;
-	bold: (text: string) => string;
-	italic: (text: string) => string;
-	strikethrough: (text: string) => string;
-	underline: (text: string) => string;
-	highlightCode?: (code: string, lang?: string) => string[];
-	symbols: SymbolTheme;
-}
-
-interface DefaultTextStyle {
-	color?: (text: string) => string;
-	bgColor?: (text: string) => string;
-	bold?: boolean;
-	italic?: boolean;
-	strikethrough?: boolean;
-	underline?: boolean;
-}
-
-const md = new Markdown(
-	"# Hello\n\nSome **bold** text",
-	1, // paddingX
-	1, // paddingY
-	theme, // MarkdownTheme
-	defaultStyle, // optional DefaultTextStyle
-	2, // optional code block indent (spaces)
-);
-md.setText("Updated markdown");
-```
-
-**Features:**
-
-- Headings, bold, italic, code blocks, lists, links, blockquotes
-- HTML tags rendered as plain text
-- Optional syntax highlighting via `highlightCode`
-- Padding support
-- Render caching for performance
-
-### Loader
-
-Animated loading spinner.
-
-```typescript
-const loader = new Loader(
-	tui, // TUI instance for render updates
-	(s) => chalk.cyan(s), // spinner color function
-	(s) => chalk.gray(s), // message color function
-	"Loading...", // message (default: "Loading...")
-);
-loader.start();
-loader.setMessage("Still loading...");
-loader.stop();
-```
-
-### CancellableLoader
-
-Extends Loader with Escape key handling and an AbortSignal for cancelling async operations.
-
-```typescript
-const loader = new CancellableLoader(
-	tui, // TUI instance for render updates
-	(s) => chalk.cyan(s), // spinner color function
-	(s) => chalk.gray(s), // message color function
-	"Working...", // message
-);
-loader.onAbort = () => done(null); // Called when user presses Escape
-doAsyncWork(loader.signal).then(done);
-```
-
-**Properties:**
-
-- `signal: AbortSignal` - Aborted when user presses Escape
-- `aborted: boolean` - Whether the loader was aborted
-- `onAbort?: () => void` - Callback when user presses Escape
-
-### SelectList
-
-Interactive selection list with keyboard navigation.
-
-```typescript
-interface SelectItem {
-	value: string;
-	label: string;
-	description?: string;
-}
-
-interface SelectListTheme {
-	selectedPrefix: (text: string) => string;
-	selectedText: (text: string) => string;
-	description: (text: string) => string;
-	scrollInfo: (text: string) => string;
-	noMatch: (text: string) => string;
-	symbols: SymbolTheme;
-}
-
-const list = new SelectList(
-	[
-		{ value: "opt1", label: "Option 1", description: "First option" },
-		{ value: "opt2", label: "Option 2", description: "Second option" },
-	],
-	5, // maxVisible
-	theme, // SelectListTheme
-);
-
-list.onSelect = (item) => console.log("Selected:", item);
-list.onCancel = () => console.log("Cancelled");
-list.onSelectionChange = (item) => console.log("Highlighted:", item);
-list.setFilter("opt"); // Filter items
-```
-
-**Controls:**
-
-- Arrow keys: Navigate
-- Enter: Select
-- Escape: Cancel
-
-### SettingsList
-
-Settings panel with value cycling and submenus.
-
-```typescript
-interface SettingItem {
-	id: string;
-	label: string;
-	description?: string;
-	currentValue: string;
-	values?: string[]; // If provided, Enter/Space cycles through these
-	submenu?: (currentValue: string, done: (selectedValue?: string) => void) => Component;
-}
-
-interface SettingsListTheme {
-	label: (text: string, selected: boolean) => string;
-	value: (text: string, selected: boolean) => string;
-	description: (text: string) => string;
-	cursor: string;
-	hint: (text: string) => string;
-}
-
-const settings = new SettingsList(
-	[
-		{ id: "theme", label: "Theme", currentValue: "dark", values: ["dark", "light"] },
-		{ id: "model", label: "Model", currentValue: "gpt-4", submenu: (val, done) => modelSelector },
-	],
-	10, // maxVisible
-	theme, // SettingsListTheme
-	(id, newValue) => console.log(`${id} changed to ${newValue}`),
-	() => console.log("Cancelled"),
-);
-settings.updateValue("theme", "light");
-```
-
-**Controls:**
-
-- Arrow keys: Navigate
-- Enter/Space: Activate (cycle value or open submenu)
-- Escape: Cancel
-
-### Spacer
-
-Empty lines for vertical spacing.
-
-```typescript
-const spacer = new Spacer(2); // 2 empty lines (default: 1)
-```
-
-### Image
-
-Renders images inline for terminals that support the Kitty graphics protocol (Kitty, Ghostty, WezTerm, and Warp on macOS/Linux) or iTerm2 inline images. Falls back to a text placeholder on unsupported terminals.
-
-```typescript
-interface ImageTheme {
-	fallbackColor: (str: string) => string;
-}
-
-interface ImageOptions {
-	maxWidthCells?: number;
-	maxHeightCells?: number;
-	filename?: string;
-}
-
-const image = new Image(
-	base64Data, // base64-encoded image data
-	"image/png", // MIME type
-	theme, // ImageTheme
-	options, // optional ImageOptions
-);
-tui.addChild(image);
-```
-
-Supported formats: PNG, JPEG, GIF, WebP. Dimensions are parsed from the image headers automatically.
-
-## Autocomplete
-
-### CombinedAutocompleteProvider
-
-Supports both slash commands and file paths.
-
-```typescript
-import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui";
-import { getProjectDir } from "@oh-my-pi/pi-utils";
-
-const provider = new CombinedAutocompleteProvider(
-	[
-		{ name: "help", description: "Show help" },
-		{ name: "clear", description: "Clear screen" },
-		{ name: "delete", description: "Delete last message" },
-	],
-	getProjectDir(), // base path for file completion
-);
-
-editor.setAutocompleteProvider(provider);
-```
-
-**Features:**
-
-- Type `/` to see slash commands
-- Press `Tab` for file path completion
-- Works with `~/`, `./`, `../`, and `@` prefix
-- Filters to attachable files for `@` prefix
-
-## Key Detection
-
-Helper functions for detecting keyboard input (supports Kitty keyboard protocol):
-
-```typescript
-import {
-	isEnter,
-	isEscape,
-	isTab,
-	isShiftTab,
-	isArrowUp,
-	isArrowDown,
-	isArrowLeft,
-	isArrowRight,
-	isCtrlA,
-	isCtrlC,
-	isCtrlE,
-	isCtrlK,
-	isCtrlO,
-	isCtrlP,
-	isCtrlLeft,
-	isCtrlRight,
-	isAltLeft,
-	isAltRight,
-	isShiftEnter,
-	isAltEnter,
-	isShiftCtrlO,
-	isShiftCtrlD,
-	isShiftCtrlP,
-	isBackspace,
-	isDelete,
-	isHome,
-	isEnd,
-	// ... and more
-} from "@oh-my-pi/pi-tui";
-
-if (isCtrlC(data)) {
-	process.exit(0);
-}
-```
-
-## Differential Rendering
-
-The TUI uses three rendering strategies:
-
-1. **First Render**: Output all lines without clearing scrollback
-2. **Width Changed or Change Above Viewport**: Clear screen and full re-render
-3. **Normal Update**: Move cursor to first changed line, clear to end, render changed lines
-
-All updates are wrapped in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for atomic, flicker-free rendering unless `PI_NO_SYNC_OUTPUT=1` is set. The opt-out removes only the DEC 2026 wrapper; paint writes still guard terminal autowrap to avoid pending-wrap cursor artifacts.
-
-## Terminal Interface
-
-The TUI works with any object implementing the `Terminal` interface:
-
-```typescript
-interface Terminal {
-	start(onInput: (data: string) => void, onResize: () => void, onDisconnect?: () => void): void;
-	stop(): void;
-	write(data: string): void;
-	get columns(): number;
-	get rows(): number;
-	moveBy(lines: number): void;
-	hideCursor(force?: boolean): void;
-	showCursor(force?: boolean): void;
-	clearLine(): void;
-	clearFromCursor(): void;
-	clearScreen(): void;
-}
-```
-
-**Built-in implementations:**
-
-- `ProcessTerminal` - Uses `process.stdin/stdout`
-- `VirtualTerminal` - For testing (uses kitty-vt-wasm)
-
-## Utilities
-
-```typescript
-import { Ellipsis, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-
-// Get visible width of string (ignoring ANSI codes, uses Bun.stringWidth)
-const width = visibleWidth("\x1b[31mHello\x1b[0m"); // 5
-
-// Truncate string to width (preserving ANSI codes, adds ellipsis)
-const truncated = truncateToWidth("Hello World", 8); // "Hello…" (default: Ellipsis.Unicode)
-
-// Truncate without ellipsis
-const truncatedNoEllipsis = truncateToWidth("Hello World", 8, Ellipsis.Omit); // "Hello Wo"
-
-// Wrap text to width (Bun.wrapAnsi word wrap, trims line ends, preserves ANSI)
-const lines = wrapTextWithAnsi("This is a long line that needs wrapping", 20);
-// ["This is a long line", "that needs wrapping"]
-```
-
-## Creating Custom Components
-
-When creating custom components, **each line returned by `render()` must not exceed the `width` parameter**. The TUI will error if any line is wider than the terminal.
-
-### Handling Input
-
-Use the key detection utilities to handle keyboard input:
-
-```typescript
-import { isEnter, isEscape, isArrowUp, isArrowDown, isCtrlC, isTab, isBackspace } from "@oh-my-pi/pi-tui";
-import type { Component } from "@oh-my-pi/pi-tui";
-
-class MyInteractiveComponent implements Component {
-	private selectedIndex = 0;
-	private items = ["Option 1", "Option 2", "Option 3"];
-
-	onSelect?: (index: number) => void;
-	onCancel?: () => void;
-
-	handleInput(data: string): void {
-		if (isArrowUp(data)) {
-			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-		} else if (isArrowDown(data)) {
-			this.selectedIndex = Math.min(this.items.length - 1, this.selectedIndex + 1);
-		} else if (isEnter(data)) {
-			this.onSelect?.(this.selectedIndex);
-		} else if (isEscape(data) || isCtrlC(data)) {
-			this.onCancel?.();
-		}
-	}
-
-	render(width: number): readonly string[] {
-		return this.items.map((item, i) => {
-			const prefix = i === this.selectedIndex ? "> " : "  ";
-			return truncateToWidth(prefix + item, width);
-		});
-	}
-}
-```
-
-### Handling Line Width
-
-Use the provided utilities to ensure lines fit:
-
-```typescript
-import { visibleWidth, truncateToWidth } from "@oh-my-pi/pi-tui";
-import type { Component } from "@oh-my-pi/pi-tui";
-
-class MyComponent implements Component {
-	private text: string;
-
-	constructor(text: string) {
-		this.text = text;
-	}
-
-	render(width: number): readonly string[] {
-		// Option 1: Truncate long lines
-		return [truncateToWidth(this.text, width)];
-
-		// Option 2: Check and pad to exact width
-		const line = this.text;
-		const visible = visibleWidth(line);
-		if (visible > width) {
-			return [truncateToWidth(line, width)];
-		}
-		// Pad to exact width (optional, for backgrounds)
-		return [line + " ".repeat(width - visible)];
-	}
-}
-```
-
-### ANSI Code Considerations
-
-`visibleWidth()`, `truncateToWidth()`, and `wrapTextWithAnsi()` correctly handle ANSI escape codes:
-
-- `visibleWidth()` ignores ANSI codes when calculating width (via `Bun.stringWidth`)
-- `truncateToWidth()` preserves ANSI codes and properly closes them when truncating
-- `wrapTextWithAnsi()` preserves ANSI codes while word-wrapping and trimming line ends
-
-```typescript
-import chalk from "@oh-my-pi/pi-utils/chalk";
-
-const styled = chalk.red("Hello") + " " + chalk.blue("World");
-const width = visibleWidth(styled); // 11 (not counting ANSI codes)
-const truncated = truncateToWidth(styled, 8); // Red "Hello" + " W..." with proper reset
-```
-
-### Caching
-
-For performance, components should cache their rendered output and only re-render when necessary:
-
-```typescript
-class CachedComponent implements Component {
-	private text: string;
-	private cachedWidth?: number;
-	private cachedLines?: string[];
-
-	render(width: number): readonly string[] {
-		if (this.cachedLines && this.cachedWidth === width) {
-			return this.cachedLines;
-		}
-
-		const lines = [truncateToWidth(this.text, width)];
-
-		this.cachedWidth = width;
-		this.cachedLines = lines;
-		return lines;
-	}
-
-	invalidate(): void {
-		this.cachedWidth = undefined;
-		this.cachedLines = undefined;
-	}
-}
-```
-
-## Example
-
-See `test/chat-simple.ts` for a complete chat interface example with:
-
-- Markdown messages with custom background colors
-- Loading spinner during responses
-- Editor with autocomplete and slash commands
-- Spacers between messages
-
-Run it:
-
-```bash
-npx tsx test/chat-simple.ts
-```
-
-## Development
-
-```bash
-# Install dependencies (from monorepo root)
-npm install
-
-# Run type checking
-npm run check
-
-# Run the demo
-npx tsx test/chat-simple.ts
-```
+---
+
+## Migration Reference
+
+| Legacy API (Removed) | Modern Reactive Replacement | Motivation |
+|---|---|---|
+| `interface Component { paint(out, width); }` | Declarative Solid JSX function `(props) => JSX.Element` | Retained host tree eliminates manual paint loops and whole-tree repaints. |
+| `class Mount` | `render()` or nested JSX components | Views connect directly to the universal host tree without facade wrappers. |
+| `this.invalidate()` / `requestRender()` | Solid signal / store mutation (`setSignal(...)`) | Fine-grained dependency tracking updates only damaged subtrees. |
+| `useState`, `useMemo`, `useEffect` (custom) | `createSignal`, `createMemo`, `createEffect`, `onCleanup` | Standard SolidJS reactive engine. |
+| `theme.fg(...)` / `theme.bg(...)` string escapes | `<text color="accent">`, `<box background="surface">` | Semantic token cascade resolved at paint time; no ANSI strings in views. |
+| `truncateToWidth()` / `visibleWidth()` in views | `<row>` flex allocation & `<text overflow="ellipsis">` | Layout engine handles cell width budgeting and Unicode widths automatically. |
+| `renderCall` / `renderResult` returning `Component` | `toolView: ToolViewDefinition` | Unifies call and result presentation into one reactive lifecycle view. |
+| `registerMessageRenderer` returning `Component` | `registerMessageView` returning `JSX.Element` | Custom messages are declarative reactive views. |
+| `TUI.setFocus(component)` | `const { focus } = useFocus(); focus();` | Focus runtime integrated with host element tree. |

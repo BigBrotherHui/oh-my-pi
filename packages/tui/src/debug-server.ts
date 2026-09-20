@@ -1,6 +1,9 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { type Component, isFocusable, type OverlayOptions, type TUI } from "./tui";
+import type { OverlayOptions, TUI } from "./tui";
+import { focusedElement } from "./host/focus";
+import { hostSlotChildren } from "./host/node";
+import type { HostElement, HostNode } from "./host/types";
 import { replaceTabs } from "./utils";
 
 export interface TuiDebugTreeNode {
@@ -75,18 +78,12 @@ function errorMessage(error: unknown): string {
 	}
 }
 
-function componentChildren(component: Component): readonly Component[] {
-	if (component.debugChildren !== undefined) return component.debugChildren;
-	if (!("children" in component)) return [];
-	const children = (component as Component & { children?: unknown }).children;
-	if (!Array.isArray(children)) return [];
-	return children.filter((child): child is Component => {
-		return typeof child === "object" && child !== null && "render" in child && typeof child.render === "function";
-	});
+function nodeChildren(node: HostNode): readonly HostNode[] {
+	return node.kind === "text" ? [] : [...node.children, ...hostSlotChildren(node)];
 }
 
-function componentKind(component: Component): string {
-	return component.debugKind ?? component.constructor.name;
+function nodeKind(node: HostNode): string {
+	return node.kind === "text" ? "text" : node.tag;
 }
 
 function serializableBand(options: OverlayOptions | undefined): unknown {
@@ -337,14 +334,14 @@ export class TuiDebugServer {
 				return { ok: true, values: this.#values() };
 			case "info": {
 				const paint = this.#tui.getDebugPaint();
-				const focused = this.#tui.getFocused();
+				const focused = this.#focusedNode();
 				return {
 					ok: true,
 					columns: this.#tui.terminal.columns,
 					rows: this.#tui.terminal.rows,
 					pid: process.pid,
 					overlays: this.#tui.overlayStack.length,
-					focused: focused === null ? null : componentKind(focused),
+					focused: focused === null ? null : nodeKind(focused),
 					alt_screen: paint?.altScreen ?? false,
 					cursor: paint?.cursor ?? { visible: false },
 				};
@@ -378,45 +375,68 @@ export class TuiDebugServer {
 		}
 	}
 
-	#node(component: Component): TuiDebugTreeNode {
-		const children = componentChildren(component);
-		const focusable = isFocusable(component);
+	#focusedNode(): HostElement | null {
+		const overlay = this.#tui.overlayStack.find(entry => entry.component.focused);
+		const root = overlay?.component.root ?? this.#tui.getDebugRoot();
+		return root ? focusedElement(root) : null;
+	}
+
+	#node(node: HostNode, focused: HostElement | null): TuiDebugTreeNode {
+		const children = nodeChildren(node);
+		const focusable =
+			node.kind === "element" &&
+			(typeof node.props.tabIndex === "number" || node.tag === "input" || node.tag === "editor");
 		return {
-			kind: componentKind(component),
-			...(component.debugId === undefined ? {} : { id: component.debugId }),
-			...(focusable ? { focusable: true, focused: component === this.#tui.getFocused() } : {}),
-			...(children.length === 0 ? {} : { children: children.map(child => this.#node(child)) }),
+			kind: nodeKind(node),
+			id: String(node.id),
+			...(focusable ? { focusable: true, focused: node === focused } : {}),
+			...(children.length === 0 ? {} : { children: children.map(child => this.#node(child, focused)) }),
 		};
 	}
 
 	#tree(): TuiDebugTree {
+		const root = this.#tui.getDebugRoot();
+		const focused = this.#focusedNode();
 		return {
-			root: this.#node(this.#tui),
+			root: root ? this.#node(root, focused) : { kind: "root" },
 			overlays: this.#tui.overlayStack.map((entry, overlay) => ({
 				overlay,
 				...(entry.options === undefined ? {} : { band: serializableBand(entry.options) }),
 				...(entry.hidden ? { hidden: true } : {}),
-				root: this.#node(entry.component),
+				root: this.#node(entry.component.root, focused),
 			})),
 		};
 	}
 
 	#values(): Record<string, unknown> {
 		const values: Record<string, unknown> = {};
-		const visit = (component: Component, path: readonly number[]): void => {
-			const kind = componentKind(component);
-			if (component.debugState !== undefined) {
-				const key = component.debugId === undefined ? `${kind}[${path.join(".")}]` : `${kind}#${component.debugId}`;
-				values[key] = component.debugState();
+		const visit = (node: HostNode): void => {
+			const state: Record<string, unknown> = {};
+			if (node.kind === "text") state.text = node.text;
+			else {
+				for (const [key, value] of Object.entries(node.props)) {
+					if (
+						value === null ||
+						typeof value === "string" ||
+						typeof value === "number" ||
+						typeof value === "boolean"
+					)
+						state[key] = value;
+				}
+				if (
+					node.state !== null &&
+					typeof node.state === "object" &&
+					"value" in node.state &&
+					typeof node.state.value === "string"
+				)
+					state.value = node.state.value;
 			}
-			componentChildren(component).forEach((child, index) => {
-				visit(child, [...path, index]);
-			});
+			if (Object.keys(state).length > 0) values[`${nodeKind(node)}#${node.id}`] = state;
+			for (const child of nodeChildren(node)) visit(child);
 		};
-		visit(this.#tui, []);
-		this.#tui.overlayStack.forEach((entry, index) => {
-			visit(entry.component, [this.#tui.children.length + index]);
-		});
+		const root = this.#tui.getDebugRoot();
+		if (root) visit(root);
+		for (const entry of this.#tui.overlayStack) visit(entry.component.root);
 		return values;
 	}
 }

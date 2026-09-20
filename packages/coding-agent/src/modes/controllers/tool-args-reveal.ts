@@ -1,9 +1,8 @@
-import type { Component } from "@oh-my-pi/pi-tui";
 import { parseStreamingJson, parseStreamingJsonThrottled, STREAMING_JSON_PARSE_MIN_GROWTH } from "@oh-my-pi/pi-utils";
 import { nextStep, STREAMING_REVEAL_FRAME_MS } from "./streaming-reveal";
 
-/** Minimal component surface the reveal pushes frames into. */
-type ToolArgsRevealComponent = Component & {
+/** Minimal ingress surface the reveal pushes frames into. */
+type ToolArgsRevealComponent = {
 	updateArgs(args: unknown, toolCallId?: string): void;
 };
 
@@ -16,7 +15,7 @@ const STREAMING_STRING_KEYS_BY_TOOL: Record<string, readonly string[]> = {
 	// write.content also carries xd:// device args (a JSON string) — the same
 	// incremental decode feeds the delegated tool renderer live inner args.
 	write: ["content"],
-	edit: ["input", "_input"],
+	edit: ["input", "_input", "new_string"],
 	eval: ["code"],
 };
 
@@ -31,7 +30,7 @@ type ToolArgsRevealControllerOptions = {
 	/** Called after each reveal tick with the component whose subtree changed;
 	 *  callers scope the render to that subtree instead of forcing a full-tree
 	 *  walk at 30fps (issue #4377). */
-	requestRender(component: Component): void;
+	requestRender(component: ToolArgsRevealComponent): void;
 };
 
 type StreamingJsonStringExtractorResult = {
@@ -480,7 +479,7 @@ export function decodeStreamedToolArgs(partialJson: string, source: StreamedTool
  */
 export class ToolArgsRevealController {
 	readonly #getSmoothStreaming: () => boolean;
-	readonly #requestRender: (component: Component) => void;
+	readonly #requestRender: (component: ToolArgsRevealComponent) => void;
 	readonly #entries = new Map<string, RevealEntry>();
 	#timer: NodeJS.Timeout | undefined;
 

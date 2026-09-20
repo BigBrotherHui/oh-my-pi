@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
+import type { AutocompleteItem } from "@oh-my-pi/pi-tui/autocomplete";
 import { getMCPConfigPath, getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import { formatModelRoleAlias, getKnownRoleIds } from "../config/model-roles";
 import { readMCPConfigFile } from "../mcp/config-writer";

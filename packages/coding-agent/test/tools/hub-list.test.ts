@@ -15,7 +15,7 @@ import { collectIrcPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import { executeList, executeSend } from "@oh-my-pi/pi-coding-agent/tools/hub/messaging";
-import { DEFAULT_HUB_LIST_LIMIT, MAX_HUB_LIST_LIMIT } from "@oh-my-pi/pi-tui/tools/hub";
+import { DEFAULT_HUB_LIST_LIMIT, MAX_HUB_LIST_LIMIT } from "@oh-my-pi/pi-tui/tools/hub-contract";
 import { prompt, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 
 function sessionHeader(id: string): string {

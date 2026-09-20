@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { type TerminalFramePlan, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
+import {
+	RichText,
+	Style,
+	type TerminalFramePlan,
+	type TerminalFrameProvider,
+	TUI,
+	type ViewportSize,
+} from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
 // Regression coverage for a resize on Warp under Windows ConPTY leaving the
@@ -29,6 +36,15 @@ const DSR = "\x1b[6n";
 const COMMITTED = ["committed-0", "committed-1", "committed-2"];
 
 const TERMINAL_ENV = ["TERM", "TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "TMUX", "STY", "ZELLIJ", "HERDR_ENV"] as const;
+
+function textFrame(rows: readonly string[]): RichText {
+	const frame = new RichText();
+	for (const row of rows) {
+		frame.push(Style.NONE, row);
+		frame.br();
+	}
+	return frame;
+}
 
 /**
  * Windows ConPTY host: answers DSR from its own re-homed cursor (column 1
@@ -66,10 +82,12 @@ class ReplayProvider implements TerminalFrameProvider {
 
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		const rows = Array.from({ length: Math.min(this.liveRows, viewport.rows) }, (_v, index) => `live-${index}`);
-		return { history: this.history, viewport: rows };
+		return { history: this.history, viewport: textFrame(rows) };
 	}
-	renderResizeFrame(viewport: ViewportSize): readonly string[] {
-		return Array.from({ length: Math.min(this.liveRows, viewport.rows) }, (_v, index) => `resize-${index}`);
+	renderResizeFrame(viewport: ViewportSize): RichText {
+		return textFrame(
+			Array.from({ length: Math.min(this.liveRows, viewport.rows) }, (_v, index) => `resize-${index}`),
+		);
 	}
 	acknowledgeHistory(): void {
 		this.history = undefined;

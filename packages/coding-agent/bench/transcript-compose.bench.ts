@@ -3,23 +3,26 @@
  *
  * A long interactive session finalizes assistant blocks and emits their rows
  * into native terminal scrollback. Once committed, those rows are immutable
- * history the terminal owns; the local {@link TranscriptContainer} should drop
+ * history the terminal owns; the retained transcript controller should drop
  * them from its frame so a live tail mutation does not re-walk sealed history.
  *
  * This bench builds N finalized assistant blocks (prose + closed code fences),
  * commits every finalized row into native scrollback, then times the retirement
- * check and viewport render for an unchanged live tail. Full-history render()
- * is an export path and intentionally renders committed blocks.
+ * check and actual terminal render for an unchanged live tail. A display reset
+ * also measures committed-history replay through the production writer.
  */
 
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { Settings } from "../src/config/settings";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
-import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { AssistantMessageView } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { createTranscriptStore, TranscriptView } from "@oh-my-pi/pi-tui/chat/transcript-store";
+import { render } from "@oh-my-pi/pi-tui/root";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { VirtualTerminal } from "@test/tui/virtual-terminal";
 
 const WIDTH = 100;
-const SIZES = [500, 5000, 50_000];
+const SIZES = process.argv.length > 2 ? process.argv.slice(2).map(Number) : [500, 5000, 50_000];
+if (SIZES.some(size => !Number.isSafeInteger(size) || size < 1)) throw new Error("Expected positive transcript sizes");
 const WARMUP = 20;
 const SAMPLES = 200;
 
@@ -65,47 +68,49 @@ function percentile(sorted: number[], p: number): number {
 
 /** Build N committed finalized blocks + a live tail, return per-tick render medians/p95. */
 function measure(n: number): { median: number; p95: number; replayMs: number } {
-	const histText = makeMarkdownCorpus(240);
-	const tailCorpus = "Live answer in progress.";
-	const container = new TranscriptContainer();
-	for (let i = 0; i < n; i++) {
-		const c = new AssistantMessageComponent();
-		c.updateContent(makeTextMessage(histText));
-		c.markTranscriptBlockFinalized();
-		container.addChild(c);
+	const store = createTranscriptStore();
+	const history = makeTextMessage(makeMarkdownCorpus(240));
+	for (let index = 0; index < n; index++) {
+		store.append({
+			id: `history-${index}`,
+			state: "settled",
+			view: () => AssistantMessageView({ message: history, expanded: false }),
+		});
 	}
-	const tail = new AssistantMessageComponent();
-	container.addChild(tail);
-	tail.updateContent(makeTextMessage(tailCorpus), { transient: true });
-	const history = container.peekFlushBatch(WIDTH);
-	if (!history) throw new Error("Expected finalized history");
-	container.acknowledgeFinalizedBatch(history.id);
-	const frame = { tick: 0, now: 0 };
-
-	const tick = () => {
-		if (container.peekFinalizedBatch(WIDTH, 24)) throw new Error("Retired history was offered again");
-		container.renderViewport(WIDTH, 24, frame);
-	};
-
-	for (let i = 0; i < WARMUP; i++) tick();
-	const samples: number[] = [];
-	for (let i = 0; i < SAMPLES; i++) {
-		const start = Bun.nanoseconds();
-		tick();
-		samples.push((Bun.nanoseconds() - start) / 1e6);
+	const tail = makeTextMessage("Live answer in progress.");
+	store.append({ id: "tail", view: () => AssistantMessageView({ message: tail, transient: true, expanded: false }) });
+	const terminal = new VirtualTerminal(WIDTH, 24);
+	const root = render(() => TranscriptView({ store }), { terminal, theme });
+	try {
+		root.tui.renderNow();
+		for (let index = 0; index < WARMUP; index++) root.tui.renderNow();
+		const samples: number[] = [];
+		for (let index = 0; index < SAMPLES; index++) {
+			const start = Bun.nanoseconds();
+			root.tui.renderNow();
+			samples.push((Bun.nanoseconds() - start) / 1e6);
+		}
+		samples.sort((left, right) => left - right);
+		const before = terminal.getViewport().map(row => row.trimEnd());
+		const started = Bun.nanoseconds();
+		root.tui.resetDisplay();
+		root.tui.renderNow();
+		const replayMs = (Bun.nanoseconds() - started) / 1e6;
+		if (
+			terminal
+				.getViewport()
+				.map(row => row.trimEnd())
+				.join("\n") !== before.join("\n")
+		)
+			throw new Error("History replay changed the live semantic tail");
+		return { median: percentile(samples, 50), p95: percentile(samples, 95), replayMs };
+	} finally {
+		root.dispose();
 	}
-	samples.sort((a, b) => a - b);
-	const started = Bun.nanoseconds();
-	container.beginReplay();
-	const replay = container.peekReplayBatch(WIDTH);
-	if (!replay || replay.rows.length !== history.rows.length) throw new Error("Replay lost committed rows");
-	const replayMs = (Bun.nanoseconds() - started) / 1e6;
-	container.acknowledgeFinalizedBatch(replay.id);
-	return { median: percentile(samples, 50), p95: percentile(samples, 95), replayMs };
 }
 
 await Settings.init({ inMemory: true });
-await initTheme("dark");
+await initTheme();
 
 console.log(`\nBenchmark: transcript-compose (live tail tick after committed finalized history, width ${WIDTH})\n`);
 

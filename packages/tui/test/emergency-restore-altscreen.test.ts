@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { type TerminalFrameProvider, TUI } from "@oh-my-pi/pi-tui";
+import { RichText, Style, type TerminalFrameProvider, TUI } from "@oh-my-pi/pi-tui";
 import { emergencyTerminalRestore, ProcessTerminal, setAltScreenActive } from "@oh-my-pi/pi-tui/terminal";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
+import { createComponent } from "../src/host/renderer";
+import { mountOverlay, Portal } from "../src/host/overlay";
 
 // Regression coverage for the Windows shell-handoff corruption on exit:
 // `emergencyTerminalRestore()` used to write DECRST 1049 ("leave alternate
@@ -14,6 +16,15 @@ import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 // shell prompt then lands on top of the dead frame (Ctrl-C exit screenshot in
 // the report). The contract: `\x1b[?1049l` is emitted only when the alternate
 // screen is actually tracked as active.
+
+function textFrame(rows: readonly string[]): RichText {
+	const frame = new RichText();
+	for (const row of rows) {
+		frame.push(Style.NONE, row);
+		frame.br();
+	}
+	return frame;
+}
 
 const stdinIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -132,7 +143,7 @@ describe("emergencyTerminalRestore alt-screen gating", () => {
 		const provider: TerminalFrameProvider = {
 			renderFrame: () => {
 				if (failReplacement) throw new Error("replacement failed");
-				return { viewport: ["old session"] };
+				return { viewport: textFrame(["old session"]) };
 			},
 			acknowledgeHistory: () => {},
 		};
@@ -146,9 +157,14 @@ describe("emergencyTerminalRestore alt-screen gating", () => {
 		};
 		const tui = new TUI(terminal, undefined, { renderScheduler: immediateScheduler });
 		tui.setFrameProvider(provider);
-		const overlay = tui.showOverlay(
-			{ render: () => ["session selector"] },
-			{ fullscreen: true, width: "100%", maxHeight: "100%" },
+		const overlay = mountOverlay(tui, () =>
+			createComponent(Portal, {
+				to: "overlay",
+				fullscreen: true,
+				width: "100%",
+				maxHeight: "100%",
+				children: "session selector",
+			}),
 		);
 		tui.requestRender(true, { clearScrollback: true });
 		failReplacement = true;

@@ -1,7 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
-import { extractMarkdownLinks } from "../index";
-
+import { extractMarkdownLinks } from "../components/markdown-engine";
 /** A fenced code block extracted from assistant markdown. */
 export interface CodeBlock {
 	/** Info string after the opening fence (language id), trimmed. */

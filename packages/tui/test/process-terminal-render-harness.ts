@@ -1,5 +1,12 @@
 import { vi } from "bun:test";
-import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import {
+	RichText,
+	Style,
+	type TerminalFramePlan,
+	type TerminalFrameProvider,
+	TUI,
+	type ViewportSize,
+} from "@oh-my-pi/pi-tui";
 import { ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 
@@ -20,18 +27,24 @@ const PRISTINE: Array<[NodeJS.Process["stdin"] | NodeJS.Process["stdout"], strin
 const SETTLE_MS = 67;
 
 /**
- * A root component that records the width it is asked to render at. The renderer
- * calls `render(terminal.columns)` every frame, so `last` is exactly the
+ * A root component that records the width it is asked to paint at. The renderer
+ * calls `paint(out, terminal.columns)` every frame, so `last` is exactly the
  * geometry the transcript reflowed to — observable without parsing the
  * escape-laden paint stream.
  */
-export class WidthProbe implements Component {
+export class WidthProbe implements TerminalFrameProvider {
 	readonly widths: number[] = [];
-	invalidate(): void {}
-	render(width: number): string[] {
-		this.widths.push(width);
-		return ["x".repeat(Math.max(0, width))];
+
+	renderFrame(viewport: ViewportSize): TerminalFramePlan {
+		this.widths.push(viewport.columns);
+		const frame = new RichText();
+		frame.push(Style.NONE, "x".repeat(Math.max(0, viewport.columns)));
+		frame.br();
+		return { viewport: frame };
 	}
+
+	acknowledgeHistory(_id: number): void {}
+
 	get last(): number | undefined {
 		return this.widths.at(-1);
 	}
@@ -109,7 +122,7 @@ export function createProcessTerminalRenderHarness(
 	const terminal = new ProcessTerminal({ conpty: false });
 	const tui = new TUI(terminal);
 	const probe = new WidthProbe();
-	tui.addChild(probe);
+	tui.setFrameProvider(probe);
 	try {
 		tui.start();
 	} catch (err) {

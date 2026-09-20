@@ -1,17 +1,18 @@
 /**
- * Owns the `/cleanse` overlay lifecycle: mounts the {@link CleansePanelComponent}
+ * Owns the `/cleanse` overlay lifecycle: mounts its retained panel factory
  * above the editor, drives the shared cleanse core against it, and maps Esc to
  * cancel-then-dismiss (mirroring the `/omfg` panel).
  */
 import { runCleanse } from "../../cleanse";
-import { CleanseBoardModel } from "@oh-my-pi/pi-tui/apps/cleanse-board";
+import type { CleanseStatusBoard } from "@oh-my-pi/pi-tui/apps/cleanse-board";
 import type { CleanseCheckerDescriptor } from "../../cleanse/checkers";
 import type { CleanseTargetChoice } from "@oh-my-pi/pi-tui/apps/cleanse-picker";
-import { CleansePanelComponent } from "@oh-my-pi/pi-tui/overlays/cleanse-panel";
+import { openCleansePanel, type CleansePanelHandle } from "@oh-my-pi/pi-tui/overlays/cleanse-panel";
 import type { InteractiveModeContext } from "../types";
 
 interface CleanseRun {
-	panel: CleansePanelComponent;
+	panel: CleansePanelHandle;
+	board: CleanseStatusBoard;
 	abortController: AbortController;
 	settled: boolean;
 }
@@ -66,19 +67,14 @@ export class CleanseCommandController {
 			this.ctx.showStatus(parsed.error);
 			return;
 		}
+		const panel = openCleansePanel(this.ctx.ui, { request: parsed.request });
 		const run: CleanseRun = {
-			panel: new CleansePanelComponent({
-				request: parsed.request,
-				tui: this.ctx.ui,
-				model: new CleanseBoardModel(),
-			}),
+			panel,
+			board: panel,
 			abortController: new AbortController(),
 			settled: false,
 		};
 		this.#active = run;
-		this.ctx.cleanseContainer.clear();
-		this.ctx.cleanseContainer.addChild(run.panel);
-		this.ctx.ui.requestRender();
 		await this.#run(run, parsed);
 	}
 
@@ -93,7 +89,7 @@ export class CleanseCommandController {
 					model: options.model,
 				},
 				{
-					board: run.panel,
+					board: run.board,
 					print: text => run.panel.log(text),
 					printError: text => run.panel.logError(text),
 					pickTarget: checkers => this.#pickTarget(checkers),
@@ -107,7 +103,7 @@ export class CleanseCommandController {
 			if (result.status === "cancelled" && result.report.checks.length === 0) this.#close(run);
 		} catch (error) {
 			if (this.#active !== run) return;
-			run.panel.markError(error instanceof Error ? error.message : String(error));
+			run.panel.error(error instanceof Error ? error.message : String(error));
 		} finally {
 			if (this.#active === run) run.settled = true;
 		}
@@ -141,8 +137,6 @@ export class CleanseCommandController {
 		if (this.#active !== run) return;
 		this.#active = undefined;
 		run.panel.dispose();
-		this.ctx.cleanseContainer.clear();
-		this.ctx.ui.requestRender();
 	}
 }
 

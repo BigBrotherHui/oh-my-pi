@@ -1,12 +1,11 @@
-import type { MermaidRenderOptions } from "@oh-my-pi/pi-natives";
-import { renderMermaidAsciiSafe } from "@oh-my-pi/pi-utils/mermaid-ascii";
+import { type MermaidAsciiRenderOptions, renderMermaidAsciiSafe } from "@oh-my-pi/pi-utils/mermaid-ascii";
 
 /**
  * Options controlling how fenced Mermaid source is resolved to terminal ASCII.
  * Extends the raw render options (theme, color mode, spacing, `useAscii`) with a
  * viewport-fitting hint.
  */
-export interface MermaidResolveOptions extends MermaidRenderOptions {
+export interface MermaidResolveOptions extends MermaidAsciiRenderOptions {
 	/**
 	 * Maximum display width (terminal columns) the diagram should occupy. A
 	 * layout that overflows this width is re-rendered in the perpendicular
@@ -35,7 +34,7 @@ function asciiDisplayWidth(ascii: string): number {
 
 function renderVariant(
 	source: string,
-	baseOptions: MermaidRenderOptions,
+	baseOptions: MermaidAsciiRenderOptions,
 	baseKey: string,
 	direction: "TD" | "LR" | null,
 ): string | null {
@@ -58,7 +57,7 @@ export function resolveMermaidAscii(source: string, options?: MermaidResolveOpti
 
 	const { maxWidth, ...rest } = options ?? {};
 	// Default to uncolored output; callers opt into a themed palette explicitly.
-	const baseOptions: MermaidRenderOptions = { colorMode: "none", ...rest };
+	const baseOptions: MermaidAsciiRenderOptions = { colorMode: "none", ...rest };
 	const baseKey = JSON.stringify(baseOptions);
 
 	const base = renderVariant(normalizedSource, baseOptions, baseKey, null);

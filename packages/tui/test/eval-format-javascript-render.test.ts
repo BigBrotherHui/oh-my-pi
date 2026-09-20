@@ -60,6 +60,16 @@ describe("formatJavaScriptForDisplay", () => {
 		);
 	});
 
+	it("distinguishes division from regexes through nested template interpolations", () => {
+		// oxlint-disable-next-line no-template-curly-in-string -- sample source-code string contains template placeholders
+		const nestedTemplate = "`outer ${`inner ${value}`}`";
+		const source = `const details={quotient:total/count,matcher:/[/{}]/,label:${nestedTemplate}};`;
+
+		expect(formatJavaScriptForDisplay(source)).toBe(
+			`const details = { quotient: total / count, matcher: /[/{}]/, label: ${nestedTemplate} };`,
+		);
+	});
+
 	it("returns unfinished literals, comments, and blocks without inventing closers", () => {
 		const samples: Array<{ source: string; expected: string }> = [
 			{ source: "const value = `raw;${call({ x: 1", expected: "const value = `raw;${call({ x: 1" },

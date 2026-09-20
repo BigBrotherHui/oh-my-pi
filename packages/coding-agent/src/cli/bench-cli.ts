@@ -12,7 +12,7 @@ import type {
 	ServiceTierByFamily,
 } from "@oh-my-pi/pi-ai";
 import { resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
-import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
+import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/utils";
 import { formatDuration, formatNumber, prompt } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
@@ -32,7 +32,6 @@ import {
 	resolveBenchTargets,
 	type StreamSimpleFn,
 } from "./bench-runtime";
-import { createLiveBoard, type LiveBoardOutput } from "@oh-my-pi/pi-tui/chrome/live-board";
 import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
 
 const DEFAULT_PAR = 4;
@@ -729,32 +728,6 @@ function formatRunLine(result: BenchRunResult, index: number, total: number): st
 	}
 	return `  ${chalk.red("✗")} ${prefix} ${kind}${chalk.red(truncateToWidth(replaceTabs(result.error).replace(/\r?\n/g, " "), ERROR_WIDTH))}`;
 }
-/** Mutable per-model progress backing the live status line. */
-interface BenchLiveProgress {
-	label: string;
-	unit: "runs" | "pairs";
-	total: number;
-	completed: number;
-	failed: number;
-	inFlight: number;
-	okCount: number;
-	ttftSumMs: number;
-	tpsSum: number;
-}
-
-function renderBenchProgress(progress: BenchLiveProgress | undefined, spinner: string): string[] {
-	if (!progress || progress.completed >= progress.total) return [];
-	const parts = [`${progress.completed}/${progress.total} ${progress.unit}`];
-	if (progress.inFlight > 0) parts.push(`${progress.inFlight} in flight`);
-	if (progress.failed > 0) parts.push(chalk.red(`${progress.failed} failed`));
-	if (progress.okCount > 0) {
-		parts.push(`TTFT ~${formatMs(progress.ttftSumMs / progress.okCount)}`);
-		parts.push(`~${(progress.tpsSum / progress.okCount).toFixed(1)} tok/s`);
-	}
-	return [
-		`  ${chalk.yellow(spinner)} ${chalk.bold(progress.label)}${chalk.dim(" · ")}${parts.join(chalk.dim(" · "))}`,
-	];
-}
 
 interface BenchTableColumn {
 	header: string;
@@ -912,29 +885,11 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 		});
 	const streamFn = deps.streamSimple ?? streamSimple;
 	const now = deps.now ?? (() => performance.now());
-	const interactive = deps.stdoutIsTTY ?? process.stdout.isTTY === true;
 	if (command.models.length === 0) {
 		throw new Error("Pass at least one model selector, e.g. `omp bench opus gpt-5.2`");
 	}
-	let progress: BenchLiveProgress | undefined;
-	const board = json
-		? undefined
-		: createLiveBoard(spinner => renderBenchProgress(progress, spinner), {
-				isTTY: interactive,
-				get columns() {
-					return process.stdout.columns;
-				},
-				get rows() {
-					return process.stdout.rows;
-				},
-				write(text: string): boolean {
-					writeStdout(text);
-					return true;
-				},
-			} satisfies LiveBoardOutput);
 	const print = (text: string): void => {
-		if (board) board.log(text);
-		else writeStdout(`${text}\n`);
+		writeStdout(`${text}\n`);
 	};
 
 	const runtime = await (deps.createRuntime ?? createDefaultBenchRuntime)();
@@ -959,18 +914,6 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 				const resolvedModel = formatModelSelectorValue(formatModelStringWithRouting(model), thinking);
 				const resolvedNote = selector === resolvedModel ? "" : chalk.dim(` (${selector})`);
 				print(`${chalk.bold(resolvedModel)}${resolvedNote}`);
-				progress = {
-					label: resolvedModel,
-					unit: cacheMode ? "pairs" : "runs",
-					total: cacheMode ? cachePairs! : runs,
-					completed: 0,
-					failed: 0,
-					inFlight: 0,
-					okCount: 0,
-					ttftSumMs: 0,
-					tpsSum: 0,
-				};
-				board?.repaint();
 			}
 			const results: BenchRunResult[] = [];
 
@@ -986,8 +929,6 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 				};
 				results.push(failure);
 				if (!json) print(formatRunLine(failure, 0, runs));
-				progress = undefined;
-				board?.repaint();
 				const report = buildModelReport(selector, model, thinking, results);
 				if (cacheMode) report.cachePairs = [];
 				reports.push(report);
@@ -1001,10 +942,6 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 					cacheConcurrency!,
 					async (pairIndex): Promise<BenchCachePairReport> => {
 						const cacheNamespace = randomSessionId();
-						if (progress) {
-							progress.inFlight++;
-							board?.repaint();
-						}
 						const promptCacheKey = `bench-cache:${cacheNamespace}`;
 						const stablePrefix = renderCacheBenchmarkPrefix(cachePrefix!, cacheNamespace);
 						const coldSuffix = prompt.render(cacheSuffixTemplate, { variant: "A" }).trim();
@@ -1056,20 +993,6 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 							streamFn,
 							now,
 						);
-						if (progress) {
-							progress.inFlight--;
-							progress.completed++;
-							for (const result of [coldResult, warmResult]) {
-								if (result.ok) {
-									progress.okCount++;
-									progress.ttftSumMs += result.ttftMs;
-									progress.tpsSum += result.tokensPerSecond;
-								} else {
-									progress.failed++;
-								}
-							}
-							board?.repaint();
-						}
 						return {
 							cold: cacheRunReport("cold", coldResult, coldCapture),
 							warm: cacheRunReport("warm", warmResult, warmCapture),
@@ -1131,24 +1054,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 			const processNext = async (): Promise<void> => {
 				if (queue.length === 0) return;
 				const index = queue.shift()!;
-				if (progress) {
-					progress.inFlight++;
-					board?.repaint();
-				}
 				await runWorker(index);
-				if (progress) {
-					progress.inFlight--;
-					progress.completed++;
-					const result = results[index]!;
-					if (result.ok) {
-						progress.okCount++;
-						progress.ttftSumMs += result.ttftMs;
-						progress.tpsSum += result.tokensPerSecond;
-					} else {
-						progress.failed++;
-					}
-					board?.repaint();
-				}
 				if (!json) {
 					while (nextToPrint < runs && results[nextToPrint] !== undefined) {
 						print(formatRunLine(results[nextToPrint], nextToPrint, runs));
@@ -1174,7 +1080,6 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 			serviceTierByFamily,
 			...(cacheMode ? { cache: { pairs: cachePairs!, concurrency: cacheConcurrency! } } : { profile }),
 		};
-		progress = undefined;
 		if (json) {
 			writeStdout(`${JSON.stringify(summary, null, 2)}\n`);
 		} else if (!cacheMode && (reports.length > 1 || runs > 1)) {
@@ -1183,7 +1088,6 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 		if (failures > 0) setExitCode(1);
 		return summary;
 	} finally {
-		board?.close();
 		runtime.close?.();
 	}
 }

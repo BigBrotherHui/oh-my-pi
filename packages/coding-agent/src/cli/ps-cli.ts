@@ -9,7 +9,7 @@
  * daemons before acting on them.
  */
 
-import { truncateToWidth } from "@oh-my-pi/pi-tui";
+import { renderSnapshot } from "@oh-my-pi/pi-tui";
 import { formatDuration, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import {
@@ -18,17 +18,8 @@ import {
 	daemonClientForGlobal,
 	daemonClientForProject,
 } from "../launch/client";
-import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/hub";
-import {
-	daemonLabel,
-	formatCommand,
-	type PsDaemonRow,
-	type PsScope,
-	scopeHeader,
-	TABLE_HEADER,
-	TERMINAL_STATES,
-	tableCells,
-} from "@oh-my-pi/pi-tui/apps/ps-data";
+import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/hub-contract";
+import { daemonLabel, formatCommand, type PsScope, PsReportView, TERMINAL_STATES } from "@oh-my-pi/pi-tui/apps/ps-data";
 import { runPsTop, type PsTopHost } from "@oh-my-pi/pi-tui/apps/ps-top";
 import { collectReports, KILL_GRACE_MS, scopeClient } from "./ps-data";
 
@@ -165,43 +156,12 @@ async function runList(cmd: PsCommandArgs): Promise<void> {
 		);
 		return;
 	}
-	if (reports.length === 0) {
-		console.log(chalk.dim("No daemon broker scopes found."));
-		return;
-	}
-	let first = true;
-	for (const report of reports) {
-		if (!first) console.log("");
-		first = false;
-		console.log(scopeHeader(report.scope));
-		if (report.daemons.length === 0) {
-			console.log(chalk.dim("  no processes"));
-			continue;
-		}
-		printTable(report.daemons);
-	}
-	if (!cmd.flags.all) {
-		console.log(chalk.dim("\nUse --all to include other projects and global services."));
-	}
-}
-
-function printTable(rows: PsDaemonRow[]): void {
-	// Truncate to the terminal on a TTY; keep full lines when piped.
-	const maxWidth = process.stdout.isTTY ? (process.stdout.columns ?? 120) : Number.POSITIVE_INFINITY;
-	const cells = rows.map(tableCells);
-	const widths = TABLE_HEADER.map((title, column) =>
-		Math.max(title.length, ...cells.map(row => Bun.stringWidth(row[column]))),
-	);
-	const render = (row: string[]): string => {
-		const line =
-			`  ${row.map((cell, column) => cell + " ".repeat(Math.max(0, widths[column] - Bun.stringWidth(cell)))).join("  ")}`.trimEnd();
-		return Number.isFinite(maxWidth) ? truncateToWidth(line, maxWidth) : line;
-	};
-	console.log(chalk.dim(render([...TABLE_HEADER])));
-	for (const [index, row] of cells.entries()) {
-		const line = render(row);
-		console.log(TERMINAL_STATES[rows[index].snapshot.state] ? chalk.dim(line) : line);
-	}
+	const columns = process.stdout.isTTY ? (process.stdout.columns ?? 120) : 16_384;
+	const reportedAt = Date.now();
+	const report = renderSnapshot(() => PsReportView({ reports, now: reportedAt, includeAll: cmd.flags.all }), {
+		columns,
+	});
+	console.log(report.map(row => row.trimEnd()).join("\n"));
 }
 
 // ---------------------------------------------------------------------------

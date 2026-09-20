@@ -1,72 +1,82 @@
-import { beforeAll, describe, expect, it } from "bun:test";
-import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
-import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { BashExecutionStream, BashExecutionView } from "@oh-my-pi/pi-tui/chat/bash-execution";
+import { getThemeByName, type Theme } from "@oh-my-pi/pi-tui/theme";
+import { mountForTest, type TestRoot } from "../src/testing";
 
-const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
+let darkTheme: Theme;
+const roots: TestRoot[] = [];
 
-// Condition-driven poll, not a fixed wait: xterm's write pipeline completes on
-// its own internal scheduling (no promise/event exposed to the component), so
-// fake timers cannot drive it; mirrors pollUntil in bash-executor.test.ts.
-async function renderUntil(component: BashExecutionComponent, predicate: (text: string) => boolean): Promise<string> {
-	const deadline = Date.now() + 2_000;
-	let text = component.render(100).join("\n");
-	while (!predicate(text) && Date.now() < deadline) {
-		await Bun.sleep(10);
-		text = component.render(100).join("\n");
-	}
-	return text;
+beforeAll(async () => {
+	const theme = await getThemeByName("dark");
+	if (!theme) throw new Error("Expected dark theme");
+	darkTheme = theme;
+});
+
+afterEach(() => {
+	for (const root of roots.splice(0)) root.dispose();
+});
+
+function mountStream(stream: BashExecutionStream): TestRoot {
+	const root = mountForTest(() => BashExecutionView({ command: "shell", stream, expanded: true }), {
+		width: 100,
+		theme: darkTheme,
+	});
+	roots.push(root);
+	return root;
 }
 
-describe("BashExecutionComponent PTY rendering", () => {
-	beforeAll(async () => {
-		const theme = await getThemeByName("dark");
-		if (!theme) throw new Error("Expected dark theme");
-		setThemeInstance(theme);
+/** Covers raw user-shell PTY replay rather than the separate interactive-shell overlay. */
+describe("BashExecutionStream PTY rendering", () => {
+	it("replays safe SGR colors through completion", async () => {
+		const stream = new BashExecutionStream();
+		const root = mountStream(stream);
+		try {
+			stream.appendPtyChunk("\u001b[31mred\u001b[0m plain\r\nsecond\r\n");
+			await stream.setComplete(0, false, { output: "red plain\nsecond" });
+
+			const completed = root.rows().join("\n");
+			expect(completed).toContain("\u001b[38;5;1m");
+			expect(Bun.stripANSI(completed)).toContain("red plain");
+			expect(Bun.stripANSI(completed)).toContain("second");
+		} finally {
+			stream.dispose();
+		}
 	});
 
-	it("replays raw PTY bytes with safe color preserved through completion", async () => {
-		const component = new BashExecutionComponent("lg", ui, false);
-		component.appendPtyChunk("\u001b[31mred\u001b[0m plain\r\nsecond\r\n");
+	it("collapses carriage-return progress updates to the final terminal frame", async () => {
+		const stream = new BashExecutionStream();
+		const root = mountStream(stream);
+		try {
+			stream.appendPtyChunk("10%\r50%\r100%\r\ndone\r\n");
+			await stream.setComplete(0, false);
 
-		const streaming = await renderUntil(component, text => text.includes("second"));
-		// SGR 31 survives the vterm replay as a palette style instead of being stripped.
-		expect(streaming).toContain("\u001b[38;5;1m");
-		expect(streaming).toContain("red");
-
-		// Completion must keep the vterm rows — not replace them with the
-		// sanitized (colorless) capture the model receives.
-		component.setComplete(0, false, { output: "red plain\nsecond" });
-		const finalText = await renderUntil(component, text => text.includes("second"));
-		expect(finalText).toContain("\u001b[38;5;1m");
-	});
-
-	it("collapses carriage-return progress overwrites to the final frame", async () => {
-		const component = new BashExecutionComponent("progress", ui, false);
-		component.appendPtyChunk("10%\r50%\r100%\r\ndone\r\n");
-		component.setComplete(0, false);
-
-		const text = await renderUntil(component, t => t.includes("done"));
-		expect(text).toContain("100%");
-		expect(text).not.toContain("50%");
+			const screen = Bun.stripANSI(root.rows().join("\n"));
+			expect(screen).toContain("100%");
+			expect(screen).toContain("done");
+			expect(screen).not.toContain("50%");
+		} finally {
+			stream.dispose();
+		}
 	});
 
 	for (const exitCode of [0, 7]) {
-		it(`keeps exit ${exitCode} output mutable until queued replay drains`, async () => {
-			const component = new BashExecutionComponent("markers", ui, false);
-			const transcript = new TranscriptContainer();
-			transcript.addChild(component);
-			component.appendPtyChunk("OUT-MARKER\r\nERR-MARKER\r\n");
-			component.setComplete(exitCode, false);
+		it(`retains queued PTY rows through exit ${exitCode}`, async () => {
+			const stream = new BashExecutionStream();
+			const root = mountStream(stream);
+			try {
+				stream.appendPtyChunk("OUT-MARKER\r\nERR-MARKER\r\n");
+				const settled = stream.setComplete(exitCode, false);
+				expect(stream.finalized()).toBe(false);
+				await settled;
 
-			expect(component.isTranscriptBlockFinalized()).toBe(false);
-			expect(transcript.peekFlushBatch(100)).toBeUndefined();
-
-			const finalText = await renderUntil(component, () => component.isTranscriptBlockFinalized());
-			expect(Bun.stripANSI(finalText)).toContain("OUT-MARKER");
-			expect(Bun.stripANSI(finalText)).toContain("ERR-MARKER");
-			expect(transcript.peekFlushBatch(100)).toBeDefined();
+				const screen = Bun.stripANSI(root.rows().join("\n"));
+				expect(screen).toContain("OUT-MARKER");
+				expect(screen).toContain("ERR-MARKER");
+				expect(stream.finalized()).toBe(true);
+				if (exitCode !== 0) expect(screen).toContain("(exit 7)");
+			} finally {
+				stream.dispose();
+			}
 		});
 	}
 });

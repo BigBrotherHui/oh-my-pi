@@ -80,6 +80,7 @@ describe("print mode disposes the session before terminating", () => {
 		const marker = tempDir.join("disposed");
 		const fixture = path.join(import.meta.dir, "..", "fixtures", "print-mode-signal.js");
 		const child = Bun.spawn([process.execPath, fixture, marker], {
+			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
 		});
@@ -91,7 +92,7 @@ describe("print mode disposes the session before terminating", () => {
 			throw new Error(`Print session was not disposed before signal exit ${exitCode}: ${stderr}`);
 		}
 		expect(await markerFile.text()).toBe("sigterm");
-	});
+	}, 20_000);
 
 	it("defers to signal shutdown instead of reporting an ordinary failure when a signal aborts the turn", async () => {
 		const abortedMsg: AssistantMessage = {

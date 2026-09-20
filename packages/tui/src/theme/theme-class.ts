@@ -1,6 +1,7 @@
 import { colorLuma, relativeLuminance } from "@oh-my-pi/pi-utils/color";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { type Color, DEFAULT_COLOR, parseColor, Style } from "../core/style";
 import { bgAnsi, colorToAnsi, fgAnsi, resolveToHex } from "./color";
 import { type ColorMode, isValidThemeColor, type ThemeBg, type ThemeColor } from "./schema";
 import type { SessionAccentTheme } from "./session-color";
@@ -117,7 +118,7 @@ const langMap: Record<string, SymbolKey> = {
 
 /**
  * Brand colors for language icons, keyed by the resolved `lang.*` SymbolKey.
- * Used by {@link Theme.getLangIconStyled} so eval-kernel cell headers tint each
+ * Used by {@link Theme.langIconStyle} so eval-kernel cell headers tint each
  * language with its recognizable hue (JS yellow, Ruby red, Julia purple, Python
  * blue) instead of a flat muted gray. Applied as truecolor/256 per the active
  * color mode; languages without an entry fall back to the muted theme color.
@@ -135,6 +136,9 @@ const FOREGROUND_RESET_PATTERN = /\x1b\[(?:0|39)m/g;
 export class Theme {
 	#fgColors: Record<ThemeColor, string>;
 	#bgColors: Record<ThemeBg, string>;
+	/** Packed colours for the run-based pipeline (see /core/style). */
+	readonly #fgPacked: Record<ThemeColor, Color>;
+	readonly #bgPacked: Record<ThemeBg, Color>;
 	/** Resolved hex strings for foreground colors — populated at construction. */
 	readonly #hexFgColors: Record<ThemeColor, string>;
 	/** Resolved hex strings for background colors — populated at construction. */
@@ -165,18 +169,22 @@ export class Theme {
 
 		this.#fgColors = {} as Record<ThemeColor, string>;
 		this.#hexFgColors = {} as Record<ThemeColor, string>;
+		this.#fgPacked = {} as Record<ThemeColor, Color>;
 		for (const key in fgColors) {
 			if (!isValidThemeColor(key)) continue;
 			const value = fgColors[key];
 			const hex = resolveToHex(value, slIsLight);
 			this.#fgColors[key] = fgAnsi(value, mode);
 			this.#hexFgColors[key] = hex;
+			this.#fgPacked[key] = parseColor(value);
 		}
 		this.#bgColors = {} as Record<ThemeBg, string>;
 		this.#hexBgColors = {} as Record<ThemeBg, string>;
+		this.#bgPacked = {} as Record<ThemeBg, Color>;
 		for (const [key, value] of Object.entries(bgColors) as [ThemeBg, string | number][]) {
 			this.#bgColors[key] = bgAnsi(value, mode);
 			this.#hexBgColors[key] = resolveToHex(value, slIsLight);
+			this.#bgPacked[key] = parseColor(value);
 		}
 		// Build symbol map from preset + overrides
 		const baseSymbols = SYMBOL_PRESETS[symbolPreset];
@@ -355,6 +363,37 @@ export class Theme {
 		const ansi = this.#fgColors[color];
 		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
 		return ansi;
+	}
+
+	/** Packed foreground colour for the run pipeline; `DEFAULT_COLOR` for terminal-default tokens. */
+	fgColor(color: ThemeColor): Color {
+		const packed = this.#fgPacked[color];
+		if (packed === undefined) throw new Error(`Unknown theme color: ${color}`);
+		return packed;
+	}
+
+	/** Packed background colour for the run pipeline. */
+	bgColor(color: ThemeBg): Color {
+		const packed = this.#bgPacked[color];
+		if (packed === undefined) throw new Error(`Unknown theme background color: ${color}`);
+		return packed;
+	}
+
+	/**
+	 * Packed foreground for text over a controlled theme background: terminal-default
+	 * tokens become black or near-white by the background's luma (see {@link getFgOnBgAnsi}).
+	 */
+	fgOnBgColor(color: ThemeColor, background: ThemeBg): Color {
+		const fg = this.fgColor(color);
+		if (fg !== DEFAULT_COLOR) return fg;
+		if (this.bgColor(background) === DEFAULT_COLOR) return fg;
+		const backgroundLuma = colorLuma(this.getBgHex(background));
+		return parseColor(backgroundLuma !== undefined && backgroundLuma > 0.5 ? "#000000" : "#e5e5e7");
+	}
+
+	/** Packed `Style` with the given theme foreground and optional background. */
+	style(fg: ThemeColor, bg?: ThemeBg): Style {
+		return Style.of({ fg: this.fgColor(fg), bg: bg === undefined ? DEFAULT_COLOR : this.bgColor(bg) });
 	}
 
 	getBgAnsi(color: ThemeBg): string {
@@ -771,17 +810,13 @@ export class Theme {
 	}
 
 	/**
-	 * Language icon tinted with the language's brand color (see
-	 * {@link LANG_BRAND_COLORS}). Falls back to the muted theme color for
-	 * languages without a brand entry, and returns the bare (possibly empty)
-	 * icon when the active symbol preset has none.
+	 * Style for a language icon: the language's brand color (see
+	 * {@link LANG_BRAND_COLORS}), or the muted theme color for languages
+	 * without a brand entry.
 	 */
-	getLangIconStyled(lang: string | undefined): string {
-		const icon = this.getLangIcon(lang);
-		if (!icon) return icon;
+	langIconStyle(lang: string | undefined): Style {
 		const key = lang ? langMap[lang.toLowerCase()] : undefined;
 		const hex = key ? LANG_BRAND_COLORS[key] : undefined;
-		if (!hex) return this.fg("muted", icon);
-		return `${colorToAnsi(hex, this.mode)}${icon}\x1b[39m`;
+		return hex ? Style.of({ fg: parseColor(hex) }) : this.style("muted");
 	}
 }

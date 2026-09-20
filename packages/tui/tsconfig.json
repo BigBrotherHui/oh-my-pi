@@ -2,6 +2,11 @@
 	"extends": "../tsconfig.workspace.json",
 	"include": [
 		"src",
-		"test"
-	]
+		"test",
+		"bench/reactive"
+	],
+	"compilerOptions": {
+		"jsx": "preserve",
+		"jsxImportSource": "@oh-my-pi/pi-tui"
+	}
 }

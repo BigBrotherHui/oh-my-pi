@@ -243,6 +243,49 @@ export interface PlaceholderRenderers {
 	renderMention: (label: string) => string;
 }
 
+/** Sink-free callbacks for parsed placeholder tokens. */
+export interface PlaceholderVisitors {
+	text: (text: string) => void;
+	reference: (label: string, kind: PlaceholderKind, index: number, form: "marker" | "chip") => void;
+	skill: (label: string, name: string) => void;
+	mention: (label: string) => void;
+}
+
+/** Visit text, attachment references, skill chips, and model mentions in source order. */
+export function visitPlaceholders(
+	text: string,
+	visitors: PlaceholderVisitors,
+	tokenRegex: RegExp = COMPOSER_TOKEN_REGEX,
+): void {
+	tokenRegex.lastIndex = 0;
+	let last = 0;
+	let matched = false;
+	for (;;) {
+		const match = tokenRegex.exec(text);
+		if (match === null) break;
+		matched = true;
+		if (match.index > last) visitors.text(text.slice(last, match.index));
+		const label = match[0];
+		if (match.groups?.mention !== undefined) {
+			visitors.mention(label);
+		} else if (label.startsWith("[")) {
+			const kind: PlaceholderKind = match[1] === "Paste" ? "paste" : match[1] === "Video" ? "video" : "image";
+			visitors.reference(label, kind, Number(match[2]), "marker");
+		} else if (match[3] !== undefined) {
+			visitors.skill(label, match[3]);
+		} else {
+			const index = Number(label.slice(label.lastIndexOf("#") + 1));
+			visitors.reference(label, chipLabelKind(label), index, "chip");
+		}
+		last = match.index + label.length;
+	}
+	if (!matched) {
+		visitors.text(text);
+		return;
+	}
+	if (last < text.length) visitors.text(text.slice(last));
+}
+
 /** Renders text while treating expanded markers, attachment chips, skill chips, and model mentions as distinct references. */
 export function renderPlaceholders(
 	text: string,

@@ -13,8 +13,7 @@
  * candidates to that kind. Anything that is not a standalone `#<number>` token
  * keeps falling through to the existing prompt-action menu.
  */
-import type { AutocompleteItem } from "../index";
-
+import type { AutocompleteItem } from "../autocomplete";
 /** Candidate kinds, in default display order. */
 const GITHUB_REF_KINDS = [
 	{ qualifier: "pr", scheme: "pr", label: "PR", description: "GitHub pull request" },

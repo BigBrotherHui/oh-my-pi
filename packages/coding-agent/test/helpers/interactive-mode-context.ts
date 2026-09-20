@@ -3,8 +3,8 @@
  * `EventController` / `MCPCommandController` / `UiHelpers` without booting
  * `InteractiveMode`.
  *
- * Defaults cover every member those paths read, using real components where
- * they are cheap (`TranscriptContainer`, `Container`, `SessionManager.inMemory`,
+ * Defaults cover every member those paths read, using real reactive stores where
+ * they are cheap (`TranscriptStore`, `ReactiveStack`, `SessionManager.inMemory`,
  * the `settings` singleton, `OAuthManualInputManager`) and inert stubs
  * elsewhere. Tests override only what they assert on:
  *
@@ -12,7 +12,6 @@
  * const ctx = createInteractiveModeContext({
  * 	session: { getToolByName: () => tool },
  * 	streamingMessage: message,
- * 	streamingComponent: new AssistantMessageComponent(),
  * });
  * const controller = new EventController(ctx);
  * ```
@@ -35,13 +34,15 @@ import { isSettingsInitialized, Settings, settings } from "@oh-my-pi/pi-coding-a
 import type { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import type { MCPServerConnection } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
-import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { createTranscriptStore } from "@oh-my-pi/pi-tui/chat/transcript-store";
 import { OAuthManualInputManager } from "@oh-my-pi/pi-coding-agent/modes/oauth-manual-input";
+import { createReactiveStack } from "@oh-my-pi/pi-coding-agent/modes/reactive-slots";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { ToolPresentationRegistry } from "@oh-my-pi/pi-coding-agent/modes/tool-presentation";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TokenRateMeter } from "@oh-my-pi/pi-coding-agent/utils/token-rate";
-import { type Component, Container } from "@oh-my-pi/pi-tui";
+import type { JSX } from "@oh-my-pi/pi-tui/reactive";
 
 type AnyFn = (...args: never[]) => unknown;
 
@@ -196,28 +197,39 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		overrides.viewSession === undefined
 			? undefined
 			: createSessionStub(sessionManager, contextSettings, overrides.viewSession);
-	const chatContainer = new TranscriptContainer();
+	const chatContainer = createTranscriptStore();
 	const ui = {
 		requestRender: vi.fn(),
-		requestComponentRender: vi.fn(),
 		setFocus: vi.fn(),
 		terminal: { setProgress: vi.fn() },
 		imageBudget: undefined,
 	};
-	const mount = (content: Component | readonly Component[]): void => {
-		for (const item of Array.isArray(content) ? content : [content as Component]) chatContainer.addChild(item);
+	let nextPresentId = 0;
+	const mount = (content: JSX.Element | readonly JSX.Element[]): void => {
+		for (const item of Array.isArray(content) ? content : [content]) {
+			chatContainer.append({ id: `present:${nextPresentId++}`, view: () => item });
+		}
 		ui.requestRender();
 	};
 	const ctx = {
 		ui,
 		chatContainer,
-		statusContainer: new Container(),
-		editorContainer: new Container(),
-		pendingMessagesContainer: new Container(),
-		todoContainer: new Container(),
-		editor: { getText: () => "", setText: vi.fn(), onEscape: undefined },
+		statusContainer: createReactiveStack(),
+		editorContainer: createReactiveStack(),
+		pendingMessagesContainer: createReactiveStack(),
+		todoContainer: createReactiveStack(),
+		subagentContainer: createReactiveStack(),
+		btwContainer: createReactiveStack(),
+		omfgContainer: createReactiveStack(),
+		cleanseContainer: createReactiveStack(),
+		errorBannerContainer: createReactiveStack(),
+		modelCycleContainer: createReactiveStack(),
+		deferredCommandContainer: createReactiveStack(),
+		hookWidgetContainerAbove: createReactiveStack(),
+		hookWidgetContainerBelow: createReactiveStack(),
+		editor: { getText: () => "", setText: vi.fn(), invalidate: vi.fn(), onEscape: undefined },
 		statusLine: {
-			invalidate: vi.fn(),
+			ingestSession: vi.fn(),
 			markActivityStart: vi.fn(),
 			markActivityEnd: vi.fn(),
 			setSession: vi.fn(),
@@ -228,6 +240,7 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		},
 		sessionManager,
 		focusedAgentId: undefined,
+		statusRowOccupied: false,
 		settings: contextSettings,
 		mcpManager: undefined,
 		oauthManualInput: new OAuthManualInputManager(),
@@ -247,10 +260,13 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		proseOnlyThinking: true,
 		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
-		pendingBashComponents: [],
-		bashComponent: undefined,
-		pendingPythonComponents: [],
-		pythonComponent: undefined,
+		toolPresentation: new ToolPresentationRegistry({ expanded: false, showImages: true, hidden: false }),
+		eventController: {
+			registerReplayedToolCall: vi.fn(),
+			restoreLiveTranscript: vi.fn(),
+			releaseReplayedToolCall: vi.fn(),
+		},
+		pendingExecutions: [],
 		isBashMode: false,
 		isPythonMode: false,
 		streamingComponent: undefined,
@@ -290,7 +306,9 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		clearOptimisticUserMessage: vi.fn(),
 		replaceOptimisticUserMessage: vi.fn(),
 		reconcileOptimisticSkillMessage: vi.fn(),
+		takeReactionTargetForAssistant: vi.fn(() => undefined),
 		flushCompactionQueue: vi.fn(async () => {}),
+		flushPendingExecutions: vi.fn(),
 		flushPendingModelSwitch: vi.fn(async () => {}),
 		reloadTodos: vi.fn(async () => {}),
 		setTodos: vi.fn(),

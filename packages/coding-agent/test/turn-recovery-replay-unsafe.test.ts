@@ -1137,4 +1137,14 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(continues).toEqual([]);
 		});
 	});
+
+	it("treats Anthropic oauth_not_allowed_for_organization as a retryable account policy denial", () => {
+		const host = createHost(model, modelRegistry);
+		const recovery = new TurnRecovery(host);
+		const message = makeMessage([], model);
+		message.errorStatus = 403;
+		message.errorMessage =
+			'403 {"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}},"request_id":"req_011CfDQosvzzsyor4jWjLsz8"}';
+		expect(recovery.isRetryableError(message)).toBe(true);
+	});
 });

@@ -188,7 +188,7 @@ describe("write tool ACP fs routing", () => {
 
 	it("rejects read-only internal URLs without creating scheme-looking paths on disk", async () => {
 		const targetPath = "memory://root/memory_summary.md";
-		const leakedPath = path.join(tmpDir, "memory:/root/memory_summary.md");
+		const leakedPath = path.join(tmpDir, "memory://root/memory_summary.md");
 		const session = createSession(tmpDir);
 		const tool = new WriteTool(session);
 

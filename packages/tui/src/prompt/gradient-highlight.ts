@@ -1,6 +1,7 @@
 import { maskNonProse } from "./markdown-prose";
-import { detectColorMode, FG_RESET } from "../theme/color";
+import { colorToAnsi, detectColorMode, FG_RESET } from "../theme/color";
 import { theme } from "../theme/theme";
+import { DEFAULT_COLOR, parseColor, Style, type Color } from "../core/style";
 
 /** A gradient keyword highlighter.
  *
@@ -11,6 +12,15 @@ import { theme } from "../theme/theme";
  *   derived values to animate a shimmer. Defaults to `0` (the static
  *   sent-bubble palette). */
 export type KeywordHighlighter = (text: string, resetTo?: string, phase?: number) => string;
+
+/** One styled slice produced by a gradient decoration. */
+export interface GradientRun {
+	readonly text: string;
+	readonly style: Style;
+}
+
+/** Run-level decoration producer consumed by the whitelisted editor seam. */
+export type KeywordDecorator = (text: string, base?: Style, phase?: number) => readonly GradientRun[];
 
 /** Declarative spec for {@link createGradientHighlighter}. */
 export interface GradientHighlightSpec {
@@ -29,6 +39,47 @@ export interface GradientHighlightSpec {
 }
 
 /**
+ * Build a style producer for standalone matches of `highlight`.
+ * RGB styles stay packed until the editor host emits the decorated runs.
+ */
+export function createGradientDecorator(spec: GradientHighlightSpec): KeywordDecorator {
+	const { probe, highlight, stops, hue, saturation = 90, lightness = 62 } = spec;
+	let cachedPalette: readonly Color[] | undefined;
+
+	const palette = (): readonly Color[] => {
+		if (cachedPalette !== undefined) return cachedPalette;
+		const next: Color[] = [];
+		for (let i = 0; i < stops; i++) {
+			next.push(parseColor(`hsl(${Math.round(hue(i / stops))}, ${saturation}%, ${lightness}%)`));
+		}
+		cachedPalette = next;
+		return next;
+	};
+
+	return (text: string, base: Style = Style.NONE, phase: number = 0): readonly GradientRun[] => {
+		if (!probe.test(text)) return [{ text, style: base }];
+		const wrappedPhase = ((phase % 1) + 1) % 1;
+		const masked = maskNonProse(text);
+		const colors = palette();
+		const runs: GradientRun[] = [];
+		let last = 0;
+		for (const match of masked.matchAll(highlight)) {
+			const start = match.index ?? 0;
+			const word = text.slice(start, start + match[0].length);
+			if (start > last) runs.push({ text: text.slice(last, start), style: base });
+			for (let index = 0; index < word.length; index++) {
+				const t = (index / word.length + wrappedPhase) % 1;
+				const color = colors[Math.floor(t * colors.length) % colors.length] ?? colors[0];
+				runs.push({ text: word[index]!, style: color === undefined ? base : base.with({ fg: color }) });
+			}
+			last = start + word.length;
+		}
+		if (last < text.length) runs.push({ text: text.slice(last), style: base });
+		return runs;
+	};
+}
+
+/**
  * Build a stateless highlighter that paints each standalone match of `highlight`
  * with a smooth HSL gradient for editor display. The returned function adds only
  * zero-width SGR escapes — the visible width is unchanged — and returns the input
@@ -36,66 +87,24 @@ export interface GradientHighlightSpec {
  * memoized per active color mode.
  */
 export function createGradientHighlighter(spec: GradientHighlightSpec): KeywordHighlighter {
-	const { probe, highlight, stops, hue, saturation = 90, lightness = 62 } = spec;
-
-	let cachedMode: string | undefined;
-	let cachedPalette: readonly string[] | undefined;
-
-	/** Gradient foreground escapes for the active color mode, compiled once per mode. */
-	const palette = (): readonly string[] => {
-		// `theme` is unassigned on early-render paths (before initTheme/initThemeSync)
-		// and on cross-module-instance plugin calls. Detect terminal capabilities
-		// directly so the gradient still paints safely. See #2998, #4766.
-		const mode = typeof theme === "undefined" ? detectColorMode() : theme.getColorMode();
-		if (cachedPalette && cachedMode === mode) return cachedPalette;
-		const format = mode === "truecolor" ? "ansi-16m" : "ansi-256";
-		const next: string[] = [];
-		for (let i = 0; i < stops; i++) {
-			next.push(Bun.color(`hsl(${Math.round(hue(i / stops))}, ${saturation}%, ${lightness}%)`, format) ?? "");
-		}
-		cachedMode = mode;
-		cachedPalette = next;
-		return next;
-	};
-
-	/** Paint each character of `word` with the next gradient stop, restoring `resetTo` after.
-	 *  `phase` ∈ [0, 1) cyclically rotates the palette index so successive renders
-	 *  with monotonically increasing phase produce a moving shimmer; `0` yields the
-	 *  static palette. */
-	const paint = (word: string, resetTo: string, phase: number): string => {
-		const stopsArr = palette();
-		const m = stopsArr.length;
-		const n = word.length;
-		let out = "";
-		let prev = "";
-		for (let i = 0; i < n; i++) {
-			const t = (i / n + phase) % 1;
-			const color = stopsArr[Math.floor(t * m) % m] ?? stopsArr[0] ?? "";
-			// Coalesce consecutive characters that resolve to the same stop.
-			if (color !== prev) {
-				out += color;
-				prev = color;
-			}
-			out += word[i];
-		}
-		return `${out}${resetTo}`;
-	};
-
+	const decorate = createGradientDecorator(spec);
 	return (text: string, resetTo: string = FG_RESET, phase: number = 0): string => {
-		if (!probe.test(text)) return text;
-		// Wrap phase into [0, 1) so negative inputs and values ≥ 1 stay well-defined.
-		const wrappedPhase = ((phase % 1) + 1) % 1;
-		// Match against a code/markup-masked copy so keywords inside code spans,
-		// fenced blocks, or XML sections never paint; indices still address `text`.
-		const masked = maskNonProse(text);
-		let out = "";
-		let last = 0;
-		for (const m of masked.matchAll(highlight)) {
-			const start = m.index ?? 0;
-			const end = start + m[0].length;
-			out += text.slice(last, start) + paint(text.slice(start, end), resetTo, wrappedPhase);
-			last = end;
+		if (!spec.probe.test(text)) return text;
+		const runs = decorate(text, Style.NONE, phase);
+		if (!runs.some(run => run.style.fg !== DEFAULT_COLOR)) return text;
+		const mode = typeof theme === "undefined" ? detectColorMode() : theme.getColorMode();
+		let rendered = "";
+		let activeColor: Color = DEFAULT_COLOR;
+		for (const run of runs) {
+			if (run.style.fg !== activeColor) {
+				activeColor = run.style.fg;
+				rendered +=
+					activeColor === DEFAULT_COLOR
+						? resetTo
+						: colorToAnsi(`#${(activeColor & 0xffffff).toString(16).padStart(6, "0")}`, mode);
+			}
+			rendered += run.text;
 		}
-		return out + text.slice(last);
+		return activeColor === DEFAULT_COLOR ? rendered : `${rendered}${resetTo}`;
 	};
 }

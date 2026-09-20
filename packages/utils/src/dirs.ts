@@ -782,6 +782,11 @@ export function getLegacyPiExtensionCacheDbPath(): string {
 	return dirs.rootSubdir(path.join("cache", "legacy-pi-extension-cache.db"), "cache");
 }
 
+/** Get the Solid TSX compile cache database path (~/.omp/cache/solid-tsx-cache.db). */
+export function getSolidTsxCacheDbPath(): string {
+	return dirs.rootSubdir(path.join("cache", "solid-tsx-cache.db"), "cache");
+}
+
 /**
  * Get the encrypted auth-broker snapshot cache path (~/.omp/cache/auth-broker-snapshot.enc).
  * Honors the `OMP_AUTH_BROKER_SNAPSHOT_CACHE` env var when set so tests and

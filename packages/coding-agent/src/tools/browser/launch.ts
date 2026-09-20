@@ -924,7 +924,7 @@ function buildStealthInjectionScript(scripts: readonly string[] = STEALTH_PATCH_
 
 					${joint}
 				} finally {
-					if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
+					if (iframe) iframe.remove();
 				}})();`;
 }
 

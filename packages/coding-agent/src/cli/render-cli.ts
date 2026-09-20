@@ -16,12 +16,14 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { Terminal, TerminalAppearance, TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
+import { TranscriptView } from "@oh-my-pi/pi-tui/chat/transcript-store";
+import { renderToRows } from "@oh-my-pi/pi-tui/testing";
 import type { RenderScheduler } from "@oh-my-pi/pi-tui/tui";
 import { formatBytes, getProjectDir, isEnoent, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { beginStartupComposer, takeStartupComposerLease } from "../modes/startup-composer";
 import { InteractiveMode } from "../modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "../session/agent-session";
@@ -199,12 +201,10 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		});
 		const terminal = new SinkTerminal(width, height);
 		const scheduler = new DrainScheduler();
-		const composer = new Composer({
-			terminal,
-			tuiOptions: { renderScheduler: scheduler },
-			preferences: { quiet: true },
-		});
-		mode = new InteractiveMode(session, VERSION, undefined, undefined, undefined, undefined, undefined, composer);
+		beginStartupComposer({ terminal, version: VERSION, cache: false, preferences: { quiet: true } });
+		const startupLease = takeStartupComposerLease();
+		mode = new InteractiveMode(session, VERSION, undefined, undefined, undefined, undefined, undefined, startupLease);
+		startupLease?.adopt();
 		await mode.init({ suppressWelcomeIntro: true });
 		scheduler.drain();
 
@@ -235,15 +235,15 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 			repaints.push({ ms: performance.now() - start, bytes: terminal.bytes - before });
 		}
 
+		const transcript = renderToRows(() => TranscriptView({ store: mode!.chatContainer }), width);
+
 		if (!args.quiet) {
-			const lines = mode.chatContainer.render(width);
-			const text = args.plain ? lines.map(line => Bun.stripANSI(line)).join("\n") : lines.join("\n");
-			process.stdout.write(text);
+			process.stdout.write(transcript.join("\n"));
 			process.stdout.write("\n");
 		}
 
 		if (args.timing || args.repaint) {
-			const rows = mode.chatContainer.render(width).length;
+			const rows = transcript.length;
 			const report = [
 				`session  ${sourcePath}`,
 				`         ${formatBytes(sourceSize)}, ${entries.length} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,

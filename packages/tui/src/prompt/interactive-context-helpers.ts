@@ -1,25 +1,20 @@
 /** Shared assistant transcript construction and model-authored link caching. */
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
-import { getMarkdownLinkUrls } from "../index";
+import { getMarkdownLinkUrls } from "../components/markdown-engine";
 import { EMPTY_LINK_TARGETS } from "../render/render-utils";
-import type { ImageBudget } from "../components/image";
-import type { AssistantThinkingRenderer } from "../chat/extension-types";
-import { AssistantMessageComponent } from "../chat/assistant-message";
+import { AssistantMessageView } from "../chat/assistant-message";
+import type { JSX } from "../reactive";
 /** Session display capabilities supplied unchanged by the interactive host. */
 export interface AssistantMessageSession {
 	readonly model?: Model;
-	readonly extensionRunner?: { getAssistantThinkingRenderers(): readonly AssistantThinkingRenderer[] };
 }
 
 /** Host state required to construct and refresh assistant transcript segments. */
 export interface AssistantMessageHost {
 	readonly viewSession: AssistantMessageSession;
 	readonly effectiveHideThinkingBlock: boolean;
-	readonly proseOnlyThinking: boolean;
 	readonly assistantImagesVisible: boolean;
-	readonly hideToolActivity: boolean;
 	readonly toolOutputExpanded: boolean;
-	readonly ui: { requestRender(): void; readonly imageBudget: ImageBudget };
 	resolveAssistantMessageLinks(texts: readonly string[]): Promise<ReadonlyMap<string, string>>;
 }
 
@@ -94,33 +89,12 @@ export function assistantMessageLinkTargets(
 	return selected;
 }
 
-/**
- * Construct an {@link AssistantMessageComponent} wired to the live context's
- * thinking/image settings. `message` is omitted for the streaming placeholder
- * component and supplied when rendering a persisted turn.
- */
-export function createAssistantMessageComponent(
-	ctx: AssistantMessageHost,
-	message?: AssistantMessage,
-	linkTargets: ReadonlyMap<string, string> = getAssistantMessageLinkTargets(ctx),
-): AssistantMessageComponent {
-	const component = new AssistantMessageComponent(
+/** Build the reactive assistant transcript entry with current display settings. */
+export function createAssistantMessageView(ctx: AssistantMessageHost, message: AssistantMessage): JSX.Element {
+	return AssistantMessageView({
 		message,
-		ctx.effectiveHideThinkingBlock,
-		() => ctx.ui.requestRender(),
-		ctx.viewSession.extensionRunner?.getAssistantThinkingRenderers(),
-		ctx.ui.imageBudget,
-		ctx.proseOnlyThinking,
-		linkTargets,
-	);
-	component.setImagesVisible(ctx.assistantImagesVisible);
-	component.setToolResultImagesVisible(!ctx.hideToolActivity);
-	component.setExpanded(ctx.toolOutputExpanded);
-	// A wire the `stream-revision` axis marks `possible` can rewrite text it has
-	// already streamed; published rows are unrecoverable once they reach native
-	// scrollback, so those wires keep finished lines in the live viewport.
-	const compat = ctx.viewSession.model?.compat;
-	const wireRevisable = compat !== undefined && "streamRevision" in compat && compat.streamRevision === "possible";
-	component.setMidStreamPublication(!wireRevisable);
-	return component;
+		expanded: ctx.toolOutputExpanded,
+		hideThinking: ctx.effectiveHideThinkingBlock,
+		showImages: ctx.assistantImagesVisible,
+	});
 }

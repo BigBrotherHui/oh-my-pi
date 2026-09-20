@@ -1345,7 +1345,9 @@ function ansiColor(model: string | null, spec: string): AnsiColor | null {
  * (fraction bars, stretched delimiters, matrix brackets) inside
  * `\color`/`\textcolor` scopes.
  */
-export function latexColorScope(model: string | null, spec: string): ((text: string) => string) | null {
+export type LatexColorScope = (value: string) => string;
+
+export function latexColorScope(model: string | null, spec: string): LatexColorScope | null {
 	const color = ansiColor(model, spec);
 	if (color === null) return null;
 	const { foreground } = color;

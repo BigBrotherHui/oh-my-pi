@@ -1,5 +1,4 @@
-import type { Theme } from "../theme/theme";
-import { formatBytes, wrapBrackets } from "../render/render-utils";
+import { formatBytes } from "../render/render-utils";
 import type { OutputArtifactError } from "./streaming-output";
 import { formatGroupedFiles } from "./grouped-file-output";
 
@@ -50,7 +49,7 @@ export type SourceMeta =
  */
 export interface DiagnosticMeta {
 	summary: string;
-	messages: string[];
+	messages: readonly string[];
 }
 
 /**
@@ -87,7 +86,7 @@ const DIAG_PATH_RE = /^(.+?):(\d+:\d+\s+.*)$/;
  *
  * Messages that don't match the expected format are appended ungrouped at the end.
  */
-export function formatGroupedDiagnosticMessages(messages: string[]): string {
+export function formatGroupedDiagnosticMessages(messages: readonly string[]): string {
 	const diagnosticsByFile = new Map<string, string[]>();
 	const fileOrder: string[] = [];
 	const ungrouped: string[] = [];
@@ -261,14 +260,6 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta, source?: 
 	return notice;
 }
 
-/**
- * Format styled artifact reference with warning color and brackets.
- * For TUI rendering of truncation warnings.
- */
-export function formatStyledArtifactReference(artifactId: string, theme: Theme): string {
-	return theme.fg("warning", formatFullOutputReference(artifactId));
-}
-
 /** Describe an incomplete artifact capture. */
 export function formatArtifactErrorNotice(error: OutputArtifactError): string {
 	return `Full output was not saved completely (artifact ${error} failed)`;
@@ -326,18 +317,6 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 
 	const notice = parts.length ? `\n\n[${parts.join(". ")}]` : "";
 	return notice + diagnosticsNotice;
-}
-
-/**
- * Format styled truncation and artifact capture warnings.
- * Returns null if neither warning is present.
- */
-export function formatStyledTruncationWarning(meta: OutputMeta | undefined, theme: Theme): string | null {
-	if (!meta?.truncation && !meta?.artifactError) return null;
-	const parts: string[] = [];
-	if (meta.truncation) parts.push(formatTruncationMetaNotice(meta.truncation, meta.source));
-	if (meta.artifactError) parts.push(formatArtifactErrorNotice(meta.artifactError));
-	return theme.fg("warning", wrapBrackets(parts.join(". "), theme));
 }
 
 /**

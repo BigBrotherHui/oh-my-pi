@@ -22,7 +22,11 @@
 // (https://github.com/thatmagicalcat/txm, MIT/Apache-2.0), reimplemented from
 // scratch here on this module's ANSI-aware Box model.
 
-import { latexColorScope, latexToUnicode, MATH_FONT_COMMANDS } from "./latex-to-unicode";
+import { type LatexColorScope, latexColorScope, latexToUnicode, MATH_FONT_COMMANDS } from "./latex-to-unicode";
+import { parseAnsiRow } from "./core/ansi";
+import { over } from "./core/out";
+import { type Out, RichText } from "./core/richtext";
+import { Style } from "./core/style";
 import { visibleWidth } from "./utils";
 
 /**
@@ -897,7 +901,7 @@ function parseEnvironment(src: string, start: number, ctx: Ctx): { box: Box; end
  * glyphs (fraction bars, stretched delimiters, matrix brackets) inherit the
  * enclosing color scope while nested color runs still restore to it.
  */
-function colorizeBox(box: Box, scope: (text: string) => string): Box {
+function colorizeBox(box: Box, scope: LatexColorScope): Box {
 	return { lines: box.lines.map(scope), baseline: box.baseline, width: box.width };
 }
 
@@ -912,7 +916,7 @@ function parseExpr(src: string, ctx: Ctx = ROOT_CTX): Box {
 	const boxes: Box[] = [];
 	let inline = "";
 	let color = "";
-	let colorScope: ((text: string) => string) | null = null;
+	let colorScope: LatexColorScope | null = null;
 	const flush = (): void => {
 		if (!inline) return;
 		boxes.push(textBox(latexToUnicode(ctx.wrap(color + inline))));
@@ -1157,7 +1161,7 @@ function parseExpr(src: string, ctx: Ctx = ROOT_CTX): Box {
 				let k = j;
 				while (src[k] === " ") k++;
 				let prefix = `\\${name}`;
-				let scope: ((text: string) => string) | null = null;
+				let scope: LatexColorScope | null = null;
 				if (name === "textcolor") {
 					let model: string | null = null;
 					if (src[k] === "[") {
@@ -1435,7 +1439,7 @@ function splitLines(src: string): string[] {
  * `lhs =` line stays above its block). Inline math should use `latexToUnicode`
  * instead — fractions there stay single-line.
  */
-export function latexToBlock(src: string): string[] {
+function layoutLatexBlock(src: string): string[] {
 	if (typeof src !== "string" || src.trim() === "") return [];
 	const rows = splitLines(src.trim())
 		.map(line => line.replace(/[ \t]*\n[ \t]*/g, " ").trim())
@@ -1446,4 +1450,22 @@ export function latexToBlock(src: string): string[] {
 	while (lines.length > 1 && lines[lines.length - 1].trim() === "") lines = lines.slice(0, -1);
 	while (lines.length > 1 && lines[0].trim() === "") lines = lines.slice(1);
 	return lines;
+}
+
+/** Paint display LaTeX directly into the run pipeline. */
+export function paintLatexBlock(out: Out, src: string, base: Style = Style.NONE): void {
+	const row = new RichText();
+	const sink = over(out, base);
+	for (const line of layoutLatexBlock(src)) {
+		row.clear();
+		parseAnsiRow(line, row);
+		row.br();
+		row.replayRow(sink, 0);
+		out.br();
+	}
+}
+
+/** Compatibility wrapper for legacy string-row consumers. */
+export function latexToBlock(src: string): string[] {
+	return layoutLatexBlock(src);
 }

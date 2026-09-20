@@ -1,5 +1,5 @@
 import { sanitizeText } from "@oh-my-pi/pi-utils";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
 
 /**
  * First-failure notice. The store keeps the unlanded entries in memory and
@@ -9,7 +9,7 @@ import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui
  * to keep the result on one line.
  */
 export function formatPersistenceFailure(message: string): string {
-	const detail = truncateToWidth(replaceTabs(sanitizeText(message)).replace(/[\r\n]+/g, " "), TRUNCATE_LENGTHS.LINE);
+	const detail = replaceTabs(sanitizeText(message)).replace(/[\r\n]+/g, " ");
 	return `Session persistence failed: ${detail}. Writes are retried; unsaved entries stay in memory until the store accepts them again.`;
 }
 
@@ -19,6 +19,6 @@ export function formatPersistenceFailure(message: string): string {
  * durable and the in-memory entries are gone with the process.
  */
 export function formatPersistenceDurabilityFailure(message: string): string {
-	const detail = truncateToWidth(replaceTabs(sanitizeText(message)).replace(/[\r\n]+/g, " "), TRUNCATE_LENGTHS.LINE);
+	const detail = replaceTabs(sanitizeText(message)).replace(/[\r\n]+/g, " ");
 	return `Session persistence is still failing at shutdown: ${detail}. The session transcript is not durable; unsaved entries are lost.`;
 }

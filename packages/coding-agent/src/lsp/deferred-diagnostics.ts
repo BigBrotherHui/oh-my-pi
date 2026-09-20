@@ -46,7 +46,7 @@ export class DeferredDiagnostics {
 		const entry: DeferredDiagnosticsEntry = {
 			path,
 			summary: effective.summary ?? "",
-			messages: effective.messages ?? [],
+			messages: [...(effective.messages ?? [])],
 			errored: effective.errored,
 			isStale: () => this.#version(path) !== mutationVersion,
 		};

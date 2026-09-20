@@ -63,15 +63,15 @@ export function renderConflictRegion(
 		}
 		return { lines: [...entry.baseLines], startLine: entry.baseLine + 1 };
 	}
-	const out: string[] = [];
-	out.push(markerLine("<<<<<<<", entry.oursLabel));
-	out.push(...entry.oursLines);
+	const lines: string[] = [];
+	lines.push(markerLine("<<<<<<<", entry.oursLabel));
+	lines.push(...entry.oursLines);
 	if (entry.baseLines !== undefined) {
-		out.push(markerLine("|||||||", entry.baseLabel));
-		out.push(...entry.baseLines);
+		lines.push(markerLine("|||||||", entry.baseLabel));
+		lines.push(...entry.baseLines);
 	}
-	out.push("=======");
-	out.push(...entry.theirsLines);
-	out.push(markerLine(">>>>>>>", entry.theirsLabel));
-	return { lines: out, startLine: entry.startLine };
+	lines.push("=======");
+	lines.push(...entry.theirsLines);
+	lines.push(markerLine(">>>>>>>", entry.theirsLabel));
+	return { lines, startLine: entry.startLine };
 }

@@ -71,6 +71,6 @@ describe("issue #927 optimistic pending spinner", () => {
 		expect(mode.loadingAnimation).toBeUndefined();
 		expect(mode.optimisticUserMessageSignature).toBeUndefined();
 		expect(mode.locallySubmittedUserSignatures.has("/extension-no-turn\u00000")).toBe(false);
-		expect(mode.statusContainer.children.length).toBe(0);
+		expect(mode.statusContainer.entries()).toHaveLength(0);
 	});
 });

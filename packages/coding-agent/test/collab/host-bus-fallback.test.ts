@@ -33,7 +33,7 @@ function makeHostContext(eventBus: EventBus): InteractiveModeContext {
 		eventBus,
 		statusLine: {
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
 		},
 		ui: { requestRender: () => {} },

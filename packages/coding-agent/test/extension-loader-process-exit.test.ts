@@ -36,18 +36,22 @@ describe("extension/hook loader process.exit guard (#3680)", () => {
 
 	const runProbe = async (probe: string, preload: string[] = []) => {
 		const preloadArgs = preload.flatMap(file => ["--preload", file]);
-		const proc = Bun.spawn([process.execPath, ...preloadArgs, "-e", probe], {
+		let watchdog: NodeJS.Timeout | undefined;
+		// Child IPC and OS signals use the platform clock; fake timers cannot drive this watchdog.
+		// Static imports finish before this handshake, so source compilation does not consume the signal deadline.
+		const source = `process.send("probe-ready"); process.disconnect();\n${probe}`;
+		const proc = Bun.spawn([process.execPath, ...preloadArgs, "-e", source], {
 			cwd: path.resolve(import.meta.dir, "../../.."),
-			stdin: "pipe",
+			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
+			ipc(message: unknown, subprocess) {
+				if (message !== "probe-ready" || subprocess.exitCode !== null) return;
+				clearTimeout(watchdog);
+				watchdog = setTimeout(() => subprocess.kill("SIGKILL"), 2_000);
+			},
 		});
-		// Real process signals cannot use fake timers; this only bounds a wedged child.
-		const watchdog = setTimeout(() => {
-			try {
-				proc.kill("SIGKILL");
-			} catch {}
-		}, 2000);
+		watchdog ??= setTimeout(() => proc.kill("SIGKILL"), 15_000);
 		try {
 			const [exitCode, stdout, stderr] = await Promise.all([
 				proc.exited,
@@ -164,7 +168,7 @@ try {
 		expect(exitCode).toBe(0);
 		expect(stdout).toContain("ExtensionExitError:ExtensionExitError: Module called process.exit(37)");
 		expect(stderr).toBe("");
-	});
+	}, 20_000);
 
 	it("lets host SIGINT exit once while a guarded callback remains pending", async () => {
 		const { exitCode, stdout, stderr } = await runGuardedShutdownProbe("sigint");
@@ -173,7 +177,7 @@ try {
 		expect(stdout).toBe("guard-active\ncleanup:sigint\n");
 		expect(stderr).not.toContain("[Unhandled Rejection]");
 		expect(stderr).not.toContain("ExtensionExitError");
-	});
+	}, 20_000);
 
 	it("lets fatal cleanup exit once while a guarded callback remains pending", async () => {
 		const { exitCode, stdout, stderr } = await runGuardedShutdownProbe("fatal");
@@ -183,7 +187,7 @@ try {
 		expect(stderr.match(/\[Unhandled Rejection\]/g)).toHaveLength(1);
 		expect(stderr).toContain("Error: probe fatal");
 		expect(stderr).not.toContain("ExtensionExitError");
-	});
+	}, 20_000);
 
 	it("exits cleanly on host SIGHUP when postmortem initialized inside a guard window (#7393)", async () => {
 		// Mirror the shipped bundle: postmortem's exit primitive is first resolved
@@ -216,7 +220,7 @@ await Bun.sleep(10_000);
 		expect(stdout).toBe("armed\ncleanup:sighup\n");
 		expect(stderr).not.toContain("ExtensionExitError");
 		expect(stderr).not.toContain("Unhandled Rejection");
-	});
+	}, 20_000);
 
 	it("only the outermost guard restores process.exit when guards nest", async () => {
 		const originalExit = process.exit;

@@ -91,7 +91,7 @@ describe("YieldTool", () => {
 		const assembled = assembleYieldResult(
 			[
 				{ status: "success", type: ["review#1"], data: { outcome: "one" } },
-				{ status: "success", type: ["review#2"], data: { outcome: "two" }, complete: true },
+				{ status: "success", type: ["review#2"], data: { outcome: "two" } },
 			],
 			undefined,
 			arrayValuedLabels(schema),

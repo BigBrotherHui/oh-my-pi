@@ -1,9 +1,14 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import { type Component, type OverlayHandle, setKeybindings, TUI, visibleWidth } from "@oh-my-pi/pi-tui";
-import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui/terminal";
-import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { Settings } from "../../../src/config/settings";
-import { SessionInfoOverlay } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
+import { setKeybindings, visibleWidth } from "@oh-my-pi/pi-tui";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
+import { openSessionInfoOverlay, SessionInfoOverlayView } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
+import type { OverlayDisposer } from "@oh-my-pi/pi-tui/host/overlay";
+import { renderToRows } from "@oh-my-pi/pi-tui/testing";
+import { render } from "@oh-my-pi/pi-tui/root";
+import { Editor, EditorView } from "@oh-my-pi/pi-tui/components/editor";
+import { getEditorTheme } from "@oh-my-pi/pi-tui/theme";
+import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui/terminal";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
 
 class MinimalTerminal implements Terminal {
@@ -15,7 +20,6 @@ class MinimalTerminal implements Terminal {
 	keyboardEnhancementExitSequence: string | null = null;
 	appearance: TerminalAppearance | undefined;
 	#onInput: ((data: string) => void) | undefined;
-	output = "";
 
 	start(onInput: (data: string) => void, _onResize: () => void): void {
 		this.#onInput = onInput;
@@ -27,9 +31,7 @@ class MinimalTerminal implements Terminal {
 
 	async drainInput(_maxMs?: number, _idleMs?: number): Promise<void> {}
 
-	write(data: string): void {
-		this.output += data;
-	}
+	write(_data: string): void {}
 
 	moveBy(_lines: number): void {}
 
@@ -54,20 +56,6 @@ class MinimalTerminal implements Terminal {
 	}
 }
 
-class InputRecorder implements Component {
-	readonly inputs: string[] = [];
-
-	constructor(readonly label: string) {}
-
-	handleInput(data: string): void {
-		this.inputs.push(data);
-	}
-
-	render(_width: number): string[] {
-		return [this.label];
-	}
-}
-
 let uiTheme: Theme;
 
 beforeAll(async () => {
@@ -83,113 +71,130 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("SessionInfoOverlay", () => {
-	it("renders session details, footer help, and fixed-width box rows", () => {
-		const overlay = new SessionInfoOverlay(
-			{ terminal: { rows: 12 } },
-			"File: /tmp/session.jsonl\nProvider: openai\nTokens: 42",
-			() => {},
+describe("SessionInfoOverlayView", () => {
+	it("renders session details and footer help", () => {
+		const lines = renderToRows(
+			() =>
+				SessionInfoOverlayView({
+					info: "File: /tmp/session.jsonl\nProvider: openai\nTokens: 42",
+					maxHeight: 12,
+				}),
+			48,
 		);
-
-		const lines = overlay.render(48);
-		const plain = lines.map(line => line.replace(/\x1b\[[0-9;]*m/g, ""));
+		const plain = lines.map(line => Bun.stripANSI(line));
 		const text = plain.join("\n");
 
 		expect(text).toContain("Session Info");
 		expect(text).toContain("File: /tmp/session.jsonl");
-		expect(text).toContain("↑/↓ scroll · Esc close");
-		expect(lines.map(line => visibleWidth(line))).toEqual(Array(lines.length).fill(48));
+		expect(lines.map(visibleWidth)).toEqual(Array(lines.length).fill(48));
 		expect(plain[0]).toContain(uiTheme.boxRound.topLeft);
 		expect(plain.at(-1)).toContain(uiTheme.boxRound.bottomLeft);
-		expect(lines).toHaveLength(7);
 	});
 
-	it("preserves exact-width details when the scrollbar is visible", () => {
-		const exactWidthDetail = `${"A".repeat(43)}Z`;
-		const overlay = new SessionInfoOverlay(
-			{ terminal: { rows: 8 } },
-			[exactWidthDetail, "line 2", "line 3", "line 4", "line 5"].join("\n"),
-			() => {},
-		);
-
-		const text = overlay
-			.render(48)
-			.map(line => line.replace(/\x1b\[[0-9;]*m/g, ""))
+	it("preserves exact-width details", () => {
+		const detail = `${"A".repeat(43)}Z`;
+		const text = renderToRows(
+			() =>
+				SessionInfoOverlayView({
+					info: [detail, "line 2", "line 3", "line 4", "line 5"].join("\n"),
+					maxHeight: 8,
+				}),
+			48,
+		)
+			.map(line => Bun.stripANSI(line))
 			.join("\n");
 
 		expect(text).toContain("Z");
 	});
 
-	it("keeps narrow panels within the terminal height", () => {
-		const overlay = new SessionInfoOverlay(
-			{ terminal: { rows: 8 } },
-			Array.from({ length: 20 }, (_, index) => `Detail ${index}`).join("\n"),
-			() => {},
+	it("caps long panels at the supplied height", () => {
+		const lines = renderToRows(
+			() =>
+				SessionInfoOverlayView({
+					info: Array.from({ length: 20 }, (_, index) => `Detail ${index}`).join("\n"),
+					maxHeight: 8,
+				}),
+			12,
 		);
+		const plain = lines.map(line => Bun.stripANSI(line));
 
-		const lines = overlay.render(12);
-		const plain = lines.map(line => line.replace(/\x1b\[[0-9;]*m/g, ""));
-
-		expect(lines.length).toBeLessThanOrEqual(8);
+		expect(lines).toHaveLength(8);
+		expect(plain.join("\n")).toContain("█");
+		expect(plain.join("\n")).toContain("│");
+		expect(lines.map(visibleWidth)).toEqual(Array(lines.length).fill(12));
 		expect(plain[0]).toContain(uiTheme.boxRound.topLeft);
 		expect(plain.at(-1)).toContain(uiTheme.boxRound.bottomLeft);
 	});
 
-	it("scrolls long details and closes on the configured cancel key", () => {
-		setKeybindings(KeybindingsManager.inMemory({ "tui.select.cancel": "ctrl+g" }));
-		const onClose = vi.fn();
-		const overlay = new SessionInfoOverlay(
-			{ terminal: { rows: 8 } },
-			Array.from({ length: 20 }, (_, index) => `Detail ${index}`).join("\n"),
-			onClose,
-		);
-
-		const initial = overlay
-			.render(40)
-			.map(line => line.replace(/\x1b\[[0-9;]*m/g, ""))
-			.join("\n");
-		overlay.handleInput("\x1b[B");
-		const scrolled = overlay
-			.render(40)
-			.map(line => line.replace(/\x1b\[[0-9;]*m/g, ""))
+	it("shows the requested wrapped-content offset", () => {
+		const text = renderToRows(
+			() =>
+				SessionInfoOverlayView({
+					info: Array.from({ length: 20 }, (_, index) => `Detail ${index}`).join("\n"),
+					offset: 3,
+					maxHeight: 8,
+				}),
+			40,
+		)
+			.map(line => Bun.stripANSI(line))
 			.join("\n");
 
-		expect(scrolled).not.toBe(initial);
-		expect(onClose).not.toHaveBeenCalled();
-		overlay.handleInput("\x07");
-		expect(onClose).toHaveBeenCalledTimes(1);
-		overlay.handleInput("\x1b");
-		expect(onClose).toHaveBeenCalledTimes(2);
+		expect(text).toContain("Detail 3");
+		expect(text).not.toContain("Detail 0");
 	});
+});
 
-	it("owns Escape through TUI focus and restores the editor without forwarding it", () => {
+describe("openSessionInfoOverlay", () => {
+	it("owns scroll and cancel keys, then restores editor input", () => {
+		setKeybindings(KeybindingsManager.inMemory({ "tui.select.cancel": "ctrl+g" }));
 		const terminal = new MinimalTerminal();
-		const tui = new TUI(terminal);
-		const editor = new InputRecorder("editor");
-		let handle: OverlayHandle | undefined;
-		const onClose = vi.fn(() => handle?.hide());
-		const overlay = new SessionInfoOverlay(tui, "File: in-memory", onClose);
+		const editor = new Editor(getEditorTheme());
+		const root = render(() => EditorView({ editor }), { terminal, theme: uiTheme });
+		const tui = root.tui;
+		const onClose = vi.fn();
+		let overlay: OverlayDisposer | undefined;
+		const close = (): void => {
+			onClose();
+			overlay?.dispose();
+		};
 
-		tui.addChild(editor);
-		tui.setFocus(editor);
 		try {
-			tui.start();
-			handle = tui.showOverlay(overlay, {
-				anchor: "bottom-center",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-			});
+			overlay = openSessionInfoOverlay(
+				tui,
+				Array.from({ length: 20 }, (_, index) => `Detail ${index}`).join("\n"),
+				close,
+				{ host: { terminal }, maxHeight: 8 },
+			);
+			tui.renderNow();
+			const initial = tui.getDebugPaint()?.lines.join("\n") ?? "";
 
-			expect(tui.getFocused()).toBe(overlay);
+			terminal.sendInput("\x1b[B");
+			tui.renderNow();
+			const scrolled = tui.getDebugPaint()?.lines.join("\n") ?? "";
+			terminal.sendInput("\x07");
+
+			expect(initial).toContain("Detail 0");
+			expect(scrolled).toContain("Detail 1");
+			expect(scrolled).not.toContain("Detail 0");
+			expect(onClose).toHaveBeenCalledTimes(1);
+			expect(tui.hasOverlay()).toBe(false);
+			expect(editor.getText()).toBe("");
+			terminal.sendInput("restored");
+			expect(editor.getText()).toBe("restored");
+
+			overlay = openSessionInfoOverlay(tui, "File: in-memory", close, {
+				host: { terminal },
+				maxHeight: 8,
+			});
 			terminal.sendInput("\x1b");
 
-			expect(onClose).toHaveBeenCalledTimes(1);
-			expect(editor.inputs).toEqual([]);
-			expect(tui.getFocused()).toBe(editor);
+			expect(onClose).toHaveBeenCalledTimes(2);
+			expect(tui.hasOverlay()).toBe(false);
+			terminal.sendInput(" again");
+			expect(editor.getText()).toBe("restored again");
 		} finally {
-			handle?.hide();
-			tui.stop();
+			overlay?.dispose();
+			root.dispose();
 		}
 	});
 });

@@ -1,40 +1,41 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 
-import { HookInputComponent } from "@oh-my-pi/pi-tui/overlays/hook-input";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { createHookInputController, HookInputView, type HookInputProps } from "@oh-my-pi/pi-tui/overlays/hook-input";
+import { dispatchHostInput } from "../src/host/overlay";
+import { mountForTest } from "../src/testing";
 
-beforeAll(async () => {
-	const theme = await getThemeByName("dark");
-	if (!theme) {
-		throw new Error("Failed to load dark theme for tests");
-	}
-	setThemeInstance(theme);
-});
-describe("HookInputComponent timeout", () => {
+function createProps(overrides: Partial<HookInputProps> = {}): HookInputProps {
+	return {
+		title: "Prompt",
+		onSubmit: () => {},
+		onCancel: () => {},
+		...overrides,
+	};
+}
+
+describe("HookInput", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 	});
 
-	it("resets timeout on user activity and still expires when idle", () => {
+	it("resets its millisecond timeout on interaction and expires once when idle", () => {
 		vi.useFakeTimers();
 
-		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
 		const onTimeout = vi.fn();
-		const tui = { requestRender: vi.fn() } as unknown as TUI;
-
-		const component = new HookInputComponent("Prompt", undefined, onSubmit, onCancel, {
-			timeout: 1_000,
-			tui,
-			onTimeout,
-		});
-
-		vi.advanceTimersByTime(900);
-		component.handleInput("a");
+		const controller = createHookInputController(
+			createProps({
+				onCancel,
+				options: { timeout: 1_000, onTimeout },
+			}),
+		);
 
 		vi.advanceTimersByTime(900);
-		component.handleInput("\x7f");
+		controller.reset();
+		expect(controller.title()).toBe("Prompt (1s)");
+
+		vi.advanceTimersByTime(900);
+		controller.reset();
 
 		vi.advanceTimersByTime(900);
 		expect(onTimeout).not.toHaveBeenCalled();
@@ -43,65 +44,63 @@ describe("HookInputComponent timeout", () => {
 		vi.advanceTimersByTime(200);
 		expect(onTimeout).toHaveBeenCalledTimes(1);
 		expect(onCancel).toHaveBeenCalledTimes(1);
-
-		component.dispose();
+		controller.dispose();
 	});
 
-	it("preserves submit behavior", () => {
-		vi.useFakeTimers();
-
+	it("starts focused, submits and cancels through the single-line input", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
-		const onTimeout = vi.fn();
-		const tui = { requestRender: vi.fn() } as unknown as TUI;
+		const controller = createHookInputController(createProps({ onSubmit, onCancel }));
+		const root = mountForTest(() => HookInputView({ controller, onSubmit, onCancel }), { width: 28 });
 
-		const component = new HookInputComponent("Prompt", undefined, onSubmit, onCancel, {
-			timeout: 1_000,
-			tui,
-			onTimeout,
-		});
+		try {
+			dispatchHostInput(root.root, "h");
+			dispatchHostInput(root.root, "i");
+			dispatchHostInput(root.root, "\r");
+			expect(onSubmit).toHaveBeenCalledWith("hi");
 
-		component.handleInput("h");
-		component.handleInput("i");
-		component.handleInput("\n");
-
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("hi");
-		expect(onCancel).not.toHaveBeenCalled();
-		expect(onTimeout).not.toHaveBeenCalled();
-
-		component.dispose();
+			dispatchHostInput(root.root, "\x1b");
+			expect(onCancel).toHaveBeenCalledTimes(1);
+		} finally {
+			root.dispose();
+			controller.dispose();
+		}
 	});
 
-	it("absorbs enhanced-paste payloads via pasteText and resets the timeout", () => {
-		// Regression: enhanced-paste (kitty OSC 5522) focus routing only targets
-		// components exposing a `pasteText` hook; without one the payload landed
-		// in the hidden main prompt behind the dialog (#2127 contract).
-		vi.useFakeTimers();
-
-		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
-		const onTimeout = vi.fn();
-		const tui = { requestRender: vi.fn() } as unknown as TUI;
-
-		const component = new HookInputComponent("Prompt", undefined, onSubmit, onCancel, {
-			timeout: 1_000,
-			tui,
-			onTimeout,
+	it("keeps the historical one-line form spacing and clips safely when narrow", () => {
+		const controller = createHookInputController(createProps());
+		const root = mountForTest(() => HookInputView({ controller, onSubmit: () => {}, onCancel: () => {} }), {
+			width: 28,
 		});
 
-		vi.advanceTimersByTime(900);
-		component.pasteText("sk-line1\nsk-line2");
+		try {
+			const wide = root.text();
+			expect(wide).toHaveLength(7);
+			expect(wide[1]).toMatch(/^│ {26}│$/);
+			expect(wide[2]).toContain("> ");
+			expect(wide[3]).toMatch(/^│ {26}│$/);
+			expect(wide[4]).toContain("enter submit  esc cancel");
+			expect(wide[5]).toMatch(/^│ {26}│$/);
 
-		vi.advanceTimersByTime(900);
-		expect(onTimeout).not.toHaveBeenCalled();
-		expect(onCancel).not.toHaveBeenCalled();
+			for (const row of root.text(4)) expect(row.length).toBeLessThanOrEqual(4);
+		} finally {
+			root.dispose();
+			controller.dispose();
+		}
+	});
 
-		component.handleInput("\n");
+	it("pastes through the focused field without submitting a newline", () => {
+		const onSubmit = vi.fn();
+		const controller = createHookInputController(createProps({ onSubmit }));
+		const root = mountForTest(() => HookInputView({ controller, onSubmit, onCancel: () => {} }), { width: 28 });
 
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("sk-line1sk-line2");
-
-		component.dispose();
+		try {
+			dispatchHostInput(root.root, "\x1b[200~first\nsecond\x1b[201~");
+			dispatchHostInput(root.root, "\r");
+			expect(onSubmit).toHaveBeenCalledWith("firstsecond");
+		} finally {
+			root.dispose();
+			controller.dispose();
+		}
 	});
 });

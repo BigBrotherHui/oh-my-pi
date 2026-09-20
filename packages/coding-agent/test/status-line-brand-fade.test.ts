@@ -13,6 +13,7 @@ import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { getSessionAccentAnsi } from "@oh-my-pi/pi-tui/theme/session-color";
+import { renderStatus, renderStatusLine } from "./helpers/status-line";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -86,13 +87,13 @@ describe("status line brand fade", () => {
 		const component = makeComponent();
 		try {
 			// Idle: omp icon settled in the dim color.
-			expect(component.renderBottomBar(80, "full")).toContain(`${dimAnsi}${theme.icon.omp}`);
+			expect(renderStatusLine(component, 80, "plain-full")).toContain(`${dimAnsi}${theme.icon.omp}`);
 
 			// Turn start: the glyph becomes a spinner + whole-second timer at
 			// once, but the color starts from the on-screen dim — no instant swap.
 			component.markActivityStart();
 			now += 10;
-			const early = component.renderBottomBar(80, "full");
+			const early = renderStatusLine(component, 80, "plain-full");
 			expect(early).toContain(" 0s");
 			expect(early).not.toContain(theme.icon.omp);
 			expect(early).toContain(dimAnsi);
@@ -100,13 +101,13 @@ describe("status line brand fade", () => {
 
 			// Mid-fade (225ms of 450ms): a blend that is neither endpoint.
 			now += 215;
-			const mid = component.renderBottomBar(80, "full");
+			const mid = renderStatusLine(component, 80, "plain-full");
 			expect(mid).not.toContain(dimAnsi);
 			expect(mid).not.toContain(accentAnsi);
 
 			// Past the 450ms fade: settled on the accent.
 			now += 300;
-			expect(component.renderBottomBar(80, "full")).toContain(accentAnsi);
+			expect(renderStatusLine(component, 80, "plain-full")).toContain(accentAnsi);
 		} finally {
 			component.dispose();
 		}
@@ -121,26 +122,26 @@ describe("status line brand fade", () => {
 		const component = makeComponent();
 		try {
 			component.markActivityStart();
-			// The fade arms on the first render observing the edge.
-			component.renderBottomBar(80, "full");
+			// Sampling the retained standalone layout records the active fade.
+			renderStatusLine(component, 80, "plain-full");
 			now += 500; // settle the fade-in
-			expect(component.renderBottomBar(80, "full")).toContain(accentAnsi);
+			expect(renderStatusLine(component, 80, "plain-full")).toContain(accentAnsi);
 
 			// Turn end: the icon returns immediately, the color resumes from the
 			// accent currently on screen instead of jumping to dim.
 			component.markActivityEnd();
 			now += 10;
-			const ending = component.renderBottomBar(80, "full");
+			const ending = renderStatusLine(component, 80, "plain-full");
 			expect(ending).toContain(theme.icon.omp);
 			expect(ending).toContain(accentAnsi);
 
 			now += 215;
-			const mid = component.renderBottomBar(80, "full");
+			const mid = renderStatusLine(component, 80, "plain-full");
 			expect(mid).not.toContain(dimAnsi);
 			expect(mid).not.toContain(accentAnsi);
 
 			now += 300;
-			expect(component.renderBottomBar(80, "full")).toContain(`${dimAnsi}${theme.icon.omp}`);
+			expect(renderStatusLine(component, 80, "plain-full")).toContain(`${dimAnsi}${theme.icon.omp}`);
 		} finally {
 			component.dispose();
 		}

@@ -1437,7 +1437,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					diagnostics: diagnostics.diagnostics,
 					madeExecutable: madeExecutable || undefined,
 					meta: outputMeta()
-						.diagnostics(diagnostics.diagnostics.summary, diagnostics.diagnostics.messages ?? [])
+						.diagnostics(diagnostics.diagnostics.summary, [...(diagnostics.diagnostics.messages ?? [])])
 						.get(),
 				},
 			};

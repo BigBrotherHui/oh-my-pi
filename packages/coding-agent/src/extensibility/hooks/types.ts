@@ -4,7 +4,9 @@ import type { type as ArkType } from "@oh-my-pi/omptype";
 import type * as TypeBox from "@oh-my-pi/omptype/typebox";
 import type * as zod from "@oh-my-pi/omptype/zod";
 import type { ImageContent, Message, Model, TextContent } from "@oh-my-pi/pi-ai";
-import type { Component, TUI } from "@oh-my-pi/pi-tui";
+import type { TUI } from "@oh-my-pi/pi-tui";
+import type { OverlayDisposer } from "@oh-my-pi/pi-tui/host/overlay";
+import type { ExtensionUiView } from "@oh-my-pi/pi-tui/chat/extension-types";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -131,7 +133,7 @@ export interface HookUIContext {
 			theme: Theme,
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
-		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
+		) => (ExtensionUiView | OverlayDisposer) | Promise<ExtensionUiView | OverlayDisposer>,
 	): Promise<T>;
 
 	/**

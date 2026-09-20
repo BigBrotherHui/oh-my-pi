@@ -1,22 +1,24 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { OAuthSelectorComponent } from "@oh-my-pi/pi-tui/overlays/oauth-selector";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { OAuthSelector, type OAuthSelectorAuthSource } from "@oh-my-pi/pi-tui/overlays/oauth-selector";
+import { dispatchHostInput } from "@oh-my-pi/pi-tui/overlay";
+import { mountForTest } from "@oh-my-pi/pi-tui/testing";
+import { visibleWidth } from "@oh-my-pi/pi-tui";
 
-beforeAll(async () => {
-	await initTheme();
-});
+const noCredentials: OAuthSelectorAuthSource = {
+	has() {
+		return false;
+	},
+	hasAuth() {
+		return false;
+	},
+	getCredentialOrigin() {
+		return undefined;
+	},
+};
 
-const authStorage = {
-	has: (_providerId: string) => false,
-	hasAuth: (_providerId: string) => false,
-	getCredentialOrigin: (_providerId: string) => undefined,
-} as unknown as AuthStorage;
-
-describe("OAuthSelectorComponent", () => {
-	it("fuzzy-filters overflowing provider lists from typed input", () => {
+describe("OAuthSelector", () => {
+	it("fuzzy-filters overflowing providers and activates the matching login", () => {
 		const providers = getOAuthProviders();
 		expect(providers.length).toBeGreaterThan(10);
 		const target =
@@ -27,167 +29,159 @@ describe("OAuthSelectorComponent", () => {
 		if (!target) return;
 
 		const selected: string[] = [];
-		const component = new OAuthSelectorComponent(
-			"login",
-			authStorage,
-			providerId => selected.push(providerId),
-			() => {},
+		const mounted = mountForTest(() =>
+			OAuthSelector({
+				inline: true,
+				mode: "login",
+				authStorage: noCredentials,
+				onSelect: providerId => selected.push(providerId),
+				onCancel() {},
+			}),
 		);
+		try {
+			mounted.rows();
+			for (const character of target.id) dispatchHostInput(mounted.root, character);
+			const rendered = mounted.rows().map(Bun.stripANSI).join("\n");
+			expect(rendered).toContain(target.name);
+			expect(rendered).toContain(`Search: ${target.id}`);
 
-		for (const char of target.id) {
-			component.handleInput(char);
+			dispatchHostInput(mounted.root, "\n");
+			expect(selected).toEqual([target.id]);
+		} finally {
+			mounted.dispose();
 		}
-
-		const rendered = component
-			.render(80)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(rendered).toContain(target.name);
-		expect(rendered).toContain(`Search: ${target.id}`);
-
-		component.handleInput("\n");
-		expect(selected).toEqual([target.id]);
 	});
 
-	it("does not offer env-only providers as logout targets", () => {
+	it("excludes env-only providers from logout while retaining stored credentials", () => {
+		const provider =
+			getOAuthProviders().find(item => item.available && item.id === "opencode-go") ??
+			getOAuthProviders().find(item => item.available);
+		expect(provider).toBeDefined();
+		if (!provider) return;
+
 		const selected: string[] = [];
-		const component = new OAuthSelectorComponent(
-			"logout",
-			{
-				has: (_providerId: string) => false,
-				hasAuth: (providerId: string) => providerId === "opencode-go" || providerId === "opencode-zen",
-				getCredentialOrigin: (_providerId: string) => undefined,
-			} as unknown as AuthStorage,
-			providerId => selected.push(providerId),
-			() => {},
+		const envOnly = mountForTest(() =>
+			OAuthSelector({
+				inline: true,
+				mode: "logout",
+				authStorage: {
+					has() {
+						return false;
+					},
+					hasAuth(providerId) {
+						return providerId === provider.id;
+					},
+					getCredentialOrigin() {
+						return undefined;
+					},
+				},
+				onSelect: providerId => selected.push(providerId),
+				onCancel() {},
+			}),
 		);
-
-		for (const char of "opencode-go") {
-			component.handleInput(char);
+		try {
+			const rendered = envOnly.rows().map(Bun.stripANSI).join("\n");
+			expect(rendered).toContain("No stored provider credentials to log out");
+			dispatchHostInput(envOnly.root, "\n");
+			expect(selected).toEqual([]);
+		} finally {
+			envOnly.dispose();
 		}
 
-		const rendered = component
-			.render(80)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(rendered).toContain("No stored provider credentials to log out");
-
-		component.handleInput("\n");
-		expect(selected).toEqual([]);
+		const stored = mountForTest(() =>
+			OAuthSelector({
+				inline: true,
+				mode: "logout",
+				authStorage: {
+					has(providerId) {
+						return providerId === provider.id;
+					},
+					hasAuth(providerId) {
+						return providerId === provider.id;
+					},
+					getCredentialOrigin() {
+						return { kind: "oauth" };
+					},
+				},
+				onSelect: providerId => selected.push(providerId),
+				onCancel() {},
+			}),
+		);
+		try {
+			const rendered = stored.rows().map(Bun.stripANSI).join("\n");
+			expect(rendered).toContain(provider.name);
+			expect(rendered).toContain("logged in");
+			expect(rendered).toContain("(login)");
+			dispatchHostInput(stored.root, "\n");
+			expect(selected).toEqual([provider.id]);
+		} finally {
+			stored.dispose();
+		}
 	});
 
-	it("offers stored providers as logout targets", () => {
-		const selected: string[] = [];
-		const component = new OAuthSelectorComponent(
-			"logout",
-			{
-				has: (providerId: string) => providerId === "opencode-go",
-				hasAuth: (providerId: string) => providerId === "opencode-go",
-				getCredentialOrigin: (_providerId: string) => undefined,
-			} as unknown as AuthStorage,
-			providerId => selected.push(providerId),
-			() => {},
-		);
+	it("removes disabled provider and alias logins from searchable results", () => {
+		const providers = getOAuthProviders();
+		const provider = providers.find(item => item.available);
+		const alias = providers.find(item => item.storeCredentialsAs === "openai-codex");
+		const credentialProviderId = alias?.storeCredentialsAs;
+		expect(provider).toBeDefined();
+		expect(alias).toBeDefined();
+		if (!provider || !alias || !credentialProviderId) return;
 
-		for (const char of "opencode-go") {
-			component.handleInput(char);
+		const disabledProvider = mountForTest(() =>
+			OAuthSelector({
+				inline: true,
+				mode: "login",
+				authStorage: noCredentials,
+				disabledProviders: [provider.id],
+				onSelect() {},
+				onCancel() {},
+			}),
+		);
+		try {
+			disabledProvider.rows();
+			for (const character of provider.id) dispatchHostInput(disabledProvider.root, character);
+			expect(disabledProvider.rows().map(Bun.stripANSI).join("\n")).not.toContain(provider.name);
+		} finally {
+			disabledProvider.dispose();
 		}
 
-		const rendered = component
-			.render(80)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(rendered).toContain("OpenCode Go");
-		expect(rendered).toContain("logged in");
-
-		component.handleInput("\n");
-		expect(selected).toEqual(["opencode-go"]);
+		const disabledAlias = mountForTest(() =>
+			OAuthSelector({
+				inline: true,
+				mode: "login",
+				authStorage: noCredentials,
+				disabledProviders: [credentialProviderId],
+				onSelect() {},
+				onCancel() {},
+			}),
+		);
+		try {
+			disabledAlias.rows();
+			for (const character of alias.id) dispatchHostInput(disabledAlias.root, character);
+			expect(disabledAlias.rows().map(Bun.stripANSI).join("\n")).not.toContain(alias.name);
+		} finally {
+			disabledAlias.dispose();
+		}
 	});
 
-	describe("disabledProviders", () => {
-		afterEach(() => {
-			resetSettingsForTest();
-		});
-
-		it("hides disabled providers from the login list even when searched", async () => {
-			const providers = getOAuthProviders();
-			const victim =
-				providers.find(provider => provider.available && provider.id === "vllm") ??
-				providers.find(provider => provider.available) ??
-				providers[0];
-			expect(victim).toBeDefined();
-			if (!victim) return;
-
-			resetSettingsForTest();
-			await Settings.init({ inMemory: true, overrides: { disabledProviders: [victim.id] } });
-
-			const component = new OAuthSelectorComponent(
-				"login",
-				authStorage,
-				() => {},
-				() => {},
-				{ disabledProviders: settings.get("disabledProviders") },
-			);
-			for (const char of victim.id) {
-				component.handleInput(char);
-			}
-			const rendered = component
-				.render(80)
-				.map(line => Bun.stripANSI(line))
-				.join("\n");
-			expect(rendered).not.toContain(victim.name);
-		});
-
-		it("hides alias logins whose storeCredentialsAs target is disabled", async () => {
-			const alias = getOAuthProviders().find(provider => provider.storeCredentialsAs === "openai-codex");
-			expect(alias).toBeDefined();
-			if (!alias) return;
-			expect(alias.id).not.toBe("openai-codex");
-
-			resetSettingsForTest();
-			await Settings.init({ inMemory: true, overrides: { disabledProviders: ["openai-codex"] } });
-
-			const component = new OAuthSelectorComponent(
-				"login",
-				authStorage,
-				() => {},
-				() => {},
-				{ disabledProviders: settings.get("disabledProviders") },
-			);
-			for (const char of alias.id) {
-				component.handleInput(char);
-			}
-			const rendered = component
-				.render(80)
-				.map(line => Bun.stripANSI(line))
-				.join("\n");
-			expect(rendered).not.toContain(alias.name);
-		});
-
-		it("keeps disabled providers as logout targets", async () => {
-			resetSettingsForTest();
-			await Settings.init({ inMemory: true, overrides: { disabledProviders: ["opencode-go"] } });
-
-			const selected: string[] = [];
-			const component = new OAuthSelectorComponent(
-				"logout",
-				{
-					has: (providerId: string) => providerId === "opencode-go",
-					hasAuth: (providerId: string) => providerId === "opencode-go",
-					getCredentialOrigin: (_providerId: string) => undefined,
-				} as unknown as AuthStorage,
-				providerId => selected.push(providerId),
-				() => {},
-				{ disabledProviders: settings.get("disabledProviders") },
-			);
-			for (const char of "opencode-go") {
-				component.handleInput(char);
-			}
-			const rendered = component
-				.render(80)
-				.map(line => Bun.stripANSI(line))
-				.join("\n");
-			expect(rendered).toContain("OpenCode Go");
-		});
+	it("clips provider rows at narrow widths without widening the framed selector", () => {
+		const mounted = mountForTest(
+			() =>
+				OAuthSelector({
+					inline: true,
+					mode: "login",
+					authStorage: noCredentials,
+					onSelect() {},
+					onCancel() {},
+				}),
+			{ width: 12 },
+		);
+		try {
+			const rows = mounted.rows();
+			expect(rows.map(visibleWidth)).toEqual(Array(rows.length).fill(12));
+		} finally {
+			mounted.dispose();
+		}
 	});
 });

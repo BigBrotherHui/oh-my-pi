@@ -1,50 +1,45 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { type SelectItem, SelectList, type SelectListTheme } from "@oh-my-pi/pi-tui";
 import { currentLoopPhase, popLoopPhase, takeRecentLoopPhase } from "@oh-my-pi/pi-utils";
+import type { SelectOption } from "../src/host/elements/select";
+import { createSelectController, type SelectController } from "../src/overlays/select-overlay";
+import { createRoot } from "../src/reactive";
 
-/**
- * Contract: the SelectList fuzzy filter — a synchronous, potentially expensive
- * pass over a large list — is wrapped in a `ui.select-filter` loop-phase
- * breadcrumb so the event-loop watchdog can attribute a filter stall to it.
- *
- * The LoopWatchdog unit tests cover the watchdog/recent-slot mechanism in
- * isolation; this guards the actual call site. Removing the
- * `pushLoopPhase("ui.select-filter")` around the filter would leave a real stall
- * logged as "unknown" while every watchdog unit test still passed — and this
- * case would fail.
- *
- * The phase stack is a process-global; drain it (and the consume-on-read recent
- * slot) after each case so nothing leaks across tests.
- */
+const items: SelectOption[] = [
+	{ value: "alpha", label: "Alpha" },
+	{ value: "beta", label: "Beta" },
+	{ value: "gamma", label: "Gamma" },
+];
+
 afterEach(() => {
 	while (currentLoopPhase() !== undefined) popLoopPhase();
 	takeRecentLoopPhase();
 });
 
-describe("SelectList fuzzy-filter loop-phase breadcrumb", () => {
-	it("wraps the fuzzy filter in a ui.select-filter breadcrumb the watchdog can read", () => {
-		const items: SelectItem[] = [
-			{ value: "alpha", label: "Alpha" },
-			{ value: "beta", label: "Beta" },
-			{ value: "gamma", label: "Gamma" },
-		];
-		const list = new SelectList(items, 2, {} as unknown as SelectListTheme);
+function withController(run: (controller: SelectController) => void): void {
+	createRoot(dispose => {
+		try {
+			run(createSelectController({ options: () => items, maxRows: () => 2 }));
+		} finally {
+			dispose();
+		}
+	});
+}
 
-		list.setFilter("al");
+describe("native select fuzzy-filter loop-phase breadcrumb", () => {
+	it("wraps fuzzy filtering in a ui.select-filter breadcrumb the watchdog can read", () => {
+		withController(controller => {
+			controller.setQuery("al");
 
-		// The breadcrumb is pushed and popped synchronously around the filter, so by
-		// the time setFilter returns the stack is balanced — but the consume-on-read
-		// recent slot still surfaces the phase, which is exactly what lets a
-		// synchronous filter stall be attributed instead of logged as "unknown".
-		expect(currentLoopPhase()).toBeUndefined();
-		expect(takeRecentLoopPhase()).toBe("ui.select-filter");
+			expect(currentLoopPhase()).toBeUndefined();
+			expect(takeRecentLoopPhase()).toBe("ui.select-filter");
+		});
 	});
 
-	it("does not breadcrumb an empty/whitespace filter (no fuzzy work to attribute)", () => {
-		const list = new SelectList([{ value: "x", label: "X" }], 2, {} as unknown as SelectListTheme);
+	it("does not breadcrumb an empty or whitespace query", () => {
+		withController(controller => {
+			controller.setQuery("   ");
 
-		list.setFilter("   ");
-
-		expect(takeRecentLoopPhase()).toBeUndefined();
+			expect(takeRecentLoopPhase()).toBeUndefined();
+		});
 	});
 });

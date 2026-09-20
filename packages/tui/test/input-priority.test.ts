@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, setSystemTime, vi } from "bun:test";
-import { type Component, type RenderScheduler, TUI } from "@oh-my-pi/pi-tui";
+import {
+	RichText,
+	Style,
+	type TerminalFramePlan,
+	type TerminalFrameProvider,
+	TUI,
+	type ViewportSize,
+} from "@oh-my-pi/pi-tui";
+import type { RenderScheduler } from "../src/tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
-class BlockingDoubleInterruptComponent implements Component {
+class InterruptFrameProvider implements TerminalFrameProvider {
 	interruptsHandled = 0;
 	exitRequests = 0;
 	#firstInterruptAt = 0;
@@ -22,34 +30,43 @@ class BlockingDoubleInterruptComponent implements Component {
 			return;
 		}
 		this.secondInterruptSeen = true;
-		const now = Date.now();
-		if (!this.slowRenderBeforeSecond && this.#firstInterruptAt !== 0 && now - this.#firstInterruptAt < 500) {
+		if (!this.slowRenderBeforeSecond && this.#firstInterruptAt !== 0 && Date.now() - this.#firstInterruptAt < 500) {
 			this.exitRequests++;
 		}
 		this.#firstInterruptAt = 0;
 	}
 
-	render(_width: number): readonly string[] {
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
 		const blockMs = this.#blockNextRenderMs;
 		this.#blockNextRenderMs = 0;
 		if (blockMs > 0) {
 			if (!this.secondInterruptSeen) this.slowRenderBeforeSecond = true;
 			setSystemTime(new Date(Date.now() + blockMs));
 		}
-		return ["ready"];
+		const frame = new RichText();
+		frame.push(Style.NONE, `interrupts:${this.interruptsHandled} exits:${this.exitRequests}`);
+		frame.br();
+		return { viewport: frame };
 	}
+
+	acknowledgeHistory(_id: number): void {}
 }
 
-class NavigationProbe implements Component {
-	#selected = 0;
+class NavigationFrameProvider implements TerminalFrameProvider {
+	selected = 0;
 
 	handleInput(data: string): void {
-		if (data === "\x1b[B") this.#selected++;
+		if (data === "\x1b[B") this.selected++;
 	}
 
-	render(_width: number): readonly string[] {
-		return [`selected:${this.#selected}`];
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
+		const frame = new RichText();
+		frame.push(Style.NONE, `selected:${this.selected}`);
+		frame.br();
+		return { viewport: frame };
 	}
+
+	acknowledgeHistory(_id: number): void {}
 }
 
 async function drainNextTick(): Promise<void> {
@@ -77,9 +94,7 @@ function fakeTimerScheduler(): RenderScheduler {
 				};
 			}
 			const handle = setTimeout(callback, delayMs);
-			return {
-				cancel: () => clearTimeout(handle),
-			};
+			return { cancel: () => clearTimeout(handle) };
 		},
 	};
 }
@@ -94,25 +109,27 @@ describe("TUI input priority", () => {
 		setSystemTime(new Date(1_000));
 		const terminal = new VirtualTerminal(40, 8);
 		const tui = new TUI(terminal, undefined, { renderScheduler: fakeTimerScheduler() });
-		const component = new BlockingDoubleInterruptComponent();
-		tui.addChild(component);
-		tui.setFocus(component);
-		tui.start();
-		await drainNextTick();
-		component.armSlowRender(650);
-		vi.advanceTimersByTime(40);
+		const provider = new InterruptFrameProvider();
+		tui.setFrameProvider(provider);
+		tui.setHostInputHandler(data => provider.handleInput(data));
+		try {
+			tui.start();
+			await drainNextTick();
+			provider.armSlowRender(650);
+			vi.advanceTimersByTime(40);
 
-		terminal.sendInput("\x03");
-		setTimeout(() => terminal.sendInput("\x03"), 10);
-		await drainNextTick();
-		vi.advanceTimersByTime(0);
-		vi.advanceTimersByTime(10);
+			terminal.sendInput("\x03");
+			setTimeout(() => terminal.sendInput("\x03"), 10);
+			await drainNextTick();
+			vi.advanceTimersByTime(0);
+			vi.advanceTimersByTime(10);
+			vi.advanceTimersByTime(40);
 
-		tui.stop();
-
-		expect(component.slowRenderBeforeSecond).toBe(false);
-		expect(component.interruptsHandled).toBe(2);
-		expect(component.exitRequests).toBe(1);
+			expect(provider.slowRenderBeforeSecond).toBe(false);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toContain("interrupts:2 exits:1");
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("renders ordinary navigation without an interrupt-grace delay", async () => {
@@ -120,9 +137,9 @@ describe("TUI input priority", () => {
 		setSystemTime(new Date(1_000));
 		const terminal = new VirtualTerminal(40, 8);
 		const tui = new TUI(terminal, undefined, { renderScheduler: fakeTimerScheduler() });
-		const component = new NavigationProbe();
-		tui.addChild(component);
-		tui.setFocus(component);
+		const provider = new NavigationFrameProvider();
+		tui.setFrameProvider(provider);
+		tui.setHostInputHandler(data => provider.handleInput(data));
 
 		try {
 			tui.start();

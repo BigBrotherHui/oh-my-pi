@@ -1,12 +1,27 @@
-/**
- * Claude Code-like composer: full-width horizontal rules above and below a
- * borderless `❯ ` prompt. The right status group rides the top rule as a
- * bg chip near the right edge (`─────── hi ─`); the left group renders as a
- * plain standalone bottom bar that yields its row to the autocomplete menu.
- */
+import type { Out } from "../../core/richtext";
+import { paintTopRule } from "./rule";
+import {
+	type ComposerChromeContext,
+	type ComposerRowContext,
+	type ComposerStyle,
+	paintComposerContent,
+	paintComposerStyled,
+	paintComposerText,
+} from "./types";
 
-import { renderTopRule } from "./rule";
-import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from "./types";
+export function paintClaudeRow(out: Out, ctx: ComposerRowContext): void {
+	if (ctx.gutterStyle) out.push(ctx.gutterStyle, ctx.gutter);
+	else paintComposerText(out, ctx.gutter);
+	paintComposerContent(out, ctx);
+	paintComposerText(out, ctx.pad);
+	out.br();
+}
+
+export function paintClaudeBottom(out: Out, ctx: ComposerChromeContext): boolean {
+	paintComposerStyled(out, ctx.box.horizontal.repeat(ctx.width), ctx.borderStyle);
+	out.br();
+	return true;
+}
 
 export const claudeComposerStyle: ComposerStyle = {
 	id: "claude",
@@ -16,24 +31,13 @@ export const claudeComposerStyle: ComposerStyle = {
 	bottomBar: "left",
 	bottomBarGap: false,
 	defaultPromptGutter: "❯ ",
-
-	defaultPaddingX(): number {
+	defaultPaddingX() {
 		return 0;
 	},
-
-	sideChromeWidth(paddingX: number): number {
+	sideChromeWidth(paddingX) {
 		return paddingX;
 	},
-
-	renderTop(ctx: ComposerChromeContext): string {
-		return renderTopRule(ctx);
-	},
-
-	renderRow(ctx: ComposerRowContext): string[] {
-		return [ctx.gutter + ctx.text + ctx.pad];
-	},
-
-	renderBottom(ctx: ComposerChromeContext): string {
-		return ctx.borderColor(ctx.box.horizontal.repeat(ctx.width));
-	},
+	paintTop: paintTopRule,
+	paintRow: paintClaudeRow,
+	paintBottom: paintClaudeBottom,
 };

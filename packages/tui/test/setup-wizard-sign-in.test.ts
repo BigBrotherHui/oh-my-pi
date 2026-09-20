@@ -1,193 +1,223 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
-import type { OAuthLoginCallbacks, OAuthProviderId } from "@oh-my-pi/pi-ai/oauth/types";
-import { SignInTab } from "@oh-my-pi/pi-tui/setup/scenes/sign-in";
-import type { SetupSceneHost } from "@oh-my-pi/pi-tui/setup/scenes/types";
+import { Database } from "bun:sqlite";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
+import { getOAuthProviders } from "@oh-my-pi/pi-ai/registry/oauth";
+import { dispatchKey, HostKeyEvent } from "../src/host/input";
+import { mountForTest, type TestRoot } from "../src/testing";
+import { SignInSceneView, type SignInSceneContext } from "@oh-my-pi/pi-tui/setup/scenes/sign-in";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import type { Component } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
 	await initTheme();
 });
 
-afterEach(() => {
-	vi.restoreAllMocks();
-});
+function createStorage(): { readonly storage: AuthStorage; close(): void } {
+	const store = new SqliteAuthCredentialStore(new Database(":memory:"));
+	return {
+		storage: new AuthStorage(store),
+		close(): void {
+			store.close();
+		},
+	};
+}
 
-describe("SignInTab", () => {
-	it("masks secret input and keeps the OSC8 login link and manual-code prompt above clipped rows", async () => {
-		const url = `https://example.com/oauth/authorize?client_id=omp&redirect_uri=http%3A%2F%2Flocalhost%3A45454%2Fcallback&state=${"a".repeat(96)}`;
+function createContext(
+	authStorage: AuthStorage,
+	options: {
+		readonly rows?: () => number;
+		readonly copied?: string[];
+		readonly opened?: string[];
+		readonly completed?: SetupComplete[];
+		readonly refreshProvider?: (provider: string) => Promise<void>;
+	} = {},
+): SignInSceneContext {
+	return {
+		host: {
+			authStorage,
+			disabledProviders: [],
+			captureBrowserSession: async () => "",
+			copyToClipboard: async text => {
+				options.copied?.push(text);
+			},
+			openInBrowser(url): void {
+				options.opened?.push(url);
+			},
+			refreshProvider: options.refreshProvider ?? (async () => {}),
+		},
+		complete(result): void {
+			options.completed?.push(result);
+		},
+		availableRows: options.rows,
+	};
+}
+
+type SetupComplete = "done" | "skipped";
+
+function press(root: TestRoot, data: string): void {
+	dispatchKey(root.root, new HostKeyEvent(data));
+	root.flush();
+}
+
+async function waitForRenderedText(root: TestRoot, expected: string): Promise<string> {
+	for (let attempt = 0; attempt < 16; attempt++) {
+		const text = root.text().join("\n");
+		if (text.includes(expected)) return text;
+		await Promise.resolve();
+	}
+	throw new Error(`Expected rendered sign-in state to contain ${expected}`);
+}
+
+function selectFirstAvailableProvider(root: TestRoot): void {
+	const index = getOAuthProviders().findIndex(provider => provider.available);
+	if (index < 0) throw new Error("Expected an available OAuth provider");
+	for (let step = 0; step < index; step++) press(root, "\x1b[B");
+	press(root, "\n");
+}
+
+describe("SignInSceneView", () => {
+	it("keeps the original compact selector budget and expanded sign-in introduction", () => {
+		const fixture = createStorage();
+		const expanded = mountForTest(() => SignInSceneView(createContext(fixture.storage, { rows: () => 19 })), {
+			width: 72,
+			height: 24,
+		});
+		const compact = mountForTest(() => SignInSceneView(createContext(fixture.storage, { rows: () => 18 })), {
+			width: 72,
+			height: 24,
+		});
+		try {
+			expect(expanded.text().join("\n")).toContain("Pick a provider to sign in — you can connect more than one.");
+			expect(compact.text().join("\n")).not.toContain("Pick a provider to sign in — you can connect more than one.");
+			expect(compact.text().join("\n")).toContain("Select provider to login");
+		} finally {
+			expanded.dispose();
+			compact.dispose();
+			fixture.close();
+		}
+	});
+
+	it("masks prompt input, keeps the complete login URL around the prompt, and copies through both shortcuts", async () => {
+		const fixture = createStorage();
 		const loginGate = Promise.withResolvers<void>();
 		const secretReceived = Promise.withResolvers<string>();
+		const loginFinished = Promise.withResolvers<void>();
+		const copied: string[] = [];
+		const opened: string[] = [];
+		const url = `https://example.com/oauth/authorize?client_id=omp&redirect_uri=http%3A%2F%2Flocalhost%3A45454%2Fcallback&state=${"a".repeat(96)}`;
 		const secretValue = crypto.randomUUID();
-		const copySpy = vi.fn(async (_text: string): Promise<void> => {});
-		let focusTarget: Component | undefined;
-		const openedUrls: string[] = [];
-
-		const authStorage = {
-			has: (_providerId: string) => false,
-			hasAuth: (_providerId: string) => false,
-			getCredentialOrigin: (_providerId: string) => undefined,
-			async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
-				ctrl.onAuth({ url });
+		let selectedProvider = "";
+		fixture.storage.login = async (provider, callbacks) => {
+			selectedProvider = provider;
+			callbacks.onProgress?.("Resolving OAuth endpoints…");
+			callbacks.onAuth({ url, instructions: "Finish sign-in in the browser." });
+			try {
 				secretReceived.resolve(
-					await ctrl.onPrompt({ message: "Consumer key", placeholder: "secret value", secret: true }),
+					await callbacks.onPrompt({ message: "Consumer key", placeholder: "secret value", secret: true }),
 				);
-				const prompt = ctrl.onManualCodeInput?.();
 				await loginGate.promise;
-				await prompt;
-			},
-		} as unknown as AuthStorage;
-
-		const host = {
-			ctx: {
-				authStorage,
-				disabledProviders: [],
-				copyToClipboard: copySpy,
-				refreshProvider: async () => {},
-				openInBrowser(openedUrl: string): void {
-					openedUrls.push(openedUrl);
-				},
-			},
-			requestRender(): void {},
-			finish(): void {},
-			setFocus(component: Component | null): void {
-				focusTarget = component ?? undefined;
-			},
-			restoreFocus(): void {},
-		} as unknown as SetupSceneHost;
-
-		const tab = new SignInTab(host);
-		try {
-			for (const char of "anthropic") {
-				tab.handleInput(char);
+				return undefined;
+			} finally {
+				loginFinished.resolve();
 			}
-			tab.handleInput("\n");
+		};
+		const root = mountForTest(() => SignInSceneView(createContext(fixture.storage, { copied, opened })), {
+			width: 120,
+			height: 24,
+		});
+		try {
+			root.flush();
+			selectFirstAvailableProvider(root);
+			await Promise.resolve();
 
-			expect(focusTarget).toBeDefined();
-			focusTarget?.handleInput?.(secretValue);
-			const masked = tab.render(120).join("\n");
+			press(root, secretValue);
+			const masked = root.text().join("\n");
 			expect(masked).not.toContain(secretValue);
-			focusTarget?.handleInput?.("\n");
+			press(root, "\n");
 			await expect(secretReceived.promise).resolves.toBe(secretValue);
 
-			const rendered = tab.render(36);
-			const compact = rendered.map(line => Bun.stripANSI(line).trim()).join("");
+			const compact = root.text(36).join("");
 			expect(compact).toContain(url);
 			expect(compact).not.toContain("…");
-			expect(rendered.join("\n")).toContain(`\x1b]8;;${url}\x07Open login URL\x1b]8;;\x07`);
-			expect(openedUrls).toEqual([url]);
-			expect(focusTarget).toBeDefined();
-			focusTarget?.handleInput?.("\x1bc");
-			expect(copySpy).toHaveBeenCalledTimes(2);
-			expect(copySpy).toHaveBeenLastCalledWith(url);
+			expect(root.text().join("\n")).toContain(`Signing in to ${selectedProvider}`);
+			expect(root.text().join("\n")).toContain(
+				"Browser login: Open login URL (clipboard copy attempted; Alt+C retries)",
+			);
+			expect(root.rows().join("\n")).toContain(`\x1b]8;;${url}\x07Open login URL\x1b]8;;\x07`);
+			expect(opened).toEqual([url]);
 
-			// On a ~24-row terminal the wizard body ends up ~8 rows; the OSC8
-			// link, a plain URL row, and the focused input must survive that clip.
-			const clippedBody = rendered.slice(0, 8).map(line => Bun.stripANSI(line).trim());
-			const plainUrlIndex = clippedBody.findIndex(line => line.startsWith("https://example.com/oauth/authorize?"));
-			const inputIndex = clippedBody.findIndex(line => line.startsWith(">"));
-			expect(clippedBody.some(line => line.startsWith("Browser login: Open login URL"))).toBe(true);
-			expect(plainUrlIndex).toBeGreaterThanOrEqual(0);
-			expect(inputIndex).toBeGreaterThanOrEqual(0);
-			expect(plainUrlIndex).toBeLessThan(inputIndex);
+			press(root, "\x1bc");
+			await Promise.resolve();
+			press(root, "c");
+			await Promise.resolve();
+			expect(copied).toEqual([url, url, url]);
 		} finally {
-			tab.dispose();
+			root.dispose();
 			loginGate.resolve();
-			await loginGate.promise;
+			await loginFinished.promise;
+			fixture.close();
 		}
 	});
 
-	it("clears manual input after a native callback path settles", async () => {
-		const url = "https://example.com/oauth/authorize?client_id=omp&state=native";
-		const loginCompleted = Promise.withResolvers<void>();
-		const copySpy = vi.fn(async (_text: string): Promise<void> => {});
-		const authStorage = {
-			has: (_providerId: string) => false,
-			hasAuth: (_providerId: string) => false,
-			getCredentialOrigin: (_providerId: string) => undefined,
-			async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
-				ctrl.onAuth({ url });
-				const settled = new AbortController();
-				const prompt = ctrl.onManualCodeInput?.(settled.signal);
-				settled.abort(new Error("native callback received"));
-				await prompt?.catch(() => {});
-				loginCompleted.resolve();
-			},
-		} as unknown as AuthStorage;
-		const host = {
-			ctx: {
-				authStorage,
-				disabledProviders: [],
-				copyToClipboard: copySpy,
-				refreshProvider: async () => {},
-				openInBrowser(): void {},
-			},
-			requestRender(): void {},
-			finish(): void {},
-			setFocus(): void {},
-			restoreFocus(): void {},
-		} as unknown as SetupSceneHost;
-
-		const tab = new SignInTab(host);
+	it("removes an aborted manual-code prompt and restores the completed sign-in status", async () => {
+		const fixture = createStorage();
+		const nativeSettled = Promise.withResolvers<void>();
+		const refreshStarted = Promise.withResolvers<string>();
+		const releaseRefresh = Promise.withResolvers<void>();
+		let selectedProvider = "";
+		fixture.storage.login = async (provider, callbacks) => {
+			selectedProvider = provider;
+			callbacks.onAuth({ url: "https://example.com/oauth/authorize?state=native" });
+			const nativeCallback = new AbortController();
+			const prompt = callbacks.onManualCodeInput?.(nativeCallback.signal);
+			nativeCallback.abort(new Error("Native callback received"));
+			await prompt?.catch(() => "");
+			nativeSettled.resolve();
+			return undefined;
+		};
+		const root = mountForTest(
+			() =>
+				SignInSceneView(
+					createContext(fixture.storage, {
+						refreshProvider: async provider => {
+							refreshStarted.resolve(provider);
+							await releaseRefresh.promise;
+						},
+					}),
+				),
+			{ width: 80, height: 24 },
+		);
 		try {
-			for (const char of "anthropic") tab.handleInput(char);
-			tab.handleInput("\n");
-			await loginCompleted.promise;
-			await Promise.resolve();
-
-			expect(tab.render(80).join("\n")).not.toContain("Paste the authorization code");
+			root.flush();
+			selectFirstAvailableProvider(root);
+			await nativeSettled.promise;
+			await expect(refreshStarted.promise).resolves.toBe(selectedProvider);
+			releaseRefresh.resolve();
+			const completed = await waitForRenderedText(root, `Signed in to ${selectedProvider}`);
+			expect(completed).not.toContain("Paste the authorization code");
 		} finally {
-			tab.dispose();
+			root.dispose();
+			fixture.close();
 		}
 	});
 
-	it("copies the active login URL from the keyboard while the setup TUI owns selection", async () => {
-		const url = "https://example.com/oauth/authorize?client_id=omp&state=copy";
-		const loginGate = Promise.withResolvers<void>();
-		const copySpy = vi.fn(async (_text: string): Promise<void> => {});
-
-		const authStorage = {
-			has: (_providerId: string) => false,
-			hasAuth: (_providerId: string) => false,
-			getCredentialOrigin: (_providerId: string) => undefined,
-			async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
-				ctrl.onAuth({ url });
-				await loginGate.promise;
-			},
-		} as unknown as AuthStorage;
-
-		const host = {
-			ctx: {
-				authStorage,
-				disabledProviders: [],
-				copyToClipboard: copySpy,
-				refreshProvider: async () => {},
-				openInBrowser(): void {},
-			},
-			requestRender(): void {},
-			finish(): void {},
-			setFocus(): void {},
-			restoreFocus(): void {},
-		} as unknown as SetupSceneHost;
-
-		const tab = new SignInTab(host);
+	it("surfaces the historical retry guidance after a failed login", async () => {
+		const fixture = createStorage();
+		fixture.storage.login = async () => {
+			throw new Error("network offline");
+		};
+		const root = mountForTest(() => SignInSceneView(createContext(fixture.storage)), { width: 80, height: 24 });
 		try {
-			for (const char of "anthropic") {
-				tab.handleInput(char);
-			}
-			tab.handleInput("\n");
+			root.flush();
+			selectFirstAvailableProvider(root);
 			await Promise.resolve();
-			expect(copySpy).toHaveBeenCalledTimes(1);
-
-			tab.handleInput("\x1bc");
 			await Promise.resolve();
-			expect(copySpy).toHaveBeenCalledTimes(2);
-			expect(copySpy).toHaveBeenLastCalledWith(url);
+			const rendered = root.text().join("\n");
+			expect(rendered).toContain("Login failed: network offline");
+			expect(rendered).toContain("Choose another provider or press Esc to continue.");
+			expect(rendered).not.toContain("Open login URL");
 		} finally {
-			tab.dispose();
-			loginGate.resolve();
-			await loginGate.promise;
+			root.dispose();
+			fixture.close();
 		}
 	});
 });

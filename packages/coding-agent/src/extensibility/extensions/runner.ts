@@ -59,6 +59,7 @@ import type {
 	InputEventResult,
 	McpNotificationEvent,
 	MessageRenderer,
+	MessageView,
 	RegisteredCommand,
 	RegisteredTool,
 	ResourcesDiscoverEvent,
@@ -1098,6 +1099,16 @@ export class ExtensionRunner {
 			}
 		}
 		return false;
+	}
+
+	getMessageView(customType: string): MessageView | undefined {
+		for (const ext of this.extensions) {
+			const view = ext.messageViews.get(customType);
+			if (view) {
+				return view;
+			}
+		}
+		return undefined;
 	}
 
 	getMessageRenderer(customType: string): MessageRenderer | undefined {

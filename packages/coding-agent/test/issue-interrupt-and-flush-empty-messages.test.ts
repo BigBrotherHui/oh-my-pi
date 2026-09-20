@@ -13,7 +13,6 @@ function createContext(options?: {
 	const abort = vi.fn(async () => {});
 	const prompt = vi.fn(async () => {});
 	const updatePendingMessagesDisplay = vi.fn();
-	const requestRender = vi.fn();
 	const showError = vi.fn();
 	const ctx = {
 		editor: {
@@ -35,7 +34,7 @@ function createContext(options?: {
 				options?.pendingImages?.map(() => undefined) ??
 				([] as (string | undefined)[]),
 		},
-		ui: { requestRender },
+		ui: {},
 		session: {
 			isStreaming: true,
 			isCompacting: false,
@@ -60,12 +59,12 @@ function createContext(options?: {
 		withLocalSubmission: async (_text: string, fn: () => Promise<unknown>) => fn(),
 		hasActiveOmfg: () => false,
 	} as unknown as InteractiveModeContext;
-	return { ctx, abort, prompt, updatePendingMessagesDisplay, requestRender, showError };
+	return { ctx, abort, prompt, updatePendingMessagesDisplay, showError };
 }
 
 describe("empty submit with queued messages", () => {
 	it("aborts the active stream instead of eagerly prompting a drained queue", async () => {
-		const { ctx, abort, prompt, updatePendingMessagesDisplay, requestRender, showError } = createContext();
+		const { ctx, abort, prompt, updatePendingMessagesDisplay, showError } = createContext();
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 
@@ -75,14 +74,13 @@ describe("empty submit with queued messages", () => {
 		expect(prompt).not.toHaveBeenCalled();
 		expect(showError).not.toHaveBeenCalled();
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
 	it("queues an image-only steer while streaming", async () => {
 		// An image-only draft is a bare marker: the composer always stages the
 		// chip token, which expands to `[Image #1]` at submit time.
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
-		const { ctx, abort, prompt, updatePendingMessagesDisplay, requestRender } = createContext({
+		const { ctx, abort, prompt, updatePendingMessagesDisplay } = createContext({
 			queuedMessageCount: 0,
 			pendingImages: [image],
 		});
@@ -96,12 +94,11 @@ describe("empty submit with queued messages", () => {
 		expect(ctx.editor.pendingImages).toEqual([]);
 		expect(ctx.editor.pendingImageLinks).toEqual([]);
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
 	it("restores an image-only steer when streaming dispatch rejects", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
-		const { ctx, abort, prompt, showError, updatePendingMessagesDisplay, requestRender } = createContext({
+		const { ctx, abort, prompt, showError, updatePendingMessagesDisplay } = createContext({
 			queuedMessageCount: 0,
 			pendingImages: [image],
 			pendingImageLinks: ["local://draft.png"],
@@ -121,7 +118,6 @@ describe("empty submit with queued messages", () => {
 		expect(ctx.editor.pendingImageLinks).toEqual(["local://draft.png"]);
 		expect(ctx.editor.imageLinks).toEqual(["local://draft.png"]);
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
 	it("queues an image-only steer instead of aborting when messages are already queued", async () => {

@@ -431,8 +431,8 @@
       "import": "./src/modes/index.ts"
     },
     "./modes/*": {
-      "types": "./src/modes/*.ts",
-      "import": "./src/modes/*.ts"
+      "types": ["./src/modes/*.ts", "./src/modes/*.tsx"],
+      "import": "./src/modes/*"
     },
     "./modes/acp": {
       "types": "./src/modes/acp/index.ts",
@@ -447,16 +447,16 @@
       "import": "./src/modes/components/index.ts"
     },
     "./modes/components/*": {
-      "types": "./src/modes/components/*.ts",
-      "import": "./src/modes/components/*.ts"
+      "types": ["./src/modes/components/*.ts", "./src/modes/components/*.tsx"],
+      "import": "./src/modes/components/*"
     },
     "./modes/components/extensions/*": {
       "types": "./src/modes/components/extensions/*.ts",
       "import": "./src/modes/components/extensions/*.ts"
     },
     "./modes/controllers/*": {
-      "types": "./src/modes/controllers/*.ts",
-      "import": "./src/modes/controllers/*.ts"
+      "types": ["./src/modes/controllers/*.ts", "./src/modes/controllers/*.tsx"],
+      "import": "./src/modes/controllers/*"
     },
     "./modes/rpc/*": {
       "types": "./src/modes/rpc/*.ts",

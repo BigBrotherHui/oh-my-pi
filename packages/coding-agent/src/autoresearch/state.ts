@@ -43,7 +43,6 @@ export function createSessionRuntime(): AutoresearchRuntime {
 	return {
 		autoresearchMode: false,
 		autoResumeArmed: false,
-		dashboardExpanded: false,
 		lastAutoResumePendingRunNumber: null,
 		lastRunDuration: null,
 		lastRunAsi: null,

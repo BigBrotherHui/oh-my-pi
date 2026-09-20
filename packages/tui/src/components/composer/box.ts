@@ -1,10 +1,76 @@
-/**
- * The classic omp composer: rounded frame, status line embedded in the top
- * border, and the last content row merged into the bottom border
- * (`╰─ text … ─╯`), keeping a one-line prompt at two rows total.
- */
-import { padding, truncateToWidth, visibleWidth } from "../../utils";
-import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from "./types";
+import { spaces } from "../../core/out";
+import type { Out } from "../../core/richtext";
+import {
+	type ComposerChromeContext,
+	type ComposerRowContext,
+	type ComposerStyle,
+	paintComposerContent,
+	paintComposerFitted,
+	paintComposerStyled,
+	paintComposerText,
+} from "./types";
+
+export function paintBoxTop(out: Out, ctx: ComposerChromeContext): boolean {
+	const { box, paddingX, width, topBorder } = ctx;
+	paintComposerStyled(out, `${box.topLeft}${box.horizontal.repeat(paddingX)}`, ctx.borderStyle);
+	const topFillWidth = Math.max(0, width - boxComposerStyle.sideChromeWidth(paddingX) * 2);
+	if (!topBorder) paintComposerStyled(out, box.horizontal.repeat(topFillWidth), ctx.borderStyle);
+	else if (topBorder.width <= topFillWidth) {
+		paintComposerText(out, topBorder.content);
+		paintComposerStyled(out, box.horizontal.repeat(topFillWidth - topBorder.width), ctx.borderStyle);
+	} else {
+		const truncatedWidth = paintComposerFitted(out, topBorder.content, Math.max(0, topFillWidth - 1));
+		paintComposerStyled(out, box.horizontal.repeat(Math.max(0, topFillWidth - truncatedWidth)), ctx.borderStyle);
+	}
+	paintComposerStyled(out, `${box.horizontal.repeat(paddingX)}${box.topRight}`, ctx.borderStyle);
+	out.br();
+	return true;
+}
+
+export function paintBoxRow(out: Out, ctx: ComposerRowContext): void {
+	const { box, paddingX, width, pad, isLastRow } = ctx;
+	const rightChromeCells = Math.max(1, paddingX + 1 - ctx.cursorOverflow);
+	if (isLastRow && ctx.imeSafeCursorTail) {
+		paintComposerStyled(out, `${box.vertical}${spaces(paddingX)}`, ctx.borderStyle);
+		if (ctx.gutterStyle) out.push(ctx.gutterStyle, ctx.gutter);
+		paintComposerContent(out, ctx);
+		out.br();
+		paintComposerStyled(
+			out,
+			`${box.bottomLeft}${box.horizontal.repeat(Math.max(0, width - 2))}${box.bottomRight}`,
+			ctx.borderStyle,
+		);
+		out.br();
+		return;
+	}
+	if (isLastRow) {
+		paintComposerStyled(
+			out,
+			`${box.bottomLeft}${box.horizontal}${spaces(Math.max(0, paddingX - 1))}`,
+			ctx.borderStyle,
+		);
+		if (ctx.gutterStyle) out.push(ctx.gutterStyle, ctx.gutter);
+		paintComposerContent(out, ctx);
+		paintComposerText(out, pad);
+		paintComposerStyled(
+			out,
+			`${spaces(Math.max(0, rightChromeCells - 2))}${rightChromeCells >= 2 ? box.horizontal : ""}${box.bottomRight}`,
+			ctx.borderStyle,
+		);
+		out.br();
+		return;
+	}
+	paintComposerStyled(out, `${box.vertical}${spaces(paddingX)}`, ctx.borderStyle);
+	if (ctx.gutterStyle) out.push(ctx.gutterStyle, ctx.gutter);
+	paintComposerContent(out, ctx);
+	paintComposerText(out, pad);
+	paintComposerStyled(
+		out,
+		`${spaces(Math.max(0, rightChromeCells - 1))}${ctx.scrollbarThumb ? "█" : box.vertical}`,
+		ctx.borderStyle,
+	);
+	out.br();
+}
 
 export const boxComposerStyle: ComposerStyle = {
 	id: "box",
@@ -14,72 +80,15 @@ export const boxComposerStyle: ComposerStyle = {
 	bottomBar: "none",
 	bottomBarGap: false,
 	defaultPromptGutter: undefined,
-
-	defaultPaddingX(themePaddingX: number | undefined): number {
+	defaultPaddingX(themePaddingX) {
 		return Math.max(0, themePaddingX ?? 2);
 	},
-
-	sideChromeWidth(paddingX: number): number {
+	sideChromeWidth(paddingX) {
 		return paddingX + 1;
 	},
-
-	renderTop(ctx: ComposerChromeContext): string {
-		const { box, paddingX, width, borderColor, topBorder } = ctx;
-		const topLeft = borderColor(`${box.topLeft}${box.horizontal.repeat(paddingX)}`);
-		const topRight = borderColor(`${box.horizontal.repeat(paddingX)}${box.topRight}`);
-		const topFillWidth = Math.max(0, width - this.sideChromeWidth(paddingX) * 2);
-		if (!topBorder) {
-			return topLeft + borderColor(box.horizontal.repeat(topFillWidth)) + topRight;
-		}
-		const { content, width: statusWidth } = topBorder;
-		if (statusWidth <= topFillWidth) {
-			// Status fits - add fill after it
-			const fillWidth = topFillWidth - statusWidth;
-			return topLeft + content + borderColor(box.horizontal.repeat(fillWidth)) + topRight;
-		}
-		// Status too long - truncate it
-		const truncated = truncateToWidth(content, Math.max(0, topFillWidth - 1));
-		const truncatedWidth = visibleWidth(truncated);
-		const fillWidth = Math.max(0, topFillWidth - truncatedWidth);
-		return topLeft + truncated + borderColor(box.horizontal.repeat(fillWidth)) + topRight;
-	},
-
-	renderRow(ctx: ComposerRowContext): string[] {
-		const { box, paddingX, width, borderColor, text, pad, isLastRow } = ctx;
-		// When the end-of-line cursor glyph (or a wide trailing grapheme) extends
-		// past the content width, shrink the right chrome by the exact overflow
-		// count: drop padding spaces first, then the trailing `─`, but never the
-		// corner/vertical bar itself.
-		const rightChromeCells = Math.max(1, paddingX + 1 - ctx.cursorOverflow);
-		if (isLastRow && ctx.imeSafeCursorTail) {
-			// Terminal frontends render IME marked text locally before committed
-			// bytes reach the application. Keep the end-of-input cursor row empty
-			// to its right so insertion cannot shift box chrome onto the next row.
-			const leftBorder = borderColor(`${box.vertical}${padding(paddingX)}`);
-			const bottomBorder = borderColor(
-				`${box.bottomLeft}${box.horizontal.repeat(Math.max(0, width - 2))}${box.bottomRight}`,
-			);
-			return [leftBorder + text, bottomBorder];
-		}
-		if (isLastRow) {
-			const bottomLeft = borderColor(`${box.bottomLeft}${box.horizontal}${padding(Math.max(0, paddingX - 1))}`);
-			const rightPad = Math.max(0, rightChromeCells - 2);
-			const includeHorizontal = rightChromeCells >= 2;
-			const bottomRightAdjusted = borderColor(
-				`${padding(rightPad)}${includeHorizontal ? box.horizontal : ""}${box.bottomRight}`,
-			);
-			return [`${bottomLeft}${text}${pad}${bottomRightAdjusted}`];
-		}
-		const leftBorder = borderColor(`${box.vertical}${padding(paddingX)}`);
-		// When the scrollbar is active, replace the right border vertical with a
-		// thumb glyph (█) inside the thumb range, keeping the track (│) elsewhere.
-		const rightGlyph = ctx.scrollbarThumb ? "█" : box.vertical;
-		const rightBorder = borderColor(`${padding(Math.max(0, rightChromeCells - 1))}${rightGlyph}`);
-		return [leftBorder + text + pad + rightBorder];
-	},
-
-	renderBottom(): undefined {
-		// The bottom border is merged into the last content row.
-		return undefined;
+	paintTop: paintBoxTop,
+	paintRow: paintBoxRow,
+	paintBottom() {
+		return false;
 	},
 };

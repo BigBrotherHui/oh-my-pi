@@ -1,12 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
-	CURSOR_MARKER,
+	RichText,
+	Style,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
 	TUI,
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
+
+function textFrame(rows: readonly string[], cursorRow?: number): RichText {
+	const frame = new RichText();
+	for (let row = 0; row < rows.length; row++) {
+		frame.push(Style.NONE, rows[row]!);
+		if (cursorRow === row) frame.cursor();
+		frame.br();
+	}
+	return frame;
+}
 
 // Regression coverage for the SIGWINCH-side pre-erase archiving the unfinished
 // frame on terminals that preserve a full-screen clear (#9780).
@@ -60,13 +71,10 @@ class FullFrameProvider implements TerminalFrameProvider {
 
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		const rows = Array.from({ length: Math.min(this.liveRows, viewport.rows) }, (_, index) => `live-${index}`);
-		if (this.markerRow !== undefined && this.markerRow < rows.length) {
-			rows[this.markerRow] = `${rows[this.markerRow]}${CURSOR_MARKER}`;
-		}
-		return { history: this.history, viewport: rows };
+		return { history: this.history, viewport: textFrame(rows, this.markerRow) };
 	}
-	renderResizeFrame(viewport: ViewportSize): readonly string[] {
-		return Array.from({ length: Math.min(this.liveRows, viewport.rows) }, (_, index) => `resize-${index}`);
+	renderResizeFrame(viewport: ViewportSize): RichText {
+		return textFrame(Array.from({ length: Math.min(this.liveRows, viewport.rows) }, (_, index) => `resize-${index}`));
 	}
 	acknowledgeHistory(): void {
 		this.history = undefined;

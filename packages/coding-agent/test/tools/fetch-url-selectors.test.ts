@@ -112,20 +112,20 @@ describe("parseReadUrlTarget", () => {
 		// Without the repair it falls through to filesystem resolution → "Path not found".
 		expect(
 			parseReadUrlTarget(
-				"https:/github.com/kovidgoyal/kitty/blob/8996aa798c774ca48432c55f7d5135ebbd9390c3/kitty/graphics.c",
+				"https://github.com/kovidgoyal/kitty/blob/8996aa798c774ca48432c55f7d5135ebbd9390c3/kitty/graphics.c",
 			),
 		).toEqual({
 			path: "https://github.com/kovidgoyal/kitty/blob/8996aa798c774ca48432c55f7d5135ebbd9390c3/kitty/graphics.c",
 			sel: { kind: "none" },
 		});
-		expect(parseReadUrlTarget("http:/example.com/foo")).toEqual({
+		expect(parseReadUrlTarget("http://example.com/foo")).toEqual({
 			path: "http://example.com/foo",
 			sel: { kind: "none" },
 		});
 	});
 
 	it("repairs a collapsed scheme while still peeling selectors", () => {
-		expect(parseReadUrlTarget("https:/example.com/foo:50-100")).toEqual({
+		expect(parseReadUrlTarget("https://example.com/foo:50-100")).toEqual({
 			path: "https://example.com/foo",
 			sel: { kind: "lines", ranges: [{ startLine: 50, endLine: 100 }], raw: false },
 		});

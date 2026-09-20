@@ -31,8 +31,9 @@
   "scripts": {
     "check": "oxlint . && oxfmt --check --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run check:types",
     "check:types": "tsgo -p tsconfig.json --noEmit",
+    "check:arch": "bun scripts/check-architecture.ts",
     "lint": "oxlint .",
-    "test": "bun test --parallel test/*.test.ts",
+    "test": "bun test --parallel test",
     "fix": "oxlint --fix --fix-suggestions . && bun run fmt",
     "fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts'"
   },
@@ -44,9 +45,14 @@
     "@oh-my-pi/pi-natives": "catalog:",
     "@oh-my-pi/pi-utils": "catalog:",
     "@oh-my-pi/pi-wire": "catalog:",
-    "@oh-my-pi/snapcompact": "catalog:"
+    "@oh-my-pi/snapcompact": "catalog:",
+    "@babel/core": "catalog:",
+    "@babel/plugin-transform-typescript": "catalog:",
+    "babel-plugin-jsx-dom-expressions": "catalog:",
+    "solid-js": "catalog:"
   },
   "devDependencies": {
+    "@types/babel__core": "catalog:",
     "kitty-vt-wasm": "catalog:"
   },
   "engines": {
@@ -62,6 +68,38 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
+    "./jsx-runtime": {
+      "types": "./src/jsx-runtime.ts",
+      "import": "./src/jsx-runtime.ts"
+    },
+    "./overlay": {
+      "types": "./src/host/overlay.ts",
+      "import": "./src/host/overlay.ts"
+    },
+    "./reactive": {
+      "types": "./src/reactive/index.ts",
+      "import": "./src/reactive/index.ts"
+    },
+    "./root": {
+      "types": "./src/root.ts",
+      "import": "./src/root.ts"
+    },
+    "./view": {
+      "types": "./src/view/index.ts",
+      "import": "./src/view/index.ts"
+    },
+    "./view/*": {
+      "types": ["./src/view/*.ts", "./src/view/*.tsx"],
+      "import": "./src/view/*"
+    },
+    "./document": {
+      "types": "./src/document/index.ts",
+      "import": "./src/document/index.ts"
+    },
+    "./testing": {
+      "types": "./src/testing.ts",
+      "import": "./src/testing.ts"
+    },
     "./theme": {
       "types": "./src/theme/index.ts",
       "import": "./src/theme/index.ts"
@@ -71,16 +109,8 @@
       "import": "./src/theme/defaults/index.ts"
     },
     "./theme/*": {
-      "types": "./src/theme/*.ts",
-      "import": "./src/theme/*.ts"
-    },
-    "./render": {
-      "types": "./src/render/index.ts",
-      "import": "./src/render/index.ts"
-    },
-    "./chrome": {
-      "types": "./src/chrome/index.ts",
-      "import": "./src/chrome/index.ts"
+      "types": ["./src/theme/*.ts", "./src/theme/*.tsx"],
+      "import": "./src/theme/*"
     },
     "./tools": {
       "types": "./src/tools/index.ts",
@@ -91,13 +121,12 @@
       "import": "./src/status-line/index.ts"
     },
     "./*": {
-      "types": "./src/*.ts",
-      "import": "./src/*.ts"
+      "types": ["./src/*.ts", "./src/*.tsx"],
+      "import": "./src/*"
     },
-    "./components/*": {
-      "types": "./src/components/*.ts",
-      "import": "./src/components/*.ts"
-    },
-    "./*.js": "./src/*.ts"
+    "./*.js": {
+      "types": ["./src/*.ts", "./src/*.tsx"],
+      "default": "./src/*"
+    }
   }
 }

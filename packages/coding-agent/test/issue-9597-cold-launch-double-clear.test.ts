@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ComposerPreferences } from "@oh-my-pi/pi-tui/prompt/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
@@ -40,6 +41,7 @@ describe("issue #9597 — cold-launch welcome duplication", () => {
 	let config: ComposerPreferences;
 
 	beforeEach(async () => {
+		vi.spyOn(vcs, "watch").mockReturnValue(() => {});
 		resetSettingsForTest();
 		await initTheme();
 		settings = await Settings.init({ inMemory: true });
@@ -58,6 +60,7 @@ describe("issue #9597 — cold-launch welcome duplication", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		stopPendingStartupComposer();
 		resetSettingsForTest();
 	});
@@ -87,10 +90,9 @@ describe("issue #9597 — cold-launch welcome duplication", () => {
 			undefined,
 			undefined,
 			undefined,
-			lease!.composer,
+			lease,
 		);
 		lease!.adopt();
-		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		try {
 			await mode.init({ suppressWelcomeIntro: resuming, clearInitialTerminalHistory: true });
 			await terminal.waitForRender();

@@ -19,11 +19,17 @@ import { $flag } from "@oh-my-pi/pi-utils/env";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
+import { emitRow } from "./core/emit";
+import { cursorPositions, spliceRow } from "./core/frame";
+import { RichText } from "./core/richtext";
+import type { HostElement, InputTarget } from "./host/types";
 import { TuiDebugServer } from "./debug-server";
 import { isKeyRelease, matchesKey } from "./keys";
 import { KITTY_PLACEHOLDER } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
 import { STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from "./terminal";
+import type { ColorMode } from "./theme/schema";
+import { theme } from "./theme/theme";
 import {
 	encodeKittyDeleteAllImages,
 	encodeKittyDeleteImage,
@@ -41,13 +47,10 @@ import {
 } from "./terminal-capabilities";
 import {
 	Ellipsis,
-	extractSegments,
 	getWidthConfigEpoch,
 	isOsc66Line,
 	normalizeTerminalOutput,
 	osc66MaxScale,
-	sliceByColumn,
-	sliceWithWidth,
 	truncateToWidth,
 	visibleWidth,
 } from "./utils";
@@ -127,7 +130,7 @@ export interface RenderScheduler {
 export interface TuiPaint {
 	/** Rows committed above the viewport by this paint (native scrollback). Empty on diff paints and alt-screen paints. */
 	readonly history: readonly string[];
-	/** Complete live viewport after this paint: one prepared (normalized, width-truncated, SGR-coalesced) ANSI string per row. */
+	/** Complete live viewport after this paint: one prepared, normalized, width-truncated ANSI string per row. */
 	readonly viewport: readonly string[];
 	/** True when this paint erased scrollback and repainted from row zero (destructive reset or history replay): consumers drop their history copy before applying `history`. */
 	readonly reset: boolean;
@@ -160,22 +163,29 @@ export interface HistoryBatch {
 	readonly kind?: "append" | "replay";
 }
 
-/** One history append or complete replay plus the mutable viewport for a terminal frame. */
+/** One history append or complete replay plus the cell-native mutable viewport for a terminal frame. */
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
-	readonly viewport: readonly string[];
+	readonly viewport: RichText;
 }
 
 /** Produces bounded terminal frames and retires acknowledged history batches. */
 export interface TerminalFrameProvider {
 	renderFrame(viewport: ViewportSize): TerminalFramePlan;
+	/** Retained root exposed to the debugger and native input routing. */
+	readonly root?: HostElement;
+	inputTarget?(): InputTarget | null;
+	/** Revalidate native layout after terminal capability or cell-size changes. */
+	invalidate?(): void;
 	acknowledgeHistory(id: number): void;
-	/** Full semantic viewport used only on the transient resize buffer. */
-	renderResizeFrame?(viewport: ViewportSize): readonly string[];
+	/** Full cell-native semantic viewport used only on the transient resize buffer. */
+	renderResizeFrame?(viewport: ViewportSize): RichText;
 	/** Re-offer finalized history after a display reset or resize replay. */
 	beginHistoryReplay?(): void;
 	/** Force every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush?(): void;
+	/** Notify the reactive host after terminal bytes for this frame have been written. */
+	frameCommitted?(): void;
 }
 
 export interface TUIStartOptions {
@@ -204,97 +214,16 @@ const DEFAULT_RENDER_SCHEDULER: RenderScheduler = {
 	},
 };
 
-/**
- * Component interface - all components must implement this
- *
- * Render contract: the returned array (and its rows) belongs to the component.
- * Callers MUST NOT mutate it — components are allowed to return a cached array
- * and will return the exact same reference for as long as their rendered
- * content is unchanged. Conversely, a component MUST return a fresh array
- * reference whenever its content changed; reference equality across two
- * render() calls is the engine's proof that the rows are byte-identical
- * (containers memoize their concatenation on it, and the TUI derives the
- * frame's stable prefix from it). A component that mutates a previously
- * returned array in place must implement {@link RenderStablePrefix} to declare
- * which leading rows survived.
- */
-export interface Component {
-	/** Stable identifier surfaced in the debug tree as kind#id. */
-	debugId?: string;
-	/** Override for the tree node kind (default: constructor.name). */
-	debugKind?: string;
-	/** Widget state for the debug `values`/`tree` ops. JSON-serializable. */
-	debugState?(): Record<string, unknown>;
-	/** Children for the debug tree when not already exposed as a public `children` array. */
-	debugChildren?: readonly Component[];
-
-	/**
-	 * Render the component to an array of physical rows at the given width.
-	 * The result is component-owned and `readonly` to the caller; an unchanged
-	 * component may (and should) return the same array reference it returned
-	 * last time.
-	 */
-	render(width: number): readonly string[];
-
-	/**
-	 * Optional handler for keyboard input when component has focus
-	 */
-	handleInput?(data: string): void;
-
-	/**
-	 * If true, component receives key release events (Kitty protocol).
-	 * Default is false - release events are filtered out.
-	 */
-	wantsKeyRelease?: boolean;
-
-	/**
-	 * Optional hook to invalidate any cached rendering state.
-	 * Called when theme changes or when component needs to re-render from scratch.
-	 */
-	invalidate?(): void;
-	/**
-	 * Optional hook to set whether this component ignores tight layout mode.
-	 */
-	setIgnoreTight?(ignore: boolean): any;
-
-	/**
-	 * Optional teardown. Called when the component is permanently removed from
-	 * the live tree (e.g. a transcript reset). Release timers, intervals, and
-	 * subscriptions here. Must be idempotent. Containers propagate dispose to
-	 * their children; leaf components without resources may omit it.
-	 */
-	dispose?(): void;
-}
-
-/** Lets an overlay root delegate keyboard focus to components it owns. */
-export interface OverlayFocusOwner {
-	/** Returns true when `component` is a focus target inside this overlay. */
-	ownsOverlayFocusTarget(component: Component): boolean;
-}
-
-function isOverlayFocusTarget(owner: Component, component: Component | null): boolean {
-	if (component === owner) return true;
-	if (!component) return false;
-	const candidate = owner as Component & Partial<OverlayFocusOwner>;
-	return candidate.ownsOverlayFocusTarget?.(component) === true;
-}
-
-/**
- * Interface for components that can receive focus and display a cursor.
- * When focused, the component should emit CURSOR_MARKER at the cursor position
- * in its render output. TUI will find this marker and position the hardware
- * cursor there for proper IME candidate window positioning.
- *
- * Components that can switch between terminal-cursor and software-cursor
- * rendering expose `setUseTerminalCursor`; TUI keeps that mode in sync with
- * its resolved hardware-cursor preference whenever focus or the preference
- * changes.
- */
-export interface Focusable {
-	/** Set by TUI when focus changes. Component should emit CURSOR_MARKER when true. */
+/** Internal retained-root adapter for terminal overlays; views author Portal instead. */
+export interface TerminalOverlay extends InputTarget {
+	readonly root: HostElement;
 	focused: boolean;
-	/** Set by TUI when hardware cursor rendering is enabled or disabled. */
-	setUseTerminalCursor?(useTerminalCursor: boolean): void;
+	readonly wantsKeyRelease?: boolean;
+	renderFrame(width: number, height: number): RichText;
+	handleInput(data: string): void;
+	setInputOrigin(origin: { row: number; col: number }): void;
+	inputTarget(): InputTarget | null;
+	invalidate(): void;
 }
 
 /** Options for scheduling a TUI render. */
@@ -309,19 +238,6 @@ export interface RenderRequestOptions {
  * clears history before replaying it, and `preserve` repaints only the viewport.
  */
 export type ResizeScrollbackMode = "append" | "rebuild" | "preserve";
-
-/** Type guard to check if a component implements Focusable */
-export function isFocusable(component: Component | null): component is Component & Focusable {
-	return component !== null && "focused" in component;
-}
-
-/**
- * Cursor position marker - APC (Application Program Command) sequence.
- * This is a zero-width escape sequence that terminals ignore.
- * Components emit this at the cursor position when focused.
- * TUI finds and strips this marker, then positions the hardware cursor there.
- */
-export const CURSOR_MARKER = "\x1b_pi:c\x07";
 
 export { visibleWidth };
 
@@ -413,8 +329,10 @@ export interface OverlayOptions {
 	 * unchanged and still draw over the transcript on the normal screen.
 	 */
 	fullscreen?: boolean;
+	/** False leaves keyboard input with the underlying editor or modal dialog. */
+	modal?: boolean;
 	/**
-	 * Enable terminal mouse reporting while fullscreen. Defaults on; disable it
+	 * Enable terminal mouse reporting; defaults on for fullscreen overlays and off otherwise. Disable it
 	 * when native terminal text selection takes precedence over pointer events.
 	 */
 	mouseTracking?: boolean;
@@ -430,108 +348,6 @@ export interface OverlayHandle {
 	setHidden(hidden: boolean): void;
 	/** Check if overlay is temporarily hidden */
 	isHidden(): boolean;
-}
-
-/**
- * Container - a component that contains other components
- */
-export class Container implements Component {
-	children: Component[] = [];
-
-	// Memoized concatenation of the children's latest renders. Children are
-	// still rendered every frame (renders carry side effects: image placement
-	// registration); the memo only skips rebuilding the concatenated array when
-	// every child returned the exact same array reference at the same width —
-	// which, per the Component render contract, proves the rows are
-	// byte-identical. Cleared on any child-list change and on invalidate().
-	#memoLines: string[] | undefined;
-	#memoChildLines: (readonly string[])[] = [];
-	#memoWidth = -1;
-
-	#ignoreTight = false;
-
-	setIgnoreTight(ignore: boolean): this {
-		this.#ignoreTight = ignore;
-		for (const child of this.children) {
-			child.setIgnoreTight?.(ignore);
-		}
-		this.invalidate();
-		return this;
-	}
-
-	addChild(component: Component): void {
-		this.children.push(component);
-		if (this.#ignoreTight) {
-			component.setIgnoreTight?.(true);
-		}
-		this.#memoLines = undefined;
-	}
-
-	removeChild(component: Component): void {
-		const index = this.children.indexOf(component);
-		if (index !== -1) {
-			this.children.splice(index, 1);
-			this.#memoLines = undefined;
-		}
-	}
-
-	clear(): void {
-		this.children = [];
-		this.#memoLines = undefined;
-	}
-
-	/** Dispose every child, then detach it from this container. */
-	disposeChildren(): void {
-		this.dispose();
-		this.clear();
-	}
-
-	invalidate(): void {
-		this.#memoLines = undefined;
-		for (const child of this.children) {
-			child.invalidate?.();
-		}
-	}
-
-	/**
-	 * Propagate teardown to children. Call when the container's children are
-	 * being permanently discarded (not when they are detached for reuse — use
-	 * {@link clear} for that). Idempotent per child via each child's own dispose.
-	 */
-	dispose(): void {
-		for (const child of this.children) {
-			child.dispose?.();
-		}
-	}
-
-	render(width: number): readonly string[] {
-		width = Math.max(1, width);
-		const children = this.children;
-		const count = children.length;
-		let refs = this.#memoChildLines;
-		let unchanged = this.#memoLines !== undefined && this.#memoWidth === width && refs.length === count;
-		if (refs.length !== count) {
-			// oxlint-disable-next-line unicorn/no-new-array -- render-frame length preallocation
-			refs = new Array(count);
-			this.#memoChildLines = refs;
-		}
-		for (let i = 0; i < count; i++) {
-			const childLines = children[i]!.render(width);
-			if (refs[i] !== childLines) {
-				unchanged = false;
-				refs[i] = childLines;
-			}
-		}
-		this.#memoWidth = width;
-		if (unchanged) return this.#memoLines!;
-		const lines: string[] = [];
-		for (let i = 0; i < count; i++) {
-			const childLines = refs[i]!;
-			for (let j = 0; j < childLines.length; j++) lines.push(childLines[j]!);
-		}
-		this.#memoLines = lines;
-		return lines;
-	}
 }
 
 interface HardwareCursorState {
@@ -563,147 +379,16 @@ interface LineClassification {
 	hasOsc8: boolean;
 }
 
-// SGR coalescing. The renderer's component tree emits a styled span as
-// `<set-color>text<reset>`, so adjacent spans produce runs of byte-adjacent
-// SGR sequences (e.g. a `CSI 39 m` fg-reset immediately followed by the next
-// span's `CSI 38;2;r;g;b m`). Two byte-adjacent SGR sequences are semantically
-// identical to one SGR carrying both parameter lists (SGR params apply
-// left-to-right), so merging the run into a single `CSI … m` is
-// behavior-preserving: it drops the redundant `ESC[`/`m` framing and lets the
-// terminal dispatch one SGR instead of several. On a real transcript ~40% of
-// all SGR sequences are collapsible this way, which meaningfully cuts the
-// per-frame byte volume and SGR-dispatch count a slow (xterm.js/WebGL) terminal
-// must process. On by default; `PI_NO_SGR_COALESCE=1` disables it.
-const SGR_COALESCE_ENABLED = !$flag("PI_NO_SGR_COALESCE");
 const CC_ESC = 0x1b;
 const CC_KITTY_PLACEHOLDER_HIGH = KITTY_PLACEHOLDER.charCodeAt(0);
-const CC_BRACKET = 0x5b; // [
-const CC_M = 0x6d; // m
-const CC_SEMI = 0x3b; // ;
-const CC_COLON = 0x3a; // :
 const ANSI_TEXT = 0;
 const ANSI_CSI = 1;
 const ANSI_OSC = 2;
-// Max parameter tokens per emitted merged SGR. Kept well under xterm.js's
-// 32-param cap (and the tighter limits of some real terminals) so a long
-// adjacent run is split into several valid CSIs instead of overflowing one.
-const MERGE_TOKEN_CAP = 16;
-
-function isSgrParamByte(c: number): boolean {
-	return (c >= 0x30 && c <= 0x39) || c === CC_SEMI || c === CC_COLON;
-}
-
-// True when a parameter list ends mid extended-color spec in the ambiguous
-// semicolon form: `38/48/58;2` with fewer than three channel values, or
-// `38/48/58;5` with no palette index. Concatenating another list after such a
-// run would let the next code be absorbed as the missing channel/index (e.g.
-// `38;2;255;0` + `31` → `38;2;255;0;31`, where `31` becomes blue instead of a
-// standalone fg-red), changing the rendered color. The self-delimiting colon
-// form (`38:2::r:g:b`) is unambiguous — its tokens never equal a bare `38`, so
-// the scan treats it as a complete unit and merging stays safe.
-function endsWithIncompleteExtendedColor(params: string): boolean {
-	const t = params.split(";");
-	let i = 0;
-	while (i < t.length) {
-		const tok = t[i];
-		if (tok === "38" || tok === "48" || tok === "58") {
-			const mode = t[i + 1];
-			if (mode === undefined) return true; // introducer with no mode
-			if (mode === "2") {
-				if (i + 4 >= t.length) return true; // missing r/g/b
-				i += 5;
-				continue;
-			}
-			if (mode === "5") {
-				if (i + 2 >= t.length) return true; // missing index
-				i += 3;
-				continue;
-			}
-		}
-		i += 1;
-	}
-	return false;
-}
-
-/**
- * Merge runs of byte-adjacent SGR sequences (`CSI [0-9;:]* m`) into one. Only
- * CSI-SGR sequences are touched; text, cursor moves, OSC, hyperlinks and image
- * payloads pass through verbatim. Returns the original reference when nothing
- * merges, so SGR-light lines incur only a single `indexOf` scan.
- */
-export function coalesceAdjacentSgr(line: string): string {
-	if (!SGR_COALESCE_ENABLED || line.indexOf("\x1b[") === -1) return line;
-	const n = line.length;
-	let out = "";
-	let copiedUpto = 0;
-	let i = 0;
-	while (i < n) {
-		if (line.charCodeAt(i) !== CC_ESC || line.charCodeAt(i + 1) !== CC_BRACKET) {
-			i++;
-			continue;
-		}
-		// Scan a candidate SGR sequence: ESC [ <params> m.
-		let j = i + 2;
-		while (j < n && isSgrParamByte(line.charCodeAt(j))) j++;
-		if (j >= n || line.charCodeAt(j) !== CC_M) {
-			// Not an SGR (e.g. cursor move); leave it in the pending region.
-			i = j;
-			continue;
-		}
-		// Collect the run of adjacent SGR sequences starting here.
-		const params: string[] = [line.slice(i + 2, j)];
-		let k = j + 1;
-		while (k < n && line.charCodeAt(k) === CC_ESC && line.charCodeAt(k + 1) === CC_BRACKET) {
-			let p = k + 2;
-			while (p < n && isSgrParamByte(line.charCodeAt(p))) p++;
-			if (p >= n || line.charCodeAt(p) !== CC_M) break;
-			params.push(line.slice(k + 2, p));
-			k = p + 1;
-		}
-		if (params.length > 1) {
-			out += line.slice(copiedUpto, i);
-			// Emit the merged run, but flush the current group before appending a
-			// list when (a) the previous list ended mid extended-color, so the
-			// next code cannot be absorbed as its missing channel/index, or (b)
-			// the token count would exceed MERGE_TOKEN_CAP. SGR params apply
-			// left-to-right regardless of how they are grouped across adjacent
-			// CSIs, so a capped/guarded split stays behavior-preserving — while a
-			// single unbounded merge would overflow a terminal's CSI parameter
-			// buffer (xterm.js caps at 32 and silently truncates the rest,
-			// corrupting colors). Empty params (`CSI m`) mean a full reset;
-			// normalize to `0` so the merged list stays unambiguous.
-			let group = "";
-			let groupTokens = 0;
-			let groupOpenSafe = true;
-			for (let q = 0; q < params.length; q++) {
-				const norm = params[q]!.length === 0 ? "0" : params[q]!;
-				let tk = 1;
-				for (let z = 0; z < norm.length; z++) {
-					const cc = norm.charCodeAt(z);
-					if (cc === CC_SEMI || cc === CC_COLON) tk++;
-				}
-				if (groupTokens > 0 && (!groupOpenSafe || groupTokens + tk > MERGE_TOKEN_CAP)) {
-					out += `\x1b[${group}m`;
-					group = "";
-					groupTokens = 0;
-				}
-				group += group.length === 0 ? norm : `;${norm}`;
-				groupTokens += tk;
-				groupOpenSafe = !endsWithIncompleteExtendedColor(norm);
-			}
-			if (group.length > 0) out += `\x1b[${group}m`;
-			copiedUpto = k;
-		}
-		i = k;
-	}
-	if (copiedUpto === 0) return line;
-	return out + line.slice(copiedUpto);
-}
 
 /**
  * TUI - Main class for managing terminal UI with differential rendering
  */
-export class TUI extends Container {
+export class TUI {
 	terminal: Terminal;
 	#frameProvider: TerminalFrameProvider | undefined;
 	#acceptedHistoryBatchId = 0;
@@ -768,15 +453,20 @@ export class TUI extends Container {
 	#cprColumnTags = new Map<number, number>();
 	#cprProbeSeq = 0;
 	// Prepared rows painted by the previous provider frame, for row diffing.
-	// The structured sidecar owns classification/coalescing results for reuse;
+	// The sidecar owns terminal classification results for reuse;
 	// #providerWindow remains the exact normalized string projection used by
 	// the established differential comparison and resize accounting.
 	#providerWindow: string[] = [];
 	#providerPreparedRows: PreparedLine[] = [];
+	// Cell-native previous frame plus its emitted projection. Unchanged rows
+	// reuse their exact string, so ANSI is serialized only once per changed row.
+	#emittedFrame: RichText | undefined;
+	#emittedRows: string[] = [];
+	#emittedColorMode: ColorMode | undefined;
 	#previousFrameLength = 0;
 	#previousWidth = 0;
 	#previousHeight = 0;
-	#focusedComponent: Component | null = null;
+	#focusedComponent: TerminalOverlay | null = null;
 	#debugServer: TuiDebugServer | undefined;
 	#debugPaint:
 		| {
@@ -788,6 +478,8 @@ export class TUI extends Container {
 		| undefined;
 	#debugNextWindowTop = 0;
 	#inputListeners = new Set<InputListener>();
+	#hostInputHandler: ((data: string) => void) | undefined;
+	#hostFocusHandler: ((active: boolean) => void) | undefined;
 	#startListeners = new Set<StartListener>();
 	#paintListener: ((paint: TuiPaint) => void) | null;
 
@@ -887,6 +579,9 @@ export class TUI extends Container {
 	#inlineMouseProvider: (() => boolean) | undefined;
 	#altPreviousLines: string[] = [];
 	#altPreparedRows: PreparedLine[] = [];
+	#altEmittedFrame: RichText | undefined;
+	#altEmittedRows: string[] = [];
+	#altEmittedColorMode: ColorMode | undefined;
 	#altEnterWidth = 0;
 	#altEnterHeight = 0;
 	#resizeAltActive = false;
@@ -912,14 +607,13 @@ export class TUI extends Container {
 
 	// Overlay stack for modal components rendered on top of base content
 	overlayStack: {
-		component: Component;
+		component: TerminalOverlay;
 		options?: OverlayOptions;
-		preFocus: Component | null;
+		preFocus: TerminalOverlay | null;
 		hidden: boolean;
 	}[] = [];
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
-		super();
 		this.terminal = terminal;
 		this.#renderScheduler = options?.renderScheduler ?? DEFAULT_RENDER_SCHEDULER;
 		this.#paintListener = options?.onPaint ?? null;
@@ -937,18 +631,26 @@ export class TUI extends Container {
 	}
 
 	/** Install the product-owned bounded frame provider. */
-	setFrameProvider(provider: TerminalFrameProvider | undefined): void {
+	setFrameProvider(provider: TerminalFrameProvider | undefined, requestRender = true): void {
 		this.#frameProvider = provider;
 		this.#providerWindow = [];
 		this.#providerPreparedRows = [];
+		this.#emittedFrame = undefined;
+		this.#emittedRows = [];
+		this.#emittedColorMode = undefined;
 		this.#resizeReplaySize = undefined;
-		this.requestRender(true);
+		if (requestRender) this.requestRender(true);
 	}
 
-	#syncTerminalCursorMode(component: Component | null): void {
-		if (isFocusable(component)) {
-			component.setUseTerminalCursor?.(this.#showHardwareCursor);
-		}
+	/** Install input dispatch for a retained host root when no legacy component owns focus. */
+	setHostInputHandler(handler: ((data: string) => void) | undefined): void {
+		this.#hostInputHandler = handler;
+	}
+
+	/** Mirror terminal input ownership into the retained root's focus state. */
+	setHostFocusHandler(handler: ((active: boolean) => void) | undefined): void {
+		this.#hostFocusHandler = handler;
+		handler?.(this.#focusedComponent === null);
 	}
 
 	get fullRedraws(): number {
@@ -999,7 +701,6 @@ export class TUI extends Container {
 	setShowHardwareCursor(enabled: boolean): void {
 		if (this.#showHardwareCursor === enabled) return;
 		this.#showHardwareCursor = enabled;
-		this.#syncTerminalCursorMode(this.#focusedComponent);
 		if (!enabled) {
 			this.terminal.hideCursor();
 			this.#recordHardwareCursorHidden();
@@ -1027,35 +728,27 @@ export class TUI extends Container {
 		return this.#lastFrameCostMs;
 	}
 
-	setFocus(component: Component | null): void {
-		const topVisibleOverlay = this.#getTopmostVisibleOverlay();
-		if (topVisibleOverlay && !isOverlayFocusTarget(topVisibleOverlay.component, component)) {
-			const currentFocus = this.#focusedComponent;
-			component = isOverlayFocusTarget(topVisibleOverlay.component, currentFocus)
-				? currentFocus
-				: topVisibleOverlay.component;
-		}
-
-		const previousFocusedComponent = this.#focusedComponent;
-		// Clear focused flag on old component
-		if (isFocusable(previousFocusedComponent)) {
-			previousFocusedComponent.focused = false;
-		}
-
+	/** Transfer terminal input ownership between the retained root and a modal overlay. */
+	setFocus(component: TerminalOverlay | null): void {
+		const top = this.#getTopmostVisibleOverlay({ focusableOnly: true });
+		if (top && top.component !== component) component = top.component;
+		if (this.#focusedComponent) this.#focusedComponent.focused = false;
 		this.#focusedComponent = component;
-
-		// Set focused flag on new component and keep its software/hardware cursor
-		// rendering mode aligned with TUI's single cursor-visibility preference.
-		if (isFocusable(component)) {
-			component.focused = true;
-			this.#syncTerminalCursorMode(component);
-		}
+		this.#hostFocusHandler?.(component === null);
+		if (component) component.focused = true;
 	}
 
-	/** Component currently receiving keyboard input, if any. */
-	getFocused(): Component | null {
-		return this.#focusedComponent;
+	/** Stable native input destination, including the editor below the root compositor. */
+	getFocused(): InputTarget | null {
+		return this.#focusedComponent
+			? (this.#focusedComponent.inputTarget() ?? this.#focusedComponent)
+			: (this.#frameProvider?.inputTarget?.() ?? null);
 	}
+	/** Retained main tree available to the debug protocol. */
+	getDebugRoot(): HostElement | undefined {
+		return this.#frameProvider?.root;
+	}
+
 	/** Last viewport successfully written by the renderer, for debug inspection. */
 	getDebugPaint():
 		| {
@@ -1068,9 +761,10 @@ export class TUI extends Container {
 		return this.#debugPaint;
 	}
 
-	/** Render the current root document at the live terminal width for debug inspection. */
+	/** Paint the current root document at the live terminal width for debug inspection. */
 	getDebugDocument(): readonly string[] {
-		return this.render(Math.max(1, this.terminal.columns));
+		const frame = this.#frameProvider?.root?.cache;
+		return frame ? this.#emitChangedRows(frame) : [];
 	}
 
 	/** Feed debug and test input through the same pipeline as terminal stdin. */
@@ -1082,12 +776,11 @@ export class TUI extends Container {
 	 * Show an overlay component with configurable positioning and sizing.
 	 * Returns a handle to control the overlay's visibility.
 	 */
-	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
-		component.setIgnoreTight?.(true);
+	showOverlay(component: TerminalOverlay, options?: OverlayOptions): OverlayHandle {
 		const entry = { component, options, preFocus: this.#focusedComponent, hidden: false };
 		this.overlayStack.push(entry);
 		// Only focus if overlay is actually visible
-		if (this.#isOverlayVisible(entry)) {
+		if (entry.options?.modal !== false && this.#isOverlayVisible(entry)) {
 			this.setFocus(component);
 		}
 		this.terminal.hideCursor();
@@ -1101,8 +794,8 @@ export class TUI extends Container {
 				if (index !== -1) {
 					this.overlayStack.splice(index, 1);
 					// Restore focus if this overlay or one of its owned targets had focus
-					if (isOverlayFocusTarget(component, this.#focusedComponent)) {
-						const topVisible = this.#getTopmostVisibleOverlay();
+					if (component === this.#focusedComponent) {
+						const topVisible = this.#getTopmostVisibleOverlay({ focusableOnly: true });
 						this.setFocus(topVisible?.component ?? entry.preFocus);
 					}
 					if (this.overlayStack.length === 0) {
@@ -1118,13 +811,13 @@ export class TUI extends Container {
 				// Update focus when hiding/showing
 				if (hidden) {
 					// If this overlay or one of its owned targets had focus, move focus to next visible or preFocus
-					if (isOverlayFocusTarget(component, this.#focusedComponent)) {
-						const topVisible = this.#getTopmostVisibleOverlay();
+					if (component === this.#focusedComponent) {
+						const topVisible = this.#getTopmostVisibleOverlay({ focusableOnly: true });
 						this.setFocus(topVisible?.component ?? entry.preFocus);
 					}
 				} else {
 					// Restore focus to this overlay when showing (if it's actually visible)
-					if (this.#isOverlayVisible(entry)) {
+					if (entry.options?.modal !== false && this.#isOverlayVisible(entry)) {
 						this.setFocus(component);
 					}
 				}
@@ -1139,7 +832,7 @@ export class TUI extends Container {
 		const overlay = this.overlayStack.pop();
 		if (!overlay) return;
 		// Find topmost visible overlay, or fall back to preFocus
-		const topVisible = this.#getTopmostVisibleOverlay();
+		const topVisible = this.#getTopmostVisibleOverlay({ focusableOnly: true });
 		this.setFocus(topVisible?.component ?? overlay.preFocus);
 		if (this.overlayStack.length === 0) {
 			this.terminal.hideCursor();
@@ -1211,8 +904,11 @@ export class TUI extends Container {
 	}
 
 	/** Find the topmost visible overlay, if any */
-	#getTopmostVisibleOverlay(): (typeof this.overlayStack)[number] | undefined {
+	#getTopmostVisibleOverlay(
+		options: { focusableOnly?: boolean } = {},
+	): (typeof this.overlayStack)[number] | undefined {
 		for (let i = this.overlayStack.length - 1; i >= 0; i--) {
+			if (options.focusableOnly && this.overlayStack[i]?.options?.modal === false) continue;
 			if (this.#isOverlayVisible(this.overlayStack[i])) {
 				return this.overlayStack[i];
 			}
@@ -1220,9 +916,9 @@ export class TUI extends Container {
 		return undefined;
 	}
 
-	override invalidate(): void {
-		super.invalidate();
-		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
+	invalidate(): void {
+		if (this.#frameProvider?.invalidate) this.#frameProvider.invalidate();
+		else for (const overlay of this.overlayStack) overlay.component.invalidate?.();
 	}
 
 	start(options?: TUIStartOptions): void {
@@ -1481,6 +1177,9 @@ export class TUI extends Container {
 			setAltScreenActive(true);
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
+			this.#altEmittedFrame = undefined;
+			this.#altEmittedRows = [];
+			this.#altEmittedColorMode = undefined;
 			this.#forgetHardwareCursorState();
 			this.#recordHardwareCursorHidden();
 			// Blank the live region up front so a reflow-driven scroll can only push
@@ -1531,6 +1230,9 @@ export class TUI extends Container {
 			setAltScreenActive(false);
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
+			this.#altEmittedFrame = undefined;
+			this.#altEmittedRows = [];
+			this.#altEmittedColorMode = undefined;
 			this.#beginResizeAnchorProbe();
 		}, TUI.#RESIZE_VIEWPORT_SETTLE_MS);
 		this.requestRender(true);
@@ -1737,17 +1439,32 @@ export class TUI extends Container {
 	/** Paint the full semantic tail on the borrowed resize buffer. */
 	#renderResizeAltFrame(width: number, height: number): void {
 		const provider = this.#frameProvider;
-		let rendered: readonly string[];
+		let viewport: RichText;
 		do {
 			this.#imageBudget.beginPass(false, true);
-			rendered =
-				provider?.renderResizeFrame?.({ columns: width, rows: height }) ??
-				(provider ? provider.renderFrame({ columns: width, rows: height }).viewport : this.render(width));
+			let rendered: RichText;
+			if (provider?.renderResizeFrame !== undefined) {
+				rendered = provider.renderResizeFrame({ columns: width, rows: height });
+			} else if (provider !== undefined) {
+				rendered = provider.renderFrame({ columns: width, rows: height }).viewport;
+			} else {
+				rendered = new RichText();
+			}
+			rendered.finish();
+			viewport =
+				rendered.rows > height ? this.#sliceFrame(rendered, rendered.rows - height, rendered.rows) : rendered;
 		} while (this.#imageBudget.endPass());
-		const viewport = rendered.length > height ? rendered.slice(rendered.length - height) : Array.from(rendered);
-		this.#extractCursorMarkers(viewport);
+		const rows = this.#emitChangedRows(
+			viewport,
+			this.#altEmittedFrame,
+			this.#altEmittedRows,
+			this.#altEmittedColorMode,
+		);
 		// The borrowed resize buffer is transient, not a streamable session paint.
-		this.#emitAltFrame(this.#prepareLinesArray(viewport, width, this.#altPreparedRows, height), width, height, false);
+		this.#emitAltFrame(this.#prepareLinesArray(rows, width, this.#altPreparedRows, height), width, height, false);
+		this.#altEmittedFrame = this.#sliceFrame(viewport, 0, viewport.rows);
+		this.#altEmittedRows = rows;
+		this.#altEmittedColorMode = theme?.getColorMode() ?? "truecolor";
 	}
 
 	/**
@@ -1931,16 +1648,16 @@ export class TUI extends Container {
 		provider.beginHistoryFlush();
 		while (true) {
 			let plan: TerminalFramePlan;
-			let viewport: string[];
+			let viewport: RichText;
 			do {
 				this.#imageBudget.beginPass();
 				plan = provider.renderFrame({ columns: width, rows: height });
-				viewport = Array.from(plan.viewport);
-				if (viewport.length > height) viewport = viewport.slice(0, height);
+				plan.viewport.finish();
+				viewport = plan.viewport.rows > height ? this.#sliceFrame(plan.viewport, 0, height) : plan.viewport;
 			} while (this.#imageBudget.endPass());
 			if (plan.history === undefined) return;
 			const acceptedBefore = this.#acceptedHistoryBatchId;
-			this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+			this.#emitNormalFrame(width, height, viewport, plan.history, provider);
 			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
 				throw new Error("History flush did not accept the offered batch");
 			}
@@ -1986,6 +1703,9 @@ export class TUI extends Container {
 			this.#mouseTracking = "off";
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
+			this.#altEmittedFrame = undefined;
+			this.#altEmittedRows = [];
+			this.#altEmittedColorMode = undefined;
 			this.#pendingAltExit = "";
 		} else if (this.#mouseTracking !== "off") {
 			// Inline capture with no overlay: still owned by us at quit, so
@@ -2087,17 +1807,6 @@ export class TUI extends Container {
 		this.#lastRenderAt = start;
 		this.#doRender();
 		this.#lastFrameCostMs = this.#renderScheduler.now() - start;
-	}
-
-	/**
-	 * Schedule a render on behalf of `component` after a self-contained change
-	 * (spinner frame, blink). Frames always compose the bounded viewport from
-	 * scratch — retired blocks no longer render — so a scoped request is simply
-	 * an ordinary render.
-	 */
-	requestComponentRender(_component: Component): void {
-		if (this.#stopped) return;
-		this.#requestOrdinaryRender();
 	}
 
 	/** Ordinary (non-forced) render scheduling. */
@@ -2282,7 +1991,7 @@ export class TUI extends Container {
 		const focusedOverlay = this.overlayStack.find(o => o.component === this.#focusedComponent);
 		if (focusedOverlay && !this.#isOverlayVisible(focusedOverlay)) {
 			// Focused overlay is no longer visible, redirect to topmost visible overlay
-			const topVisible = this.#getTopmostVisibleOverlay();
+			const topVisible = this.#getTopmostVisibleOverlay({ focusableOnly: true });
 			if (topVisible) {
 				this.setFocus(topVisible.component);
 			} else {
@@ -2303,6 +2012,9 @@ export class TUI extends Container {
 				return;
 			}
 			focused.handleInput(data);
+			this.requestRender();
+		} else if (focused === null && this.#hostInputHandler !== undefined) {
+			this.#hostInputHandler(data);
 			this.requestRender();
 		}
 	}
@@ -2354,7 +2066,7 @@ export class TUI extends Container {
 		const availHeight = Math.max(1, termHeight - marginTop - marginBottom);
 
 		// === Resolve width ===
-		let width = parseSizeValue(opt.width, termWidth) ?? Math.min(80, availWidth);
+		let width = parseSizeValue(opt.width, termWidth) ?? (opt.fullscreen ? availWidth : Math.min(80, availWidth));
 		// Apply minWidth
 		if (opt.minWidth !== undefined) {
 			width = Math.max(width, opt.minWidth);
@@ -2392,7 +2104,7 @@ export class TUI extends Container {
 			}
 		} else {
 			// Anchor-based (default: center)
-			const anchor = opt.anchor ?? "center";
+			const anchor = opt.anchor ?? (opt.fullscreen ? "top-left" : "center");
 			row = this.#resolveAnchorRow(anchor, effectiveHeight, availHeight, marginTop);
 		}
 
@@ -2414,7 +2126,7 @@ export class TUI extends Container {
 			}
 		} else {
 			// Anchor-based (default: center)
-			const anchor = opt.anchor ?? "center";
+			const anchor = opt.anchor ?? (opt.fullscreen ? "top-left" : "center");
 			col = this.#resolveAnchorCol(anchor, width, availWidth, marginLeft);
 		}
 
@@ -2464,133 +2176,87 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Composite all visible overlays into the window slice (screen
-	 * coordinates, in stack order, later = on top). Overlays never touch the
-	 * frame: composited rows exist only in the painted window, and commits are
-	 * frozen while an overlay is visible, so overlay pixels can never enter
-	 * native scrollback.
+	 * Return rows `[from, to)` as an owned frame. Replaying preserves raw image
+	 * payloads, styles, and cursor anchors without serializing them.
 	 */
-	/**
-	 * Composite the visible overlays onto a full-height copy of `viewport`, or
-	 * hand it back untouched when nothing is stacked. Callers run this inside
-	 * their image-budget pass so the frame's whole image set — transcript plus
-	 * modal — reaches one reconcile, instead of leaving the overlay's graphics
-	 * outside the cap for as long as it stays up.
-	 */
-	#compositeVisibleOverlays(viewport: string[], width: number, height: number): string[] {
-		if (this.#getTopmostVisibleOverlay() === undefined) return viewport;
-		while (viewport.length < height) viewport.push("");
-		return this.#compositeOverlaysIntoWindow(viewport, width, height);
+	#sliceFrame(frame: RichText, from: number, to: number): RichText {
+		const sliced = new RichText();
+		const start = Math.min(frame.rows, Math.max(0, from));
+		frame.replay(sliced, start, Math.max(start, Math.min(to, frame.rows)));
+		return sliced;
 	}
 
-	#compositeOverlaysIntoWindow(window: string[], termWidth: number, termHeight: number): string[] {
-		const result = [...window];
+	/**
+	 * Composite visible overlays in stack order over a full-height cell-native
+	 * viewport. Each overlay paints into its own scratch frame at its resolved
+	 * width; clipping selects the leading or trailing rows according to anchor.
+	 */
+	#compositeVisibleOverlays(viewport: RichText, termWidth: number, termHeight: number): RichText {
+		if (this.#getTopmostVisibleOverlay() === undefined) return viewport;
+		return this.#compositeOverlaysIntoWindow(viewport, termWidth, termHeight);
+	}
+
+	#compositeOverlaysIntoWindow(window: RichText, termWidth: number, termHeight: number): RichText {
+		let result = new RichText();
+		window.replay(result, 0, Math.min(window.rows, termHeight));
+		while (result.rows < termHeight) result.br();
+
 		for (const entry of this.overlayStack) {
 			if (!this.#isOverlayVisible(entry)) continue;
 			const { component, options } = entry;
-			// Get layout with height=0 first to determine width and maxHeight
-			// (width and maxHeight don't depend on overlay height).
 			const { width, maxHeight } = this.#resolveOverlayLayout(options, 0, termWidth, termHeight);
-			let overlayLines = component.render(width);
-			if (overlayLines.length > maxHeight) {
-				const anchor = options?.anchor ?? "center";
-				overlayLines =
-					anchor === "bottom-left" || anchor === "bottom-center" || anchor === "bottom-right"
-						? overlayLines.slice(overlayLines.length - maxHeight)
-						: overlayLines.slice(0, maxHeight);
+			const overlay = component.renderFrame(width, maxHeight);
+
+			const visibleRows = Math.min(overlay.rows, maxHeight);
+			if (visibleRows === 0) continue;
+			const anchor = options?.anchor ?? "center";
+			const bottomAnchored = anchor === "bottom-left" || anchor === "bottom-center" || anchor === "bottom-right";
+			const overlayStart = bottomAnchored ? overlay.rows - visibleRows : 0;
+			const { row, col } = this.#resolveOverlayLayout(options, visibleRows, termWidth, termHeight);
+			component.setInputOrigin?.({ row: row - overlayStart, col });
+			const composited = new RichText();
+			for (let screenRow = 0; screenRow < termHeight; screenRow++) {
+				const overlayRow = screenRow - row;
+				if (overlayRow >= 0 && overlayRow < visibleRows) {
+					spliceRow(composited, result, screenRow, overlay, overlayStart + overlayRow, col, width, termWidth);
+					composited.br();
+				} else {
+					result.replay(composited, screenRow, screenRow + 1);
+				}
 			}
-			const { row, col } = this.#resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
-			for (let i = 0; i < overlayLines.length; i++) {
-				const idx = row + i;
-				if (idx < 0 || idx >= result.length) continue;
-				const truncatedOverlayLine =
-					visibleWidth(overlayLines[i]) > width ? sliceByColumn(overlayLines[i], 0, width, true) : overlayLines[i];
-				result[idx] = this.#compositeLineAt(result[idx], truncatedOverlayLine, col, width, termWidth);
-			}
+			result = composited;
 		}
 		return result;
 	}
 
-	/** Splice overlay content into a base line at a specific column. Single-pass optimized. */
-	#compositeLineAt(
-		baseLine: string,
-		overlayLine: string,
-		startCol: number,
-		overlayWidth: number,
-		totalWidth: number,
-	): string {
-		if (TERMINAL.isImageLine(baseLine)) {
-			// Full-width overlays such as /switch are opaque: replace the
-			// Unicode placeholder cells so the image cannot cover the modal.
-			// Partial overlays cannot safely splice placement control sequences.
-			if (startCol !== 0 || overlayWidth < totalWidth) return baseLine;
-			const overlay = sliceWithWidth(overlayLine, 0, totalWidth, true);
-			return SEGMENT_RESET + overlay.text + " ".repeat(Math.max(0, totalWidth - overlay.width));
-		}
-
-		// Single pass through baseLine extracts both before and after segments
-		const afterStart = startCol + overlayWidth;
-		const base = extractSegments(baseLine, startCol, afterStart, totalWidth - afterStart, true);
-
-		// Extract overlay with width tracking (strict=true to exclude wide chars at boundary)
-		const overlay = sliceWithWidth(overlayLine, 0, overlayWidth, true);
-
-		// Pad segments to target widths
-		const beforePad = Math.max(0, startCol - base.beforeWidth);
-		const overlayPad = Math.max(0, overlayWidth - overlay.width);
-		const actualBeforeWidth = Math.max(startCol, base.beforeWidth);
-		const actualOverlayWidth = Math.max(overlayWidth, overlay.width);
-		const afterTarget = Math.max(0, totalWidth - actualBeforeWidth - actualOverlayWidth);
-		const afterPad = Math.max(0, afterTarget - base.afterWidth);
-
-		// Compose result
-		const r = SEGMENT_RESET;
-		const result =
-			base.before +
-			" ".repeat(beforePad) +
-			r +
-			overlay.text +
-			" ".repeat(overlayPad) +
-			r +
-			base.after +
-			" ".repeat(afterPad);
-
-		// CRITICAL: Always verify and truncate to terminal width.
-		// This is the final safeguard against width overflow which would crash the TUI.
-		// Width tracking can drift from actual visible width due to:
-		// - Complex ANSI/OSC sequences (hyperlinks, colors)
-		// - Wide characters at segment boundaries
-		// - Edge cases in segment extraction
-		const resultWidth = visibleWidth(result);
-		if (resultWidth <= totalWidth) {
-			return result;
-		}
-		// Truncate with strict=true to ensure we don't exceed totalWidth
-		return sliceByColumn(result, 0, totalWidth, true);
-	}
-
 	/**
-	 * Strip every CURSOR_MARKER from the rendered lines (markers are internal
-	 * sentinels and must never reach the terminal) and return their positions,
-	 * bottom-most first. Callers pick the visible one once the window top is
-	 * known.
+	 * Emit only structurally changed rows. The returned array carries forward
+	 * the exact string references for unchanged rows.
 	 */
-	#extractCursorMarkers(lines: string[]): { row: number; col: number }[] {
-		const markers: { row: number; col: number }[] = [];
-		for (let row = lines.length - 1; row >= 0; row--) {
-			const line = lines[row];
-			let markerIndex = line.indexOf(CURSOR_MARKER);
-			if (markerIndex === -1) continue;
-			const beforeMarker = line.slice(0, markerIndex);
-			markers.push({ row, col: visibleWidth(beforeMarker) });
-			let stripped = line;
-			while (markerIndex !== -1) {
-				stripped = stripped.slice(0, markerIndex) + stripped.slice(markerIndex + CURSOR_MARKER.length);
-				markerIndex = stripped.indexOf(CURSOR_MARKER, markerIndex);
+	#emitChangedRows(
+		frame: RichText,
+		previous?: RichText,
+		emitted: readonly string[] = [],
+		previousMode?: ColorMode,
+	): string[] {
+		const rows: string[] = new Array(frame.rows);
+		const mode = theme?.getColorMode() ?? "truecolor";
+		for (let row = 0; row < frame.rows; row++) {
+			if (
+				mode === previousMode &&
+				previous !== undefined &&
+				row < previous.rows &&
+				frame.rowEquals(row, previous, row)
+			) {
+				const cached = emitted[row];
+				if (cached !== undefined) {
+					rows[row] = cached;
+					continue;
+				}
 			}
-			lines[row] = stripped;
+			rows[row] = emitRow(frame, row, { mode });
 		}
-		return markers;
+		return rows;
 	}
 
 	/**
@@ -2636,26 +2302,44 @@ export class TUI extends Container {
 		}
 	}
 
+	#emitNormalFrame(
+		width: number,
+		height: number,
+		frame: RichText,
+		history: HistoryBatch | undefined,
+		provider: TerminalFrameProvider | undefined,
+	): void {
+		const rows = this.#emitChangedRows(frame, this.#emittedFrame, this.#emittedRows, this.#emittedColorMode);
+		// Publish the projection before emission: acknowledging an append may
+		// synchronously schedule the provider's next frame in test/embedded
+		// schedulers, and that nested frame must diff against this one.
+		this.#emittedFrame = this.#sliceFrame(frame, 0, frame.rows);
+		this.#emittedRows = rows;
+		this.#emittedColorMode = theme?.getColorMode() ?? "truecolor";
+		this.#emitPlanFrame(width, height, rows, cursorPositions(frame), history, provider);
+	}
+
 	#renderProviderFrame(width: number, height: number): void {
 		const provider = this.#frameProvider;
 		if (!provider || width <= 0 || height <= 0) return;
 		this.#debugNextWindowTop = 0;
 		let plan: TerminalFramePlan;
-		let viewport: string[];
+		let viewport: RichText;
 		do {
 			this.#imageBudget.beginPass();
 			plan = provider.renderFrame({ columns: width, rows: height });
-			viewport = Array.from(plan.viewport);
-			if (viewport.length > height) {
-				const message = `Frame provider returned ${viewport.length} rows for a ${height}-row viewport`;
+			plan.viewport.finish();
+			viewport = plan.viewport;
+			if (viewport.rows > height) {
+				const message = `Frame provider returned ${viewport.rows} rows for a ${height}-row viewport`;
 				if (Bun.env.NODE_ENV === "test" || Bun.env.NODE_ENV === "development") throw new Error(message);
-				logger.error("TUI layout contract violated", { rows: viewport.length, height });
-				viewport = viewport.slice(0, height);
+				logger.error("TUI layout contract violated", { rows: viewport.rows, height });
+				viewport = this.#sliceFrame(viewport, 0, height);
 			}
 			viewport = this.#compositeVisibleOverlays(viewport, width, height);
 		} while (this.#imageBudget.endPass());
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-		this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+		this.#emitNormalFrame(width, height, viewport, plan.history, provider);
 	}
 	/**
 	 * Re-offer finalized history once after a settled resize.
@@ -2752,6 +2436,7 @@ export class TUI extends Container {
 		width: number,
 		height: number,
 		viewportRows: string[],
+		cursorAnchors: readonly { row: number; col: number }[],
 		offered: HistoryBatch | undefined,
 		provider: TerminalFrameProvider | undefined,
 	): void {
@@ -2760,6 +2445,7 @@ export class TUI extends Container {
 		// endPass(): this is the last point before the purge and transmit bytes go
 		// out, and it runs once per emitted frame instead of once per retry.
 		let viewport = viewportRows;
+		let cursors = cursorAnchors;
 		this.#imageBudget.limitResidentImages();
 		const history = offered !== undefined && offered.id > this.#acceptedHistoryBatchId ? offered : undefined;
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
@@ -2770,8 +2456,12 @@ export class TUI extends Container {
 		if (history?.kind === "replay") {
 			// Providers may omit unused leading rows from a short viewport. Make
 			// that logical space explicit before the bottom-first replay split.
+			viewport = Array.from(viewport);
 			replayPrependedBlanks = Math.max(0, height - viewport.length);
 			while (viewport.length < height) viewport.unshift("");
+			if (replayPrependedBlanks > 0) {
+				cursors = cursors.map(cursor => ({ row: cursor.row + replayPrependedBlanks, col: cursor.col }));
+			}
 			let leadingBlankRows = 0;
 			while (leadingBlankRows < viewport.length && !/\S/.test(viewport[leadingBlankRows]!)) {
 				leadingBlankRows++;
@@ -2783,7 +2473,6 @@ export class TUI extends Container {
 				replayViewportRows = moved;
 			}
 		}
-		const markers = this.#extractCursorMarkers(viewport);
 		const prepared = this.#prepareLinesArray(viewport, width, this.#providerPreparedRows);
 		const preparedHistory = this.#prepareLinesArray(historyRows, width);
 		const rows = prepared.lines.length;
@@ -2912,10 +2601,10 @@ export class TUI extends Container {
 		const mutableTop = newTop + replayViewportRows;
 		const mutablePreparedLines = replayViewportRows > 0 ? prepared.lines.slice(replayViewportRows) : prepared.lines;
 		const mutablePreparedRows = replayViewportRows > 0 ? prepared.rows.slice(replayViewportRows) : prepared.rows;
-		const marker = markers[0];
+		const cursor = cursors[0];
 		const target =
-			marker !== undefined && rows > 0
-				? this.#targetHardwareCursorState({ row: newTop + Math.min(marker.row, rows - 1), col: marker.col }, height)
+			cursor !== undefined && rows > 0
+				? this.#targetHardwareCursorState({ row: newTop + Math.min(cursor.row, rows - 1), col: cursor.col }, height)
 				: null;
 		if (target) {
 			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
@@ -2929,6 +2618,7 @@ export class TUI extends Container {
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
+		provider?.frameCommitted?.();
 		this.#debugPaint = {
 			lines: prepared.lines,
 			windowTop: this.#debugNextWindowTop,
@@ -3001,14 +2691,16 @@ export class TUI extends Container {
 		// Fullscreen alt-screen short-circuit. While the topmost visible overlay
 		// requests it, borrow the terminal's alternate buffer and paint only the
 		// modal there; the normal screen and all accounting stay untouched.
-		const topOverlay = this.#getTopmostVisibleOverlay();
-		const wantAlt = topOverlay?.options?.fullscreen === true;
+		const topOverlay = this.#getTopmostVisibleOverlay({ focusableOnly: true });
+		const wantAlt = this.overlayStack.some(
+			entry => entry.options?.fullscreen === true && this.#isOverlayVisible(entry),
+		);
 		const wantMouse: MouseTrackingState =
 			topOverlay === undefined
 				? this.#inlineMouseProvider?.() === true
 					? "inline"
 					: "off"
-				: wantAlt && topOverlay.options?.mouseTracking !== false
+				: topOverlay.options?.mouseTracking === true || (wantAlt && topOverlay.options?.mouseTracking !== false)
 					? "full"
 					: "off";
 		if (wantAlt && !this.#altActive) {
@@ -3027,6 +2719,9 @@ export class TUI extends Container {
 			this.#altActive = true;
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
+			this.#altEmittedFrame = undefined;
+			this.#altEmittedRows = [];
+			this.#altEmittedColorMode = undefined;
 			this.#altEnterWidth = width;
 			this.#altEnterHeight = height;
 		} else if (!wantAlt && this.#altActive) {
@@ -3055,6 +2750,9 @@ export class TUI extends Container {
 			this.#mouseTracking = wantMouse;
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
+			this.#altEmittedFrame = undefined;
+			this.#altEmittedRows = [];
+			this.#altEmittedColorMode = undefined;
 			// The alt-buffer restore put the pre-overlay normal screen back. If
 			// that buffer resized while covered, its cursor moved with width
 			// rewrap or a height-grow scrollback pull, while our viewport anchor
@@ -3105,29 +2803,23 @@ export class TUI extends Container {
 		this.#imageBudget.forgetTransmitted();
 	}
 
-	/**
-	 * Fallback frame for hosts without a frame provider (tests, simple embeds):
-	 * compose the root children and paint the bottom `height` rows as the
-	 * mutable viewport. Nothing is ever appended to terminal history.
-	 */
+	/** Compose overlays over an empty viewport when no retained root is installed. */
 	#renderChildrenFrame(width: number, height: number): void {
-		let viewport: string[];
+		let viewport: RichText;
 		do {
 			this.#imageBudget.beginPass();
-			const composed = this.render(width);
-			this.#debugNextWindowTop = Math.max(0, composed.length - height);
-			viewport = composed.length > height ? composed.slice(composed.length - height) : Array.from(composed);
-			viewport = this.#compositeVisibleOverlays(viewport, width, height);
+			this.#debugNextWindowTop = 0;
+			viewport = this.#compositeVisibleOverlays(new RichText(), width, height);
 		} while (this.#imageBudget.endPass());
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-		this.#emitPlanFrame(width, height, viewport, undefined, undefined);
+		this.#emitNormalFrame(width, height, viewport, undefined, undefined);
 	}
 
 	/**
 	 * Prepare one string projection plus its structured write sidecar. A prior
 	 * sidecar entry is reusable only under identical raw content, width, width
 	 * configuration, and image protocol; those are every mutable input to
-	 * normalization, fitting, classification, and terminal coalescing.
+	 * normalization, fitting, classification, and terminal serialization.
 	 */
 	#prepareLinesArray(
 		lines: readonly string[],
@@ -3224,7 +2916,7 @@ export class TUI extends Container {
 			widthEpoch,
 			imageProtocol,
 			line,
-			terminalContent: classification.isImage ? line : coalesceAdjacentSgr(line),
+			terminalContent: line,
 			asciiWidth: classification.asciiWidth,
 			isImage: classification.isImage,
 			hasOsc8: classification.isImage ? false : classification.hasOsc8,
@@ -3513,21 +3205,29 @@ export class TUI extends Container {
 
 	/**
 	 * Compose and paint a single fullscreen overlay frame on the alt buffer.
-	 * Cursor markers are stripped (the modal draws its own in-band caret and
-	 * keeps the hardware cursor hidden), and only the modal is composited over a
-	 * blank base — the transcript is never touched while the alt buffer is up.
+	 * The modal draws its own in-band caret and keeps the hardware cursor hidden;
+	 * only overlays are composited over a blank base, so the transcript is never
+	 * touched while the alt buffer is up.
 	 */
 	#renderAltFrame(width: number, height: number): void {
-		// oxlint-disable-next-line unicorn/no-new-array -- alt-frame length preallocation
-		const base: string[] = new Array(Math.max(0, height)).fill("");
-		let lines: string[];
+		const base = new RichText();
+		while (base.rows < height) base.br();
+		let frame: RichText;
 		do {
 			this.#imageBudget.beginPass(false, true);
-			lines = this.#compositeOverlaysIntoWindow(base, width, height);
+			frame = this.#compositeOverlaysIntoWindow(base, width, height);
 		} while (this.#imageBudget.endPass());
-		this.#extractCursorMarkers(lines);
+		const lines = this.#emitChangedRows(
+			frame,
+			this.#altEmittedFrame,
+			this.#altEmittedRows,
+			this.#altEmittedColorMode,
+		);
 		const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height);
 		this.#emitAltFrame(prepared, width, height, true);
+		this.#altEmittedFrame = this.#sliceFrame(frame, 0, frame.rows);
+		this.#altEmittedRows = lines;
+		this.#altEmittedColorMode = theme?.getColorMode() ?? "truecolor";
 	}
 
 	/**
@@ -3597,6 +3297,7 @@ export class TUI extends Container {
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
+		this.#frameProvider?.frameCommitted?.();
 		this.#altPreviousLines = prepared.lines;
 		this.#altPreparedRows = prepared.rows;
 		this.#debugPaint = { lines: prepared.lines, windowTop: 0, altScreen: true };

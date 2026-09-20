@@ -79,7 +79,7 @@ function makeGuestContext(): InteractiveModeContext {
 				return statusLineCount;
 			},
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			resetActiveTime: () => {},
 			markActivityStart: () => {},
 			markActivityEnd: () => {},
@@ -93,7 +93,7 @@ function makeGuestContext(): InteractiveModeContext {
 		showError: () => {},
 		updateEditorTopBorder: () => {},
 		updateEditorBorderColor: () => {},
-		eventController: { handleEvent: () => Promise.resolve(), takeDisplaceableComponents: () => [] },
+		eventController: { handleEvent: () => Promise.resolve() },
 		syncRunningSubagentBadge: () => {
 			const registry = getRunningSubagentBadgeRegistry(ctx.collabGuest, AgentRegistry.global());
 			const agentIds = getRunningSubagentBadgeAgentIds(registry);

@@ -1,5 +1,7 @@
-import type { MouseRoutable } from "../../mouse";
-import type { Component } from "../../tui";
+import { Ellipsis } from "@oh-my-pi/pi-natives";
+import { Clip, spaces } from "../../core/out";
+import { type Out, RichText } from "../../core/richtext";
+import { Style } from "../../core/style";
 import { padding, truncateToWidth, visibleWidth } from "../../utils";
 
 /** Alignment within space allocated by a layout component. */
@@ -29,19 +31,13 @@ export interface LayoutRect {
 	height: number;
 }
 
-/** Lazy layout child, evaluated only when the child is visible. */
-export type LayoutRenderer = (width: number, height: number | undefined) => readonly string[];
-
-/** A concrete component or a lazy renderer used as a layout child. */
-export type LayoutContent = Component | LayoutRenderer;
-
-/** Static text or a late-bound layout decoration, useful for theme-colored rules. */
-export type LayoutDecoration = string | (() => string);
-
-/** A component whose parent may assign a local row budget before rendering. */
-export interface HeightConstrainedComponent extends Component {
-	setHeight(height: number | undefined): void;
+export interface LayoutDecorationRun {
+	readonly text: string;
+	readonly style?: Style;
 }
+
+/** Plain or styled static text, optionally resolved late for mutable themes. */
+export type LayoutDecoration = string | LayoutDecorationRun | (() => LayoutDecorationRun);
 
 /** One fixed or growing constraint consumed by {@link allocateLayoutSpace}. */
 export interface LayoutAllocation {
@@ -68,9 +64,16 @@ export function layoutRatio(value: number | undefined, fallback: number): number
 	return Number.isFinite(resolved) ? Math.max(0, resolved) : 0;
 }
 
+/** Resolve a decoration once for measurement and painting. */
+export function resolveLayoutDecoration(decoration: LayoutDecoration | undefined): LayoutDecorationRun {
+	if (decoration === undefined) return { text: "" };
+	if (typeof decoration === "string") return { text: decoration };
+	return typeof decoration === "function" ? decoration() : decoration;
+}
+
 /** Resolve static or late-bound layout decoration text. */
 export function layoutDecorationText(decoration: LayoutDecoration | undefined): string {
-	return typeof decoration === "function" ? decoration() : (decoration ?? "");
+	return resolveLayoutDecoration(decoration).text;
 }
 
 function allocationMaximum(item: LayoutAllocation): number {
@@ -153,33 +156,6 @@ export function layoutAlignmentOffset(space: number, alignment: LayoutAlignment)
 	return alignment === "end" ? space : Math.floor(space / 2);
 }
 
-/** Narrow a concrete-or-lazy child to a concrete component. */
-export function isLayoutComponent(content: LayoutContent): content is Component {
-	return typeof content !== "function";
-}
-
-/** Narrow a layout child to a component accepting a row budget. */
-export function isHeightConstrainedComponent(content: LayoutContent): content is HeightConstrainedComponent {
-	return isLayoutComponent(content) && "setHeight" in content && typeof content.setHeight === "function";
-}
-
-/** Narrow a layout child to a mouse-routable component. */
-export function isLayoutMouseRoutable(content: LayoutContent): content is Component & MouseRoutable {
-	return isLayoutComponent(content) && "routeMouse" in content && typeof content.routeMouse === "function";
-}
-
-/** Return concrete children once each, preserving their first layout order. */
-export function uniqueLayoutComponents(contents: readonly LayoutContent[]): readonly Component[] {
-	const seen = new Set<Component>();
-	const components: Component[] = [];
-	for (const content of contents) {
-		if (!isLayoutComponent(content) || seen.has(content)) continue;
-		seen.add(content);
-		components.push(content);
-	}
-	return components;
-}
-
 /** Fit one ANSI-styled row to an exact terminal-cell width. */
 export function fitLayoutLine(line: string, width: number): string {
 	width = layoutSize(width);
@@ -190,13 +166,74 @@ export function fitLayoutLine(line: string, width: number): string {
 	return clipped + padding(Math.max(0, width - clippedWidth));
 }
 
-/** Render a concrete or lazy child with an optional local height budget. */
-export function renderLayoutContent(
-	content: LayoutContent,
-	width: number,
-	height: number | undefined,
-): readonly string[] {
-	if (typeof content === "function") return content(layoutSize(width), optionalLayoutSize(height));
-	if (isHeightConstrainedComponent(content)) content.setHeight(optionalLayoutSize(height));
-	return content.render(layoutSize(width));
+/** Paint one resolved layout decoration without ANSI serialization. */
+export function paintLayoutDecoration(out: Out, decoration: LayoutDecorationRun): void {
+	out.push(decoration.style ?? Style.NONE, decoration.text);
+}
+
+/**
+ * Reusable exact-width row fitter. It preserves run styles while matching
+ * legacy `truncateToWidth` + padding semantics without serializing ANSI.
+ */
+export class LayoutRowFitter {
+	readonly rich = new RichText();
+	private clip: Clip;
+	private configuredWidth: number;
+	private configuredEllipsis: Ellipsis;
+	private configuredPad: boolean;
+	private configuredFill: Style;
+
+	constructor(width: number, ellipsis: Ellipsis = Ellipsis.Unicode, pad = true, fill: Style = Style.NONE) {
+		this.configuredWidth = layoutSize(width);
+		this.configuredEllipsis = ellipsis;
+		this.configuredPad = pad;
+		this.configuredFill = fill;
+		this.clip = new Clip(this.rich, this.configuredWidth, ellipsis);
+	}
+
+	configure(
+		width: number,
+		ellipsis = this.configuredEllipsis,
+		pad = this.configuredPad,
+		fill = this.configuredFill,
+	): void {
+		const nextWidth = layoutSize(width);
+		if (
+			nextWidth === this.configuredWidth &&
+			ellipsis === this.configuredEllipsis &&
+			pad === this.configuredPad &&
+			fill === this.configuredFill
+		)
+			return;
+		this.configuredWidth = nextWidth;
+		this.configuredEllipsis = ellipsis;
+		this.configuredPad = pad;
+		this.configuredFill = fill;
+		this.clip = new Clip(this.rich, nextWidth, ellipsis);
+	}
+
+	paint(source: RichText, row: number, out: Out): void {
+		this.rich.clear();
+		source.replayRow(this.clip, row);
+		this.clip.br();
+		if (
+			(source.rowWidth[row] ?? 0) > this.configuredWidth &&
+			this.configuredEllipsis !== Ellipsis.Omit &&
+			this.rich.runs > 0
+		) {
+			this.rich.style[this.rich.runs - 1] = Style.NONE;
+		}
+		const start = out instanceof RichText ? out.openWidth : 0;
+		this.rich.replayRow(out, 0);
+		if (!this.configuredPad) return;
+		const used = out instanceof RichText ? out.openWidth - start : (this.rich.rowWidth[0] ?? 0);
+		if (used < this.configuredWidth) {
+			const fill = this.rich.style[this.rich.runs - 1] === Style.RESET ? Style.RESET : this.configuredFill;
+			out.push(fill, spaces(this.configuredWidth - used));
+		}
+	}
+
+	empty(out: Out): void {
+		if (this.configuredPad && this.configuredWidth > 0) out.push(this.configuredFill, spaces(this.configuredWidth));
+	}
 }

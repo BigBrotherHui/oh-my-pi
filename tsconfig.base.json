@@ -15,7 +15,7 @@
 		"resolveJsonModule": true,
 		"esModuleInterop": true,
 		"forceConsistentCasingInFileNames": true,
-		"types": ["bun", "assets"],
+		"types": ["bun", "assets", "babel-plugins"],
 		"typeRoots": ["./types", "./node_modules/@types"]
 	}
 }

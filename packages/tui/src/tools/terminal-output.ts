@@ -1,6 +1,22 @@
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Terminal as XtermTerminal } from "@oh-my-pi/pi-utils/vterm";
 import type * as XtermModule from "@oh-my-pi/pi-utils/vterm";
+import { parseAnsiRow } from "../core/ansi";
+import { emitRow } from "../core/emit";
+import { over } from "../core/out";
+import type { Out } from "../core/richtext";
+import { RichText } from "../core/richtext";
+import { Style } from "../core/style";
+
+/** Props for the generic terminal replay host. */
+export interface TerminalProps {
+	/** Sanitized ANSI terminal rows to replay. */
+	readonly rows: readonly string[];
+	/** Maximum terminal columns available to each row. */
+	readonly cols: number;
+	/** Base style layered beneath replayed terminal SGR runs. */
+	readonly style?: Style;
+}
 
 let xtermTerminalCtor: typeof XtermModule.Terminal | undefined;
 
@@ -83,26 +99,62 @@ function isSafeStyle(codes: readonly number[]): boolean {
 	return true;
 }
 
-/** Applies the active tool-output color while preserving safe styles from a virtual terminal row. */
-export function styleTerminalRow(row: string, baseForeground: string): string {
-	let output = baseForeground;
+function filterTerminalRow(row: string): { text: string; hasText: boolean } {
+	let filtered = "";
 	let offset = 0;
 	let hasText = false;
 	for (const match of row.matchAll(SGR)) {
 		const index = match.index ?? 0;
 		const text = sanitizeText(row.slice(offset, index));
-		output += text;
+		filtered += text;
 		hasText ||= text.length > 0;
-
 		const codes = match[1].split(";").map(Number);
-		if (match[1] === "0") output += `${RESET}${baseForeground}`;
-		else if (codes.length > 0 && codes.every(Number.isInteger) && isSafeStyle(codes)) output += match[0];
+		if (match[1] === "0" || (codes.length > 0 && codes.every(Number.isInteger) && isSafeStyle(codes))) {
+			filtered += match[0];
+		}
 		offset = index + match[0].length;
 	}
 	const text = sanitizeText(row.slice(offset));
-	output += text;
+	filtered += text;
 	hasText ||= text.length > 0;
-	return hasText ? `${output}${RESET}` : "";
+	return { text: filtered, hasText };
+}
+
+/** Paint a PTY replay row as runs, preserving only the supported safe SGR subset. */
+export function paintTerminalRow(out: Out, row: string, base: Style = Style.NONE): boolean {
+	const filtered = filterTerminalRow(row);
+	if (!filtered.hasText) return false;
+	const runs = new RichText();
+	parseAnsiRow(filtered.text, runs);
+	runs.br();
+	runs.replayRow(over(out, base), 0);
+	return true;
+}
+
+/** Paint PTY replay rows as preformatted run rows. */
+export function paintTerminalRows(out: Out, rows: readonly string[], base: Style = Style.NONE): void {
+	for (const row of rows) {
+		paintTerminalRow(out, row, base);
+		out.br();
+	}
+}
+
+function styleFromAnsiPrefix(prefix: string): Style {
+	if (!prefix) return Style.NONE;
+	const probe = new RichText();
+	parseAnsiRow(`${prefix}x`, probe);
+	for (let index = 0; index < probe.runs; index++) {
+		if (probe.text[index]?.includes("x")) return probe.style[index] ?? Style.NONE;
+	}
+	return Style.NONE;
+}
+
+/** Compatibility wrapper over {@link paintTerminalRow}. */
+export function styleTerminalRow(row: string, baseForeground: string): string {
+	const runs = new RichText();
+	if (!paintTerminalRow(runs, row, styleFromAnsiPrefix(baseForeground))) return "";
+	runs.br();
+	return emitRow(runs, 0, { mode: "truecolor" });
 }
 
 /** Reads terminal screen rows as sanitized text plus only the styles the TUI may replay. */

@@ -1,4 +1,9 @@
-import { createGradientHighlighter, type KeywordHighlighter } from "./gradient-highlight";
+import {
+	createGradientDecorator,
+	createGradientHighlighter,
+	type KeywordDecorator,
+	type KeywordHighlighter,
+} from "./gradient-highlight";
 import { magicKeywordRegex } from "./magic-keyword-boundary";
 import { keywordInProse } from "./markdown-prose";
 
@@ -18,9 +23,12 @@ export function containsWorkflow(text: string): boolean {
  * with a warm amber→green gradient (hue 30..150), visually distinct from
  * ultrathink's rainbow and orchestrate's teal→violet.
  */
-export const highlightWorkflow: KeywordHighlighter = createGradientHighlighter({
+const WORKFLOW_GRADIENT = {
 	probe: /workflowz/,
 	highlight: magicKeywordRegex("workflowz", "g"),
 	stops: 14,
-	hue: t => 30 + t * 120,
-});
+	hue: (t: number) => 30 + t * 120,
+};
+
+export const highlightWorkflow: KeywordHighlighter = createGradientHighlighter(WORKFLOW_GRADIENT);
+export const decorateWorkflow: KeywordDecorator = createGradientDecorator(WORKFLOW_GRADIENT);

@@ -7,7 +7,7 @@ import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
-import { StatusLineTestComponents } from "./helpers/status-line";
+import { renderStatus, StatusLineTestComponents, renderStatusLine } from "./helpers/status-line";
 
 let settingsState: SettingsTestState | undefined;
 const statusLines = new StatusLineTestComponents();
@@ -90,7 +90,7 @@ describe("status-line background-job badge", () => {
 		const component = makeComponent(running);
 		component.setRunningSubagents(["task-0"]);
 
-		const content = stripVTControlCharacters(component.getTopBorder(120).content);
+		const content = stripVTControlCharacters(renderStatusLine(component, 120));
 		expect(content).toContain(`${theme.icon.agents} 1`);
 		expect(content).toContain(`${theme.icon.job} 2`);
 	});
@@ -98,7 +98,7 @@ describe("status-line background-job badge", () => {
 	it("counts queued task jobs before their subagent is registered", () => {
 		const component = makeComponent([runningJob("task", 0)]);
 		component.setRunningSubagents([]);
-		const content = stripVTControlCharacters(component.getTopBorder(120).content);
+		const content = stripVTControlCharacters(renderStatusLine(component, 120));
 		expect(content).toContain(`${theme.icon.job} 1`);
 	});
 });

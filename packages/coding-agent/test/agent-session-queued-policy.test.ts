@@ -44,6 +44,7 @@ function extension(name: string, handler: (event: BeforeAgentStartEvent) => Prom
 		assistantThinkingRenderers: [],
 		fileWriteFallbackHandlers: [],
 		fileDeleteFallbackHandlers: [],
+		messageViews: new Map(),
 		messageRenderers: new Map(),
 		composerShapes: new Map(),
 		commands: new Map(),

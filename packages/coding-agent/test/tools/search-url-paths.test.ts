@@ -176,7 +176,7 @@ describe("search tools with external URL paths", () => {
 
 		const result = await tool!.execute("search-url-collapsed", {
 			pattern: "remote needle",
-			path: "https:/example.com/notes.txt",
+			path: "https://example.com/notes.txt",
 		});
 
 		expect(resultText(result)).toContain("remote needle");

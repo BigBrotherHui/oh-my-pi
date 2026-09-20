@@ -1,11 +1,13 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import {
 	buildLogCopyPayload,
-	DebugLogViewerComponent,
 	DebugLogViewerModel,
+	DebugLogViewerView,
 	LOAD_OLDER_LABEL,
 	SESSION_BOUNDARY_WARNING,
 } from "@oh-my-pi/pi-tui/apps/debug/log-viewer";
+import { dispatchKey, dispatchMouse, HostKeyEvent, HostMouseEvent } from "../src/host/input";
+import { mountForTest } from "../src/testing";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 
 beforeAll(async () => {
@@ -199,27 +201,37 @@ describe("DebugLogViewerModel", () => {
 		expect(model.isExpanded(1)).toBe(false);
 	});
 
-	it("selects and expands a clicked visible log row", () => {
-		let updates = 0;
-		const viewer = new DebugLogViewerComponent({
-			deps: { copyToClipboard: () => {} },
-			logs: ["alpha", "beta", "gamma"].join("\n"),
-			terminalRows: 12,
-			onExit: () => {},
-			onUpdate: () => {
-				updates++;
-			},
-		});
+	it("selects, expands, copies, and closes through the retained debug viewer", () => {
+		let clipboard = "";
+		let closed = 0;
+		const root = mountForTest(
+			() =>
+				DebugLogViewerView({
+					deps: {
+						copyToClipboard: text => {
+							clipboard = text;
+						},
+					},
+					logs: ["alpha", "beta", "gamma"].join("\n"),
+					onExit: () => {
+						closed++;
+					},
+				}),
+			{ width: 80, height: 14 },
+		);
+		try {
+			root.text();
+			dispatchMouse(root.root, new HostMouseEvent({ row: 5, col: 2, action: "down", button: 0 }));
+			expect(root.text().join("\n")).toContain("▾ beta");
 
-		viewer.render(80);
-		viewer.handleInput("\x1b[<0;2;6M");
+			dispatchKey(root.root, new HostKeyEvent("\x03"));
+			expect(clipboard).toBe("beta");
 
-		const rendered = viewer
-			.render(80)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(rendered).toContain("▾ beta");
-		expect(updates).toBe(1);
+			dispatchKey(root.root, new HostKeyEvent("\x1b"));
+			expect(closed).toBe(1);
+		} finally {
+			root.dispose();
+		}
 	});
 });
 

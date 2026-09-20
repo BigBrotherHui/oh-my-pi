@@ -16,7 +16,8 @@ import type {
 	TextContent,
 	TSchema,
 } from "@oh-my-pi/pi-ai";
-import { isBuiltinComposerStyle, type KeyId } from "@oh-my-pi/pi-tui";
+import { isBuiltinComposerStyle } from "@oh-my-pi/pi-tui/components/composer/registry";
+import type { KeyId } from "@oh-my-pi/pi-tui/keys";
 import { hasFsCode, isEacces, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { type ExtensionModule, extensionModuleCapability } from "../../capability/extension-module";
 import { type Hook, hookCapability } from "../../capability/hook";
@@ -48,6 +49,7 @@ import type {
 	ExtensionRuntime as IExtensionRuntime,
 	LoadExtensionsResult,
 	MessageRenderer,
+	MessageView,
 	PreparedExtension,
 	ProviderConfig,
 	RegisteredCommand,
@@ -255,6 +257,10 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		}
 	}
 
+	registerMessageView<T>(customType: string, view: MessageView<T>): void {
+		this.extension.messageViews.set(customType, view as MessageView);
+	}
+
 	registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
 		this.extension.messageRenderers.set(customType, renderer as MessageRenderer);
 	}
@@ -370,6 +376,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		assistantThinkingRenderers: [],
 		fileWriteFallbackHandlers: [],
 		fileDeleteFallbackHandlers: [],
+		messageViews: new Map(),
 		messageRenderers: new Map(),
 		composerShapes: new Map(),
 		commands: new Map(),

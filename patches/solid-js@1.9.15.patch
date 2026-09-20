@@ -1,0 +1,96 @@
+diff --git a/package.json b/package.json
+index baf27f78ae4d1653f2656f6fb1dc37330dc456a1..02693bbdf146cc2c0b7cb85e9baa4cceb9489049 100644
+--- a/package.json
++++ b/package.json
+@@ -45,9 +45,14 @@
+   "exports": {
+     ".": {
+       "worker": {
++        "development": {
++          "types": "./types/index.d.ts",
++          "import": "./dist/dev.js",
++          "require": "./dist/dev.cjs"
++        },
+         "types": "./types/index.d.ts",
+-        "import": "./dist/server.js",
+-        "require": "./dist/server.cjs"
++        "import": "./dist/solid.js",
++        "require": "./dist/solid.cjs"
+       },
+       "browser": {
+         "development": {
+@@ -60,14 +65,24 @@
+         "require": "./dist/solid.cjs"
+       },
+       "deno": {
++        "development": {
++          "types": "./types/index.d.ts",
++          "import": "./dist/dev.js",
++          "require": "./dist/dev.cjs"
++        },
+         "types": "./types/index.d.ts",
+-        "import": "./dist/server.js",
+-        "require": "./dist/server.cjs"
++        "import": "./dist/solid.js",
++        "require": "./dist/solid.cjs"
+       },
+       "node": {
++        "development": {
++          "types": "./types/index.d.ts",
++          "import": "./dist/dev.js",
++          "require": "./dist/dev.cjs"
++        },
+         "types": "./types/index.d.ts",
+-        "import": "./dist/server.js",
+-        "require": "./dist/server.cjs"
++        "import": "./dist/solid.js",
++        "require": "./dist/solid.cjs"
+       },
+       "development": {
+         "types": "./types/index.d.ts",
+@@ -90,9 +105,14 @@
+     },
+     "./store": {
+       "worker": {
++        "development": {
++          "types": "./store/types/index.d.ts",
++          "import": "./store/dist/dev.js",
++          "require": "./store/dist/dev.cjs"
++        },
+         "types": "./store/types/index.d.ts",
+-        "import": "./store/dist/server.js",
+-        "require": "./store/dist/server.cjs"
++        "import": "./store/dist/store.js",
++        "require": "./store/dist/store.cjs"
+       },
+       "browser": {
+         "development": {
+@@ -105,14 +125,24 @@
+         "require": "./store/dist/store.cjs"
+       },
+       "deno": {
++        "development": {
++          "types": "./store/types/index.d.ts",
++          "import": "./store/dist/dev.js",
++          "require": "./store/dist/dev.cjs"
++        },
+         "types": "./store/types/index.d.ts",
+-        "import": "./store/dist/server.js",
+-        "require": "./store/dist/server.cjs"
++        "import": "./store/dist/store.js",
++        "require": "./store/dist/store.cjs"
+       },
+       "node": {
++        "development": {
++          "types": "./store/types/index.d.ts",
++          "import": "./store/dist/dev.js",
++          "require": "./store/dist/dev.cjs"
++        },
+         "types": "./store/types/index.d.ts",
+-        "import": "./store/dist/server.js",
+-        "require": "./store/dist/server.cjs"
++        "import": "./store/dist/store.js",
++        "require": "./store/dist/store.cjs"
+       },
+       "development": {
+         "types": "./store/types/index.d.ts",

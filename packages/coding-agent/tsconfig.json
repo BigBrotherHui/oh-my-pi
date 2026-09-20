@@ -3,6 +3,12 @@
 	"include": [
 		"src",
 		"test",
-		"scripts"
-	]
+		"scripts",
+		"bench/thinking-retention.bench.ts",
+		"bench/transcript-compose.bench.ts"
+	],
+	"compilerOptions": {
+		"jsx": "preserve",
+		"jsxImportSource": "@oh-my-pi/pi-tui"
+	}
 }

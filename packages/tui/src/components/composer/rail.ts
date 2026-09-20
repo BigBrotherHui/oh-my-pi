@@ -1,13 +1,37 @@
-/**
- * Filled composer with one strong accent rail on the left. The asymmetric
- * silhouette separates input from transcript without enclosing it in a box.
- */
-import { padding } from "../../utils";
-import type { ComposerRowContext, ComposerStyle } from "./types";
+import { spaces } from "../../core/out";
+import type { Out } from "../../core/richtext";
+import {
+	type ComposerRowContext,
+	type ComposerStyle,
+	paintComposerContent,
+	paintComposerStyled,
+	paintComposerSurface,
+} from "./types";
 
 const ACCENT_RAIL = "▎";
 
-/** Filled composer surface anchored by a single left accent rail. */
+export function paintRailRow(out: Out, ctx: ComposerRowContext): void {
+	paintComposerStyled(out, ACCENT_RAIL, ctx.accentStyle);
+	if (ctx.paddingX > 0) paintComposerSurface(out, spaces(ctx.paddingX), ctx);
+	if (ctx.gutterStyle)
+		out.push(ctx.surfaceStyle ? ctx.gutterStyle.over(ctx.surfaceStyle) : ctx.gutterStyle, ctx.gutter);
+	else paintComposerSurface(out, ctx.gutter, ctx);
+	paintComposerContent(out, ctx, true);
+	if (ctx.imeSafeCursorTail) {
+		out.br();
+		return;
+	}
+	paintComposerSurface(out, ctx.pad, ctx);
+	const rightFillCells = Math.max(0, ctx.paddingX + 1 - ctx.cursorOverflow);
+	if (ctx.scrollbarThumb && rightFillCells > 0) {
+		if (rightFillCells > 1) paintComposerSurface(out, spaces(rightFillCells - 1), ctx);
+		paintComposerStyled(out, "█", ctx.accentStyle);
+	} else if (rightFillCells > 0) {
+		paintComposerSurface(out, spaces(rightFillCells), ctx);
+	}
+	out.br();
+}
+
 export const railComposerStyle: ComposerStyle = {
 	id: "rail",
 	filledSurface: true,
@@ -17,33 +41,17 @@ export const railComposerStyle: ComposerStyle = {
 	bottomBar: "full",
 	bottomBarGap: true,
 	defaultPromptGutter: undefined,
-
-	defaultPaddingX(): number {
+	defaultPaddingX() {
 		return 1;
 	},
-
-	sideChromeWidth(paddingX: number): number {
+	sideChromeWidth(paddingX) {
 		return paddingX + 1;
 	},
-
-	renderTop(): undefined {
-		return undefined;
+	paintTop() {
+		return false;
 	},
-
-	renderRow(ctx: ComposerRowContext): string[] {
-		const rail = ctx.accentColor(ACCENT_RAIL);
-		const leftFill = padding(ctx.paddingX) + ctx.gutter + ctx.text;
-		if (ctx.imeSafeCursorTail) return [rail + ctx.surfaceColor(leftFill)];
-
-		const rightFillCells = Math.max(0, ctx.paddingX + 1 - ctx.cursorOverflow);
-		if (ctx.scrollbarThumb && rightFillCells > 0) {
-			const interior = leftFill + ctx.pad + padding(rightFillCells - 1);
-			return [rail + ctx.surfaceColor(interior) + ctx.accentColor("█")];
-		}
-		return [rail + ctx.surfaceColor(leftFill + ctx.pad + padding(rightFillCells))];
-	},
-
-	renderBottom(): undefined {
-		return undefined;
+	paintRow: paintRailRow,
+	paintBottom() {
+		return false;
 	},
 };

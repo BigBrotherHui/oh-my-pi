@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import { RichText, type TerminalFramePlan, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
+import { parseAnsiRows } from "../src/core/ansi";
 import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui/terminal";
 
 class CaptureTerminal implements Terminal {
@@ -57,18 +58,16 @@ class CaptureTerminal implements Terminal {
 	onAppearanceChange(): void {}
 }
 
-class RawLinesComponent implements Component {
-	#lines: string[];
+class RawLinesProvider implements TerminalFrameProvider {
+	constructor(private readonly lines: readonly string[]) {}
 
-	constructor(lines: string[]) {
-		this.#lines = lines;
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
+		const frame = new RichText();
+		parseAnsiRows(this.lines, frame);
+		return { viewport: frame };
 	}
 
-	invalidate(): void {}
-
-	render(): string[] {
-		return this.#lines;
-	}
+	acknowledgeHistory(_id: number): void {}
 }
 
 async function settle(): Promise<void> {
@@ -81,7 +80,7 @@ describe("issue #2045: renderer bounds oversized rows", () => {
 		const tui = new TUI(term);
 		const line = `${"\x1b[31m".repeat(20_000)}payload`;
 
-		tui.addChild(new RawLinesComponent([line]));
+		tui.setFrameProvider(new RawLinesProvider([line]));
 		try {
 			tui.start();
 			await settle();
@@ -99,7 +98,7 @@ describe("issue #2045: renderer bounds oversized rows", () => {
 		const tui = new TUI(term);
 		const line = `a${"\u0301".repeat(4096)}bc`;
 
-		tui.addChild(new RawLinesComponent([line]));
+		tui.setFrameProvider(new RawLinesProvider([line]));
 		try {
 			tui.start();
 			await settle();
@@ -116,7 +115,7 @@ describe("issue #2045: renderer bounds oversized rows", () => {
 		const tui = new TUI(term);
 		const line = `\x1b]8;;https://example.com/${"a".repeat(70_000)}\x07link-label\x1b]8;;\x07`;
 
-		tui.addChild(new RawLinesComponent([line]));
+		tui.setFrameProvider(new RawLinesProvider([line]));
 		try {
 			tui.start();
 			await settle();
@@ -135,7 +134,7 @@ describe("issue #2045: renderer bounds oversized rows", () => {
 		const visibleText = "H".repeat(70);
 		const line = `\x1b]66;s=1;${visibleText}\x1b\\${"\x1b[31m".repeat(20_000)}`;
 
-		tui.addChild(new RawLinesComponent([line]));
+		tui.setFrameProvider(new RawLinesProvider([line]));
 		try {
 			tui.start();
 			await settle();

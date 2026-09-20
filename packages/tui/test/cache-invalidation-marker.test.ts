@@ -1,10 +1,8 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { Usage } from "@oh-my-pi/pi-ai/types";
-import {
-	CacheInvalidationMarkerComponent,
-	detectCacheInvalidation,
-} from "@oh-my-pi/pi-tui/chat/cache-invalidation-marker";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { CacheInvalidationMarkerView, detectCacheInvalidation } from "@oh-my-pi/pi-tui/chat/cache-invalidation-marker";
+import { mountForTest } from "../src/testing";
+import { loadThemeSync } from "../src/theme/loader";
 
 function usage(parts: { input?: number; cacheRead?: number; cacheWrite?: number; output?: number }): Usage {
 	const input = parts.input ?? 0;
@@ -75,20 +73,23 @@ describe("detectCacheInvalidation", () => {
 	});
 });
 
-describe("CacheInvalidationMarkerComponent", () => {
-	beforeAll(async () => {
-		// render() reads the global theme singleton (icons, rule glyph, colors).
-		await initTheme();
+function renderMarker(width: number): readonly string[] {
+	const root = mountForTest(() => CacheInvalidationMarkerView({ info: { reprocessedTokens: 50_999 } }), {
+		width,
+		theme: loadThemeSync("dark"),
 	});
+	try {
+		return root.text();
+	} finally {
+		root.dispose();
+	}
+}
 
-	it("renders a slim, left-aligned, partial-width divider padded by blank lines", () => {
-		const lines = new CacheInvalidationMarkerComponent({ reprocessedTokens: 50_999 }).render(80);
-		expect(lines).toHaveLength(3);
-		expect(lines[0]).toBe("");
-		expect(lines[2]).toBe("");
-		// The divider spans only a short rule + label — well under the full width.
-		const dividerWidth = Bun.stringWidth(lines[1]);
-		expect(dividerWidth).toBeGreaterThan(0);
-		expect(dividerWidth).toBeLessThan(80);
+describe("CacheInvalidationMarkerView", () => {
+	it("restores the padded, icon-bearing partial divider at wide and narrow widths", () => {
+		const label = "⊘ cache miss · 51K tokens";
+		expect(renderMarker(80)).toEqual(["", `────────── ${label}`, ""]);
+		// Too narrow to frame: the historic marker preserved its whole bare label.
+		expect(renderMarker(10)).toEqual(["", label, ""]);
 	});
 });

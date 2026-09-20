@@ -13,7 +13,9 @@
  */
 import { complete, type Message } from "@oh-my-pi/pi-ai";
 import type { HookAPI, SessionEntry } from "@oh-my-pi/pi-coding-agent";
-import { BorderedLoader, convertToLlm, serializeConversation } from "@oh-my-pi/pi-coding-agent";
+import { convertToLlm, logger, serializeConversation } from "@oh-my-pi/pi-coding-agent";
+import { BorderedLoaderView } from "@oh-my-pi/pi-tui/overlays/bordered-loader";
+import { onCleanup } from "@oh-my-pi/pi-tui/reactive";
 
 const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for a new thread, generate a focused prompt that:
 
@@ -74,9 +76,12 @@ export default function (pi: HookAPI) {
 			const currentSessionFile = ctx.sessionManager.getSessionFile();
 
 			// Generate the handoff prompt with loader UI
-			const result = await ctx.ui.custom<string | null>((tui, theme, done) => {
-				const loader = new BorderedLoader(tui, theme, `Generating handoff prompt...`);
-				loader.onAbort = () => done(null);
+			const result = await ctx.ui.custom<string | null>((_tui, _theme, _keybindings, done) => {
+				const request = new AbortController();
+				const cancel = () => {
+					request.abort();
+					done(null);
+				};
 
 				const doGenerate = async () => {
 					const apiKey = await ctx.modelRegistry.getApiKey(ctx.model!);
@@ -95,7 +100,7 @@ export default function (pi: HookAPI) {
 					const response = await complete(
 						ctx.model!,
 						{ systemPrompt: [SYSTEM_PROMPT], messages: [userMessage] },
-						{ apiKey, signal: loader.signal },
+						{ apiKey, signal: request.signal },
 					);
 
 					if (response.stopReason === "aborted") {
@@ -111,11 +116,14 @@ export default function (pi: HookAPI) {
 				doGenerate()
 					.then(done)
 					.catch(err => {
-						console.error("Handoff generation failed:", err);
+						logger.error("Handoff generation failed", { error: String(err) });
 						done(null);
 					});
 
-				return loader;
+				return () => {
+					onCleanup(() => request.abort());
+					return BorderedLoaderView({ message: "Generating handoff prompt...", onAbort: cancel });
+				};
 			});
 
 			if (result === null) {

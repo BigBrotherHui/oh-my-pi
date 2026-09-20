@@ -1,8 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentToolContext, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { TUI } from "@oh-my-pi/pi-tui";
 import type { ExtensionUIDialogOptions, ExtensionUISelectItem } from "../src/extensibility/extensions";
-import { HookSelectorComponent } from "@oh-my-pi/pi-tui/overlays/hook-selector";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "../src/tools";
 import { AskTool } from "../src/tools/ask";
@@ -294,23 +292,5 @@ describe("AskTool timeout", () => {
 		expect(result?.details?.results?.[1]?.selectedOptions).toEqual(["OAuth"]);
 		expect(result?.details?.results?.[1]?.timedOut).toBeUndefined();
 		expect(abort).not.toHaveBeenCalled();
-	});
-
-	it("notifies callers when the selector countdown starts and resets", () => {
-		vi.useFakeTimers();
-		const onTimeoutStart = vi.fn();
-		const onTimeoutReset = vi.fn();
-		const selector = new HookSelectorComponent("Pick one", ["SQLite", "Postgres"], vi.fn(), vi.fn(), {
-			timeout: 10,
-			tui: { requestRender: vi.fn() } as unknown as TUI,
-			onTimeoutStart,
-			onTimeoutReset,
-		});
-
-		selector.handleInput("j");
-
-		expect(onTimeoutStart).toHaveBeenCalledTimes(1);
-		expect(onTimeoutReset).toHaveBeenCalledTimes(1);
-		selector.dispose();
 	});
 });

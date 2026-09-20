@@ -5,15 +5,12 @@ import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
 import * as bashExecutor from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
-import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
 import { ArtifactManager } from "@oh-my-pi/pi-coding-agent/session/artifacts";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
 import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
-import { hubToolRenderer } from "@oh-my-pi/pi-tui/tools/hub";
-import type { CoordinationDetails, JobSnapshot } from "@oh-my-pi/pi-tui/tools/hub";
 import { type OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
@@ -233,87 +230,9 @@ describe("capture failure across background and cancellation boundaries", () => 
 			expect(text).toContain("successful-command [bash] — completed");
 			expect(text).toContain("failed-command [bash] — failed");
 			expect(text).toContain("Command exited with code 7");
-			const uiTheme = await getThemeByName("dark");
-			if (!uiTheme) throw new Error("Expected dark theme");
-			const persisted = JSON.parse(JSON.stringify(snapshot)) as typeof snapshot;
-			for (const result of [snapshot, persisted]) {
-				for (const expanded of [false, true]) {
-					const rendered = hubToolRenderer
-						.renderResult(result, { expanded, isPartial: false }, uiTheme)
-						.render(180)
-						.map(line => Bun.stripANSI(line))
-						.join("\n");
-					expect(rendered.match(/artifact open failed/g)).toHaveLength(1);
-					expect(rendered.match(/artifact write failed/g)).toHaveLength(1);
-				}
-			}
 		} finally {
 			await manager.dispose();
 			await store.close();
-		}
-	});
-
-	it("retains each legacy Hub capture warning once when rebuilding short and truncated rows", async () => {
-		const jobs: JobSnapshot[] = [
-			{
-				id: "legacy-short",
-				type: "bash",
-				status: "completed",
-				label: "short command",
-				durationMs: 1,
-				artifactError: "open",
-				resultText: "short preview" + formatOutputNotice({ artifactError: "open" }),
-			},
-			{
-				id: "legacy-long",
-				type: "bash",
-				status: "failed",
-				label: "long command",
-				durationMs: 1,
-				artifactError: "write",
-				errorText: "long preview\n".repeat(20) + formatOutputNotice({ artifactError: "write" }),
-			},
-		];
-		const details = JSON.parse(
-			JSON.stringify({ op: "jobs", meta: { artifactError: "open" }, jobs }),
-		) as CoordinationDetails;
-		const uiTheme = await getThemeByName("dark");
-		if (!uiTheme) throw new Error("Expected dark theme");
-		for (const expanded of [false, true]) {
-			const rendered = hubToolRenderer
-				.renderResult({ content: [], details }, { expanded, isPartial: false }, uiTheme)
-				.render(180)
-				.map(line => Bun.stripANSI(line))
-				.join("\n");
-			expect(rendered.match(/artifact open failed/g)).toHaveLength(1);
-			expect(rendered.match(/artifact write failed/g)).toHaveLength(1);
-		}
-	});
-
-	it("retains a historical Hub aggregate warning when no persisted row identifies the failed capture", async () => {
-		const details: CoordinationDetails = {
-			op: "jobs",
-			meta: { artifactError: "end" },
-			jobs: [
-				{
-					id: "legacy-root",
-					type: "bash",
-					status: "completed",
-					label: "legacy command",
-					durationMs: 1,
-					resultText: "long preview\n".repeat(20) + formatOutputNotice({ artifactError: "end" }),
-				},
-			],
-		};
-		const uiTheme = await getThemeByName("dark");
-		if (!uiTheme) throw new Error("Expected dark theme");
-		for (const expanded of [false, true]) {
-			const rendered = hubToolRenderer
-				.renderResult({ content: [], details }, { expanded, isPartial: false }, uiTheme)
-				.render(180)
-				.map(line => Bun.stripANSI(line))
-				.join("\n");
-			expect(rendered.match(/artifact end failed/g)).toHaveLength(1);
 		}
 	});
 

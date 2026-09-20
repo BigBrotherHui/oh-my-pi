@@ -2,8 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as settingsModule from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import { renderAsciiBar } from "@oh-my-pi/pi-tui/chrome/format";
+import { rgb } from "@oh-my-pi/pi-tui/core/style";
+import { cellGrid } from "../../tui/test/cell-grid";
 
 const testTheme = {
+	fgColor() {
+		return rgb(0, 255, 255);
+	},
 	fg(color: Parameters<Theme["fg"]>[0], text: string): string {
 		const codes = {
 			accent: "\x1b[36m",
@@ -50,7 +55,8 @@ describe("renderAsciiBar", () => {
 
 		const rendered = renderAsciiBar(undefined, 4, testTheme);
 
-		expect(rendered).toContain("\x1b[36m");
+		const cells = cellGrid([rendered], 6)[0]!;
+		expect(cells.filter(cell => cell.ch === "·").every(cell => cell.fg !== null)).toBe(true);
 		expect(Bun.stripANSI(rendered)).toBe("[····]");
 	});
 });

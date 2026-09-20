@@ -31,7 +31,7 @@ import {
 } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import { type AuthCredential, SqliteAuthCredentialStore, type TSchema } from "@oh-my-pi/pi-ai";
 import { piEscapeRegexLiteral, piJoinPath } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
-import { getKeybindings, type Keybinding, Text } from "@oh-my-pi/pi-tui";
+import { getKeybindings, type Keybinding } from "@oh-my-pi/pi-tui";
 import {
 	getAgentDbPath,
 	getAgentDir,
@@ -97,11 +97,6 @@ type LegacyRegistryToolName = LegacyCodingToolName | "grep" | "glob";
 type LegacyBuiltinToolDefinition = ToolDefinition & { [LEGACY_BUILTIN_TOOL_MARKER]: true };
 
 type LegacySettingOverrides = Partial<Record<SettingPath, unknown>>;
-
-interface LegacyThemeLike {
-	fg(color: string, text: string): string;
-	bold(text: string): string;
-}
 
 export type BashSpawnContext = ToolShellEnvironmentContext;
 
@@ -302,35 +297,6 @@ function booleanField(value: unknown, key: string): boolean | undefined {
 	return typeof field === "boolean" ? field : undefined;
 }
 
-function isLegacyThemeLike(value: unknown): value is LegacyThemeLike {
-	if (value === null || typeof value !== "object") return false;
-	return typeof Reflect.get(value, "fg") === "function" && typeof Reflect.get(value, "bold") === "function";
-}
-
-function renderTheme(second: unknown, third: unknown): LegacyThemeLike | undefined {
-	if (isLegacyThemeLike(second)) return second;
-	if (isLegacyThemeLike(third)) return third;
-	return undefined;
-}
-
-function themedTitle(theme: LegacyThemeLike | undefined, title: string): string {
-	return theme ? theme.fg("toolTitle", theme.bold(title)) : title;
-}
-
-function themedMuted(theme: LegacyThemeLike | undefined, text: string): string {
-	return theme ? theme.fg("toolOutput", text) : text;
-}
-
-function textResult(result: AgentToolResult<unknown> | undefined): string {
-	return result?.content.find(block => block.type === "text")?.text ?? "";
-}
-
-function legacyRenderResult(result: AgentToolResult<unknown>, _options: unknown, themeArg: unknown): Text {
-	const theme = renderTheme(themeArg, undefined);
-	const output = textResult(result);
-	return new Text(output ? `\n${themedMuted(theme, output)}` : "", 0, 0);
-}
-
 function lineRangePath(readPath: string, offset: number | undefined, limit: number | undefined): string {
 	if (offset === undefined && limit === undefined) return readPath;
 	const start = Math.max(1, Math.floor(offset ?? 1));
@@ -471,12 +437,6 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 		description: tool.description,
 		parameters: legacyReadSchema,
 		approval: "read",
-		renderCall: (params, options, themeArg) => {
-			const theme = renderTheme(options, themeArg);
-			const readPath = stringField(params, "path") ?? "";
-			return new Text(`${themedTitle(theme, "read")} ${themedMuted(theme, readPath)}`, 0, 0);
-		},
-		renderResult: legacyRenderResult,
 		execute: (toolCallId, params, signal, onUpdate) => {
 			const readPath = stringField(params, "path") ?? "";
 			const pathWithRange = lineRangePath(readPath, numberField(params, "offset"), numberField(params, "limit"));
@@ -517,12 +477,6 @@ export function createBashToolDefinition(cwd: string, options?: BashToolOptions)
 		parameters: legacyBashSchema,
 		approval: "exec",
 		...(shellEnv ? { shellEnv } : {}),
-		renderCall: (params, optionsArg, themeArg) => {
-			const theme = renderTheme(optionsArg, themeArg);
-			const command = stringField(params, "command") ?? "";
-			return new Text(`${themedTitle(theme, "bash")} ${themedMuted(theme, command)}`, 0, 0);
-		},
-		renderResult: legacyRenderResult,
 		execute: (toolCallId, params, signal, onUpdate) => {
 			const rawCommand = stringField(params, "command") ?? "";
 			const command = options?.commandPrefix ? `${options.commandPrefix}\n${rawCommand}` : rawCommand;
@@ -574,13 +528,6 @@ export function createGrepToolDefinition(cwd: string, options?: GrepToolOptions)
 		description: "Search file contents for a pattern.",
 		parameters: legacyGrepSchema,
 		approval: "read",
-		renderCall: (params, optionsArg, themeArg) => {
-			const theme = renderTheme(optionsArg, themeArg);
-			const pattern = stringField(params, "pattern") ?? "";
-			const searchPath = stringField(params, "path") ?? ".";
-			return new Text(`${themedTitle(theme, "grep")} ${themedMuted(theme, `/${pattern}/ in ${searchPath}`)}`, 0, 0);
-		},
-		renderResult: legacyRenderResult,
 		execute: (toolCallId, params, signal, onUpdate) => {
 			const rawPattern = stringField(params, "pattern") ?? "";
 			const pattern = booleanField(params, "literal") ? piEscapeRegexLiteral(rawPattern) : rawPattern;
@@ -624,13 +571,6 @@ export function createFindToolDefinition(cwd: string, options?: FindToolOptions)
 		description: "Find files by glob pattern.",
 		parameters: legacyFindSchema,
 		approval: "read",
-		renderCall: (params, optionsArg, themeArg) => {
-			const theme = renderTheme(optionsArg, themeArg);
-			const pattern = stringField(params, "pattern") ?? "";
-			const searchPath = stringField(params, "path") ?? ".";
-			return new Text(`${themedTitle(theme, "find")} ${themedMuted(theme, `${pattern} in ${searchPath}`)}`, 0, 0);
-		},
-		renderResult: legacyRenderResult,
 		execute: async (toolCallId, params, signal, onUpdate) => {
 			const pattern = stringField(params, "pattern") ?? "*";
 			const searchPath = stringField(params, "path") ?? ".";
@@ -679,11 +619,6 @@ export function createLsToolDefinition(cwd: string, options?: LsToolOptions): To
 		description: "List directory entries.",
 		parameters: legacyLsSchema,
 		approval: "read",
-		renderCall: (params, optionsArg, themeArg) => {
-			const theme = renderTheme(optionsArg, themeArg);
-			return new Text(`${themedTitle(theme, "ls")} ${themedMuted(theme, stringField(params, "path") ?? ".")}`, 0, 0);
-		},
-		renderResult: legacyRenderResult,
 		execute: async (_toolCallId, params, _signal, _onUpdate) => {
 			const rawPath = stringField(params, "path") ?? ".";
 			const limit = normalizeLegacyLimit(numberField(params, "limit"), 500);
@@ -1591,6 +1526,7 @@ export { CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils";
 export { parseArgs } from "../cli/args";
 
 export * from "../index";
+export { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 export { formatBytes as formatSize } from "@oh-my-pi/pi-tui/render/render-utils";
 export { copyToClipboard } from "../utils/clipboard";
 export { Type } from "./legacy-typebox";

@@ -1,3 +1,4 @@
+import { renderSnapshot } from "@oh-my-pi/pi-tui/snapshot";
 import { renderComposerShapePreview } from "@oh-my-pi/pi-tui/overlays/composer-shape-preview";
 import { getComposerShapeOptions } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
@@ -22,7 +23,7 @@ function renderComposer(shape: string, width: number): readonly string[] {
 	});
 	status.setPlanModeStatus({ enabled: true, paused: false });
 	try {
-		return renderComposerShapePreview(shape, width, status);
+		return renderSnapshot(() => renderComposerShapePreview(shape, status), { columns: width });
 	} finally {
 		status.dispose();
 	}

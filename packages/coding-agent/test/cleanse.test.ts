@@ -4,8 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as cleanseAgent from "@oh-my-pi/pi-coding-agent/cleanse/agent";
 import * as cleanseCheckers from "@oh-my-pi/pi-coding-agent/cleanse/checkers";
-import { runCleanseCommand } from "@oh-my-pi/pi-coding-agent/cleanse/index";
+import { runCleanse } from "@oh-my-pi/pi-coding-agent/cleanse/index";
 import { runCleanseLoop } from "@oh-my-pi/pi-coding-agent/cleanse/loop";
+import { createCleanseStatusBoard } from "@oh-my-pi/pi-tui/apps/cleanse-board";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { type CleanseParserKind, parseCleanseDiagnostics } from "@oh-my-pi/pi-coding-agent/cleanse/parsers";
 import type {
 	CleanseAgentOutcome,
@@ -139,13 +141,17 @@ describe("cleanse progress", () => {
 	});
 
 	test("renders a live repair board and permanent outcome lines on TTY output", async () => {
+		const terminal = new VirtualTerminal(100, 24);
+		const terminalOutput = {
+			isTTY: true,
+			terminal,
+			write(text: string) {
+				terminal.write(text);
+			},
+		};
+		const board = createCleanseStatusBoard(terminalOutput, terminalOutput);
 		const output: string[] = [];
-		const isTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-		Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-		vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
-			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
-			return true;
-		});
+		const errors: string[] = [];
 
 		const initial = report([...fileDiagnostics("a.rs", 1), ...fileDiagnostics("b.rs", 1)]);
 		const clean = report([]);
@@ -206,25 +212,32 @@ describe("cleanse progress", () => {
 			return runtime;
 		});
 
-		try {
-			const result = await runCleanseCommand({ maxAgents: 2, all: true });
+		const result = await runCleanse(
+			{ maxAgents: 2, all: true },
+			{
+				board,
+				print: text => output.push(text),
+				printError: text => errors.push(text),
+			},
+			new AbortController().signal,
+		);
 
-			expect(result.status).toBe("clean");
-			// Strip ANSI control sequences; the board's repaint framing is not the contract.
-			const text = output.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-			// Live repair header painted while workers stream in.
-			expect(text).toContain("Repairing [");
-			// Checker results and agent outcomes promoted to permanent lines.
-			expect(text).toMatch(/●.*mock checker.*2 issues/);
-			expect(text).toMatch(/✓.*mock checker.*clean/);
-			expect(text).toMatch(/✓.*CleanseA1/);
-			expect(text).toMatch(/✓.*CleanseA2/);
-			expect(text).toContain("a.rs");
-			expect(text).toContain("b.rs");
-		} finally {
-			if (isTtyDescriptor) Object.defineProperty(process.stdout, "isTTY", isTtyDescriptor);
-			else Reflect.deleteProperty(process.stdout, "isTTY");
-		}
+		expect(result.status).toBe("clean");
+		expect(board.interactive).toBe(true);
+		await terminal.waitForRender(() => terminal.getScrollBuffer().join("\n").includes("CleanseA2"));
+
+		// The retained board must promote checker verdicts and worker completions
+		// into the actual TTY buffer before root teardown.
+		const text = terminal.getScrollBuffer().join("\n");
+		expect(text).toContain("mock checker");
+		expect(text).toContain("2 issues");
+		expect(text).toContain("clean");
+		expect(text).toContain("CleanseA1");
+		expect(text).toContain("CleanseA2");
+		expect(text).toContain("a.rs");
+		expect(text).toContain("b.rs");
+		expect(output).toEqual(["Clean: all detected diagnostics are resolved."]);
+		expect(errors).toEqual([]);
 	});
 
 	test("stays silent for non-TTY output", () => {

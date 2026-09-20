@@ -1,4 +1,9 @@
-import { createGradientHighlighter, type KeywordHighlighter } from "./gradient-highlight";
+import {
+	createGradientDecorator,
+	createGradientHighlighter,
+	type KeywordDecorator,
+	type KeywordHighlighter,
+} from "./gradient-highlight";
 import { magicKeywordRegex } from "./magic-keyword-boundary";
 import { keywordInProse } from "./markdown-prose";
 
@@ -18,9 +23,12 @@ export function containsUltrathink(text: string): boolean {
  * Sweeps red→violet (hue 0..330), stopping short of the wrap back to red so the
  * gradient resolves smoothly regardless of casing or match length.
  */
-export const highlightUltrathink: KeywordHighlighter = createGradientHighlighter({
+const ULTRATHINK_GRADIENT = {
 	probe: /ultrathink/,
 	highlight: magicKeywordRegex("ultrathink", "g"),
 	stops: 14,
-	hue: t => t * 330,
-});
+	hue: (t: number) => t * 330,
+};
+
+export const highlightUltrathink: KeywordHighlighter = createGradientHighlighter(ULTRATHINK_GRADIENT);
+export const decorateUltrathink: KeywordDecorator = createGradientDecorator(ULTRATHINK_GRADIENT);

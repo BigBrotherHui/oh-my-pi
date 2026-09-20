@@ -5,6 +5,7 @@ import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { renderToRows } from "@oh-my-pi/pi-tui/testing";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
@@ -44,7 +45,6 @@ function createContext(
 		runIdleCompaction?: AgentSession["runIdleCompaction"];
 		runEphemeralTurn?: AgentSession["runEphemeralTurn"];
 		sessionName?: string;
-		showStatus?: InteractiveModeContext["showStatus"];
 		todoPhases?: InteractiveModeContext["todoPhases"];
 	} = {},
 ) {
@@ -70,7 +70,6 @@ function createContext(
 		editor: { getText: () => options.editorText ?? "" },
 		sessionManager: { getSessionName: () => options.sessionName },
 		todoPhases: options.todoPhases ?? [],
-		...(options.showStatus ? { showStatus: options.showStatus } : {}),
 		session: {
 			isCompacting: options.isCompacting ?? false,
 			isStreaming: options.isStreaming ?? false,
@@ -150,7 +149,6 @@ describe("EventController idle compaction teardown", () => {
 				"completion.notify": "off",
 			},
 		});
-		const showStatus = vi.fn((_: string, _options?: { dim?: boolean }) => {});
 		let capturedPrompt = "";
 		const runEphemeralTurn = vi.fn(async (args: { promptText: string; signal?: AbortSignal }) => {
 			capturedPrompt = args.promptText;
@@ -161,7 +159,6 @@ describe("EventController idle compaction teardown", () => {
 		});
 		const context = createContext({
 			sessionName: "Fix login flow",
-			showStatus,
 			runEphemeralTurn,
 			todoPhases: [{ name: "Work", tasks: [{ content: "Wire focused tests", status: "pending" }] }],
 		});
@@ -179,12 +176,11 @@ describe("EventController idle compaction teardown", () => {
 		expect(capturedPrompt).toContain("Fix login flow");
 		expect(capturedPrompt).toContain("Wire focused tests");
 
-		expect(showStatus).toHaveBeenCalledTimes(1);
-		const [message, options] = showStatus.mock.calls[0] ?? [];
-		expect(Bun.stripANSI(message ?? "")).toBe(
-			"※ recap: Reworking the login flow; auth suite passes. Next: wire the focused token-refresh test.",
-		);
-		expect(options).toEqual({ dim: false });
+		const output = renderToRows(() => context.chatContainer.entries().map(entry => entry.view()), 120)
+			.map(row => Bun.stripANSI(row))
+			.join("\n");
+		expect(output).toContain("recap: Reworking the login flow; auth suite passes.");
+		expect(output).toContain("Next: wire the focused token-refresh test.");
 		controller.dispose();
 	});
 
@@ -199,10 +195,8 @@ describe("EventController idle compaction teardown", () => {
 				"recap.idleSeconds": 1,
 			},
 		});
-		const showStatus = vi.fn((_: string, _options?: { dim?: boolean }) => {});
 		const context = createContext({
 			sessionName: "Fix login flow",
-			showStatus,
 			todoPhases: [{ name: "Work", tasks: [{ content: "Wire focused tests", status: "pending" }] }],
 		});
 
@@ -210,7 +204,7 @@ describe("EventController idle compaction teardown", () => {
 		await controller.handleEvent({ type: "agent_end", messages: [createAssistantMessage()] });
 		vi.advanceTimersByTime(1_000);
 
-		expect(showStatus).not.toHaveBeenCalled();
+		expect(context.chatContainer.entries()).toHaveLength(0);
 		controller.dispose();
 	});
 
@@ -224,11 +218,9 @@ describe("EventController idle compaction teardown", () => {
 				"recap.idleSeconds": 1,
 			},
 		});
-		const showStatus = vi.fn((_: string, _options?: { dim?: boolean }) => {});
 		const context = createContext({
 			editorText: "draft",
 			sessionName: "Fix login flow",
-			showStatus,
 			todoPhases: [{ name: "Work", tasks: [{ content: "Wire focused tests", status: "pending" }] }],
 		});
 
@@ -236,7 +228,7 @@ describe("EventController idle compaction teardown", () => {
 		await controller.handleEvent({ type: "agent_end", messages: [createAssistantMessage()] });
 		vi.advanceTimersByTime(1_000);
 
-		expect(showStatus).not.toHaveBeenCalled();
+		expect(context.chatContainer.entries()).toHaveLength(0);
 		controller.dispose();
 	});
 
@@ -249,14 +241,13 @@ describe("EventController idle compaction teardown", () => {
 				"completion.notify": "off",
 			},
 		});
-		const showStatus = vi.fn((_: string, _options?: { dim?: boolean }) => {});
 		const { promise, resolve } = Promise.withResolvers<{ replyText: string; assistantMessage: AssistantMessage }>();
 		let receivedSignal: AbortSignal | undefined;
 		const runEphemeralTurn = vi.fn((args: { promptText: string; signal?: AbortSignal }) => {
 			receivedSignal = args.signal;
 			return promise;
 		});
-		const context = createContext({ sessionName: "Fix login flow", showStatus, runEphemeralTurn });
+		const context = createContext({ sessionName: "Fix login flow", runEphemeralTurn });
 
 		const controller = new EventController(context);
 		await controller.handleEvent({ type: "agent_end", messages: [createAssistantMessage()] });
@@ -272,6 +263,6 @@ describe("EventController idle compaction teardown", () => {
 		// A reply that lands after cancellation must not paint a stale recap.
 		resolve({ replyText: "stale recap", assistantMessage: createAssistantMessage() });
 		await flushMicrotasks();
-		expect(showStatus).not.toHaveBeenCalled();
+		expect(context.chatContainer.entries()).toHaveLength(0);
 	});
 });

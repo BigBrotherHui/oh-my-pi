@@ -4,7 +4,7 @@
  */
 import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 
-/** A tool result snapshot, matching the shape `ToolExecutionComponent` consumes. */
+/** A tool result snapshot consumed by `ToolCallModel`. */
 export interface GalleryResult {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 	details?: unknown;
@@ -31,29 +31,19 @@ export interface GalleryFixture {
 	label?: string;
 	/** Edit mode for edit-like tools so the streaming preview dispatches correctly. */
 	editMode?: EditMode;
-	/**
-	 * Custom gallery-only renderer for fixtures that are not one ToolExecutionComponent
-	 * (for example the read-group transcript component).
-	 */
+	/** Custom gallery-only state renderer for a non-tool surface. */
 	renderState?: (
 		state: GalleryFixtureState,
 		width: number,
 		expanded: boolean,
 	) => readonly string[] | Promise<readonly string[]>;
 	/**
-	 * Set for tools whose real `AgentTool` attaches `renderCall`/`renderResult`
-	 * directly on the instance (e.g. `task`). The harness then attaches
-	 * the registry renderer onto the fake tool so the component routes through
-	 * the custom-tool branch — the same path production takes — instead of the
-	 * built-in registry branch. The two branches can diverge, so exercising the
-	 * real one keeps the gallery honest for these tools.
-	 */
-	customRendered?: boolean;
-	/**
 	 * Renderer-registry key to use when the fixture key is a variant of a tool
 	 * (e.g. `hub_wait` → `hub`). Defaults to the fixture key.
 	 */
 	renderer?: string;
+	/** Exercise host-supplied tool-view selection rather than the built-in name lookup. */
+	customRendered?: boolean;
 	/**
 	 * Arguments shown during the streaming state — a partial view of {@link args}
 	 * as if the tool-call JSON were still arriving. May include `__partialJson`

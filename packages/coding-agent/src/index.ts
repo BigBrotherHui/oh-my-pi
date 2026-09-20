@@ -1,11 +1,7 @@
-import { HookEditorComponent, HookInputComponent, HookSelectorComponent } from "./modes/components";
-
 // Core session management
 
 export * as zod from "@oh-my-pi/omptype/zod";
 export { z } from "@oh-my-pi/omptype/zod";
-// Re-export TUI components for custom tool rendering
-export { Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 // Logging
 export { getAgentDir, logger, VERSION } from "@oh-my-pi/pi-utils";
 export * from "@oh-my-pi/pi-tui/app-keybindings";
@@ -73,9 +69,3 @@ export type {
 // Tools (detail types and utilities)
 export * from "./tools";
 export * from "./utils/github";
-// UI components for extensions
-export {
-	HookEditorComponent as ExtensionEditorComponent,
-	HookInputComponent as ExtensionInputComponent,
-	HookSelectorComponent as ExtensionSelectorComponent,
-};

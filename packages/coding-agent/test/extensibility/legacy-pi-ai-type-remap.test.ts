@@ -210,8 +210,8 @@ describe("legacy pi package root remaps (issue #1474)", () => {
 		const entry = await writeFixtureExtension(
 			[
 				'import{CustomEditor,copyToClipboard}from"@earendil-works/pi-coding-agent";',
-				'import{CURSOR_MARKER,decodeKittyPrintable,matchesKey,parseKey,truncateToWidth,visibleWidth}from"@earendil-works/pi-tui";',
-				"export const apiTypes=[typeof CustomEditor,typeof copyToClipboard,typeof CURSOR_MARKER,typeof decodeKittyPrintable,typeof matchesKey,typeof parseKey,typeof truncateToWidth,typeof visibleWidth];",
+				'import{decodeKittyPrintable,matchesKey,parseKey,truncateToWidth,visibleWidth}from"@earendil-works/pi-tui";',
+				"export const apiTypes=[typeof CustomEditor,typeof copyToClipboard,typeof decodeKittyPrintable,typeof matchesKey,typeof parseKey,typeof truncateToWidth,typeof visibleWidth];",
 				'export const printable=decodeKittyPrintable("\\x1b[97u");',
 			].join("\n"),
 		);
@@ -220,7 +220,6 @@ describe("legacy pi package root remaps (issue #1474)", () => {
 		expect(loaded.apiTypes).toEqual([
 			"function",
 			"function",
-			"string",
 			"function",
 			"function",
 			"function",

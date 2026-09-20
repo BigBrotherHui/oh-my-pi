@@ -41,6 +41,20 @@ export function getSixelLineMask(lines: readonly string[]): boolean[] {
 	});
 }
 
+/** Returns whether the supplied rows contain at least one complete SIXEL payload. */
+export function hasCompleteSixelPayload(lines: readonly string[]): boolean {
+	let inSequence = false;
+	let complete = false;
+	for (const line of lines) {
+		if (containsSixelSequence(line)) inSequence = true;
+		if (inSequence && (line.includes(SIXEL_END_SEQUENCE) || line.includes(SIXEL_END_BELL))) {
+			inSequence = false;
+			complete = true;
+		}
+	}
+	return complete;
+}
+
 /** Returns true when the line contains a SIXEL start sequence. */
 export function isSixelLine(line: string): boolean {
 	return containsSixelSequence(line);
@@ -49,7 +63,7 @@ export function isSixelLine(line: string): boolean {
 /**
  * Sanitizes text while preserving embedded SIXEL sequences when passthrough is enabled.
  */
-export function sanitizeWithOptionalSixelPassthrough(text: string, sanitize: (text: string) => string): string {
+export function sanitizeWithOptionalSixelPassthrough(text: string, sanitize: (value: string) => string): string {
 	if (!isSixelPassthroughEnabled() || !containsSixelSequence(text)) {
 		return sanitize(text);
 	}

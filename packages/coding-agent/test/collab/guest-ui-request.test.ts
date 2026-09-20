@@ -31,6 +31,18 @@ import type {
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
+import { render, type RootHandle } from "@oh-my-pi/pi-tui/root";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
+import { VirtualTerminal } from "@test/tui/virtual-terminal";
+import { defaultEditorTheme } from "@test/tui/test-themes";
+import { EditorView } from "@oh-my-pi/pi-tui/components/editor";
+import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { createReactiveStack } from "@oh-my-pi/pi-coding-agent/modes/reactive-slots";
+
+const dialogRoots: RootHandle[] = [];
+afterEach(() => {
+	for (const root of dialogRoots.splice(0)) root.dispose();
+});
 
 // In-memory transport: shared FakeWebSocket + InMemoryRelay harness (see
 // ./helpers/in-memory-relay), same contract as the other collab tests.
@@ -216,7 +228,7 @@ async function makeHarness(opts?: { readOnly?: boolean }): Promise<GuestUiHarnes
 		loadingAnimation: undefined,
 		statusLine: {
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			resetActiveTime: () => {},
 			markActivityStart: () => {},
 			markActivityEnd: () => {},
@@ -240,7 +252,7 @@ async function makeHarness(opts?: { readOnly?: boolean }): Promise<GuestUiHarnes
 		},
 		updateEditorTopBorder: () => {},
 		updateEditorBorderColor: () => {},
-		eventController: { handleEvent: () => Promise.resolve(), takeDisplaceableComponents: () => [] },
+		eventController: { handleEvent: () => Promise.resolve() },
 		syncRunningSubagentBadge: () => {},
 		showHookSelector: (
 			title: string,
@@ -468,7 +480,7 @@ function makeHostContext(): InteractiveModeContext {
 		eventBus: undefined,
 		statusLine: {
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
 		},
 		ui: { requestRender: () => {} },
@@ -808,23 +820,18 @@ describe("guest ask unavailable literal answer (#4375)", () => {
  *  Reuses makeHostContext for the CollabHost-facing members. */
 function makeAskHostContext(): InteractiveModeContext {
 	const base = makeHostContext();
-	// Stub only the surface the local ask-dialog mount path calls: container
-	// clear/addChild, ui focus/render, and editor (dispose path). The real
-	// InteractiveModeContext has many more members; the double-cast below is
-	// the established test pattern in this file (see makeHostContext) for a
-	// complex interface that is only partially exercised.
-	const stub = {
+	const editor = new CustomEditor(defaultEditorTheme);
+	const root = render(() => EditorView({ editor }), {
+		terminal: new VirtualTerminal(80, 40),
+		theme: loadThemeSync("dark"),
+	});
+	dialogRoots.push(root);
+	return {
 		...base,
-		editorContainer: { clear: () => {}, addChild: () => {} },
-		editor: { getText: () => "", setText: () => {} },
-		ui: {
-			requestRender: () => {},
-			setFocus: () => {},
-			terminal: { rows: 40, columns: 80 },
-			addInputListener: () => () => {},
-		},
+		editor,
+		editorContainer: createReactiveStack(),
+		ui: root.tui,
 	};
-	return stub as unknown as InteractiveModeContext;
 }
 
 describe("guest ask room ownership", () => {

@@ -7,7 +7,7 @@
  * popup, this module decides whether there are candidates to show.
  */
 import { subsequenceMatch, subsequenceScore } from "../autocomplete";
-import type { AutocompleteItem } from "../index";
+import type { AutocompleteItem } from "../autocomplete";
 /** Lazy runtime capabilities supplied by the internal URL host. */
 export interface InternalUrlCompletionHost {
 	completionSchemes(): string[];

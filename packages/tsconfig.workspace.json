@@ -1,5 +1,10 @@
 {
 	"extends": "../tsconfig.base.json",
+	"compilerOptions": {
+		"paths": {
+			"@test/tui/*": ["./tui/test/*"]
+		}
+	},
 	"include": [
 		"*/src",
 		"*/test",

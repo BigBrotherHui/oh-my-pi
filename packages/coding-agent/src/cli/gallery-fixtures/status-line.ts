@@ -7,7 +7,8 @@
  * model mid-session), where the gauge clamps to full while the context_pct
  * segment reports the raw percent.
  */
-import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
+import { StatusLine, StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
+import { renderSnapshot } from "@oh-my-pi/pi-tui/snapshot";
 import { statusLineHost } from "../../modes/status-line-host";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "../../session/agent-session";
@@ -23,7 +24,7 @@ const GAUGE_CASES: Record<GalleryFixtureState, { tokens: number; note: string }>
 	error: { tokens: 240_000, note: "120% used — overflow: percent breaks past the window label in red" },
 };
 
-/** Minimal session double satisfying every query `getTopBorder` makes. */
+/** Minimal session double satisfying status domain ingestion. */
 function fakeGaugeSession(tokens: number): AgentSession {
 	const model = { id: "test-model", contextWindow: GAUGE_WINDOW };
 	const messages = [{ role: "user", content: "hi" }];
@@ -70,7 +71,7 @@ function renderGaugeVariant(tokens: number, contextLine: "annotated" | "embedded
 		contextLine,
 	});
 	try {
-		return component.getTopBorder(width).content;
+		return renderSnapshot(() => StatusLine({ source: component, layout: "box" }), { columns: width })[0] ?? "";
 	} finally {
 		component.dispose();
 	}

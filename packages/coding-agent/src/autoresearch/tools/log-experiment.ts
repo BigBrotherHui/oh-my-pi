@@ -1,4 +1,4 @@
-import { logExperimentToolRenderer } from "@oh-my-pi/pi-tui/tools/autoresearch";
+import { logExperimentToolView } from "@oh-my-pi/pi-tui/tools/autoresearch";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -43,7 +43,7 @@ export function createLogExperimentTool(
 	options: AutoresearchToolFactoryOptions,
 ): ToolDefinition<typeof logExperimentSchema, LogDetails> {
 	return {
-		...logExperimentToolRenderer,
+		toolView: logExperimentToolView,
 		name: "log_experiment",
 		label: "Log Experiment",
 		description:
@@ -242,8 +242,7 @@ export function createLogExperimentTool(
 				);
 			}
 
-			options.dashboard.updateWidget(ctx, runtime);
-			options.dashboard.requestRender();
+			options.refreshDashboard(ctx);
 
 			const wallClockSeconds = pendingRun.durationMs !== null ? pendingRun.durationMs / 1000 : null;
 			const text = buildLogText(

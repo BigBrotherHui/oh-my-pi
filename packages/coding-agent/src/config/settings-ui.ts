@@ -1,4 +1,4 @@
-import { TERMINAL } from "@oh-my-pi/pi-tui";
+import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { SETTING_TABS, type SettingsDisplayEntry, type SettingsHost } from "@oh-my-pi/pi-tui/overlays/settings-defs";
 import {
 	normalizeProviderMaxInFlightRequests,

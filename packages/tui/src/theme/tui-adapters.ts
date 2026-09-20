@@ -6,11 +6,9 @@ import {
 	warmHighlighter as nativeWarmHighlighter,
 } from "@oh-my-pi/pi-natives";
 import type { EditorTheme } from "../components/editor";
-import type { MarkdownTheme } from "../components/markdown";
-import type { SelectListTheme } from "../components/select-list";
-import type { SettingsListTheme } from "../components/settings-list";
+import type { MarkdownTheme } from "../components/markdown-engine";
 import type { SymbolTheme } from "../symbols";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+import { Attr, Style } from "../core/style";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { resolveMermaidAscii } from "./mermaid-cache";
 import type { SlashCommandIconName } from "./symbols";
@@ -123,11 +121,9 @@ export function warmHighlighter(): Promise<void> {
 	return highlighterWarmup;
 }
 
-export function getSymbolTheme(): SymbolTheme {
-	// Guard against `theme` being undefined (pre-init or cross-module-instance
-	// plugin calls). Fall back to the ASCII preset so the returned symbols are
-	// usable instead of crashing. See #2998.
-	if (typeof theme === "undefined") {
+/** Resolve editor and Markdown glyphs from an explicit palette or the application theme. */
+export function getSymbolTheme(palette: Theme | undefined = theme): SymbolTheme {
+	if (palette === undefined) {
 		const box = {
 			topLeft: "+",
 			topRight: "+",
@@ -153,18 +149,18 @@ export function getSymbolTheme(): SymbolTheme {
 			spinnerFrames: ["-", "\\", "|", "/"],
 		};
 	}
-	const preset = theme.getSymbolPreset();
+	const preset = palette.getSymbolPreset();
 
 	return {
-		cursor: theme.nav.cursor,
+		cursor: palette.nav.cursor,
 		inputCursor: preset === "ascii" ? "|" : "▏",
-		boxRound: theme.boxRound,
-		boxSharp: theme.boxSharp,
-		table: theme.boxSharp,
-		quoteBorder: theme.md.quoteBorder,
-		hrChar: theme.md.hrChar,
-		colorSwatch: theme.md.colorSwatch,
-		spinnerFrames: theme.getSpinnerFrames("activity"),
+		boxRound: palette.boxRound,
+		boxSharp: palette.boxSharp,
+		table: palette.boxSharp,
+		quoteBorder: palette.md.quoteBorder,
+		hrChar: palette.md.hrChar,
+		colorSwatch: palette.md.colorSwatch,
+		spinnerFrames: palette.getSpinnerFrames("activity"),
 	};
 }
 
@@ -201,20 +197,20 @@ export function getMarkdownTheme(): MarkdownTheme {
 			})()
 		: undefined;
 	const markdownTheme: MarkdownTheme = {
-		heading: (text: string) => theme.fg("mdHeading", text),
-		link: (text: string) => theme.fg("mdLink", text),
-		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
-		code: (text: string) => theme.fg("mdCode", text),
-		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
-		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
-		quote: (text: string) => theme.fg("mdQuote", text),
-		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
-		hr: (text: string) => theme.fg("mdHr", text),
-		listBullet: (text: string) => theme.fg("mdListBullet", text),
-		bold: (text: string) => theme.bold(text),
-		italic: (text: string) => theme.italic(text),
-		underline: (text: string) => theme.underline(text),
-		strikethrough: (text: string) => chalk.strikethrough(text),
+		heading: theme.style("mdHeading"),
+		link: theme.style("mdLink"),
+		linkUrl: theme.style("mdLinkUrl"),
+		code: theme.style("mdCode"),
+		codeBlock: theme.style("mdCodeBlock"),
+		codeBlockBorder: theme.style("mdCodeBlockBorder"),
+		quote: theme.style("mdQuote"),
+		quoteBorder: theme.style("mdQuoteBorder"),
+		hr: theme.style("mdHr"),
+		listBullet: theme.style("mdListBullet"),
+		bold: Style.NONE.plus(Attr.Bold),
+		italic: Style.NONE.plus(Attr.Italic),
+		underline: Style.NONE.plus(Attr.Underline),
+		strikethrough: Style.NONE.plus(Attr.Strike),
 		symbols: getSymbolTheme(),
 		resolveMermaidAscii: mermaid
 			? (source, maxWidth) =>
@@ -237,32 +233,6 @@ export function getMarkdownTheme(): MarkdownTheme {
 	return markdownTheme;
 }
 
-export function getSelectListTheme(): SelectListTheme {
-	// Guard against `theme` being undefined (pre-init or cross-module-instance
-	// plugin calls). See #2998.
-	if (typeof theme === "undefined") {
-		return {
-			selectedPrefix: (text: string) => text,
-			selectedText: (text: string) => text,
-			description: (text: string) => text,
-			scrollInfo: (text: string) => text,
-			noMatch: (text: string) => text,
-			symbols: getSymbolTheme(),
-			icon: (text: string) => text,
-			hovered: (text: string) => text,
-		};
-	}
-	return {
-		selectedPrefix: (text: string) => theme.fg("accent", text),
-		selectedText: (text: string) => theme.fg("accent", text),
-		description: (text: string) => theme.fg("muted", text),
-		scrollInfo: (text: string) => theme.fg("muted", text),
-		noMatch: (text: string) => theme.fg("muted", text),
-		symbols: getSymbolTheme(),
-		icon: (text: string) => theme.fg("muted", text),
-		hovered: (text: string) => theme.bg("selectedBg", text),
-	};
-}
 /**
  * Resolve the autocomplete type-indicator glyph for a slash command.
  * Returns `undefined` when no theme is initialized or the active preset is
@@ -275,65 +245,27 @@ export function getSlashCommandTypeIcon(name: SlashCommandIconName): string | un
 	return icon.length > 0 ? icon : undefined;
 }
 
-export function getEditorTheme(): EditorTheme {
-	// Guard against `theme` being undefined (pre-init or cross-module-instance
-	// plugin calls). See #2998.
-	if (typeof theme === "undefined") {
+/** Build native editor styles from a root palette, with a safe pre-initialization fallback. */
+export function getEditorTheme(palette: Theme | undefined = theme): EditorTheme {
+	if (palette === undefined) {
 		return {
-			borderColor: (text: string) => text,
-			accentColor: (text: string) => text,
-			surfaceColor: (text: string) => text,
-			selectList: getSelectListTheme(),
-			symbols: getSymbolTheme(),
-			hintStyle: (text: string) => text,
+			borderStyle: Style.NONE,
+			accentStyle: Style.NONE,
+			surfaceStyle: Style.NONE,
+			textStyle: Style.NONE,
+			symbols: getSymbolTheme(palette),
+			hintStyle: Style.NONE,
 		};
 	}
 	return {
-		borderColor: (text: string) => theme.fg("borderMuted", text),
-		accentColor: (text: string) => theme.fg("accent", text),
-		surfaceColor: (text: string) =>
-			theme.bgFill("userMessageBg", theme.fgOnBg("userMessageText", "userMessageBg", text)),
-		textColor: (text: string) => theme.fgResolved("text", text),
-		selectList: getSelectListTheme(),
-		symbols: getSymbolTheme(),
-		hintStyle: (text: string) => theme.fg("dim", text),
-	};
-}
-
-export function getSettingsListTheme(): SettingsListTheme {
-	// Plugins (e.g. pi-rtk-optimizer) may call this before `initTheme()` assigns
-	// the global `theme`, or from a separate module instance under npm-global
-	// installs where the live binding was never initialized. Fall back to plain
-	// text so the call returns a usable (unstyled) theme instead of crashing with
-	// "undefined is not an object (evaluating 'theme.fg')". See #2998.
-	if (typeof theme === "undefined") {
-		return {
-			label: (text: string) => text,
-			value: (text: string) => text,
-			description: (text: string) => text,
-			warning: (text: string) => text,
-			warningMark: "!",
-			cursor: "> ",
-			hint: (text: string) => text,
-			heading: (text: string) => text,
-			section: (text: string) => text,
-			hovered: (text: string) => text,
-		};
-	}
-	return {
-		label: (text: string, selected: boolean, changed: boolean) =>
-			changed ? theme.fg("statusLineGitDirty", text) : selected ? theme.fg("accent", text) : text,
-		value: (text: string, selected: boolean, changed: boolean) =>
-			changed ? theme.fg("statusLineGitDirty", text) : selected ? theme.fg("accent", text) : theme.fg("muted", text),
-		description: (text: string) => theme.fg("dim", text),
-		warning: (text: string) => theme.fg("warning", text),
-		warningMark: theme.status.warning,
-		cursor: theme.fg("accent", `${theme.nav.cursor} `),
-		hint: (text: string) => theme.fg("dim", text),
-		heading: (text: string, dimmed: boolean) =>
-			dimmed ? theme.fg("dim", theme.underline(text)) : theme.fg("muted", theme.bold(theme.underline(text))),
-		section: (text: string, active: boolean) =>
-			active ? theme.fg("accent", theme.bold(text)) : theme.fg("muted", text),
-		hovered: (text: string) => theme.bg("selectedBg", text),
+		borderStyle: palette.style("borderMuted"),
+		accentStyle: palette.style("accent"),
+		surfaceStyle: Style.of({
+			fg: palette.fgOnBgColor("userMessageText", "userMessageBg"),
+			bg: palette.bgColor("userMessageBg"),
+		}),
+		textStyle: palette.style("text"),
+		symbols: getSymbolTheme(palette),
+		hintStyle: palette.style("dim"),
 	};
 }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { Editor } from "@oh-my-pi/pi-tui/components/editor";
+import { renderToRows } from "../src/testing";
+import { Editor, EditorView } from "../src/components/editor";
+import type { Cell } from "./cell-grid";
+import { cellGrid } from "./cell-grid";
 import { defaultEditorTheme } from "./test-themes";
 
 const ESC = "\x1b";
@@ -22,6 +25,18 @@ function vimEditor(text = "", options: { cursorToStart?: boolean } = {}): Editor
 /** Cursor position, via the editor's public accessor. */
 function cursor(editor: Editor): { line: number; col: number } {
 	return editor.getCursor();
+}
+
+function textCells(editor: Editor, width: number, text: string): readonly Cell[] {
+	for (const row of cellGrid(
+		renderToRows(() => EditorView({ editor }), width),
+		width,
+	)) {
+		const content = row.map(cell => cell.ch).join("");
+		const start = content.indexOf(text);
+		if (start !== -1) return row.slice(start, start + text.length);
+	}
+	throw new Error(`Rendered text not found: ${text}`);
 }
 
 describe("Editor vim mode", () => {
@@ -450,19 +465,22 @@ describe("Editor vim mode", () => {
 			const editor = vimEditor("alfa beta");
 			editor.handleInput("v");
 			for (let i = 0; i < 3; i++) editor.handleInput("l");
-			const frame = editor.render(40).join("\n");
-			expect(frame).toContain("\x1b[7malfa\x1b[27m");
+			const cells = textCells(editor, 40, "alfa");
+			expect(cells.map(cell => cell.ch).join("")).toBe("alfa");
+			expect(cells.every(cell => cell.attrs.inverse)).toBeTrue();
 		});
 
 		it("highlights the newline when the selection runs onto the next line", () => {
 			const editor = vimEditor("alfa\nbeta");
 			editor.handleInput("v");
 			editor.handleInput("j");
-			const frame = editor.render(40).join("\n");
 			// The first row keeps its whole text plus a highlighted cell standing in for the newline.
-			expect(frame).toContain("\x1b[7malfa\x1b[27m\x1b[7m \x1b[27m");
+			const firstLine = textCells(editor, 40, "alfa ");
+			expect(firstLine.every(cell => cell.attrs.inverse)).toBeTrue();
 			// The second row highlights only the grapheme under the cursor.
-			expect(frame).toContain("\x1b[7mb\x1b[27m");
+			const secondLine = textCells(editor, 40, "beta");
+			expect(secondLine[0]?.attrs.inverse).toBeTrue();
+			expect(secondLine.slice(1).every(cell => !cell.attrs.inverse)).toBeTrue();
 		});
 
 		it("renders an empty buffer without a selection artifact", () => {
@@ -470,7 +488,7 @@ describe("Editor vim mode", () => {
 			editor.setVimMode(true);
 			editor.handleInput(ESC);
 			editor.handleInput("v");
-			expect(() => editor.render(40)).not.toThrow();
+			expect(() => renderToRows(() => EditorView({ editor }), 40)).not.toThrow();
 		});
 	});
 
@@ -604,21 +622,20 @@ describe("Editor vim mode", () => {
 		it("draws a block cursor in Normal and an underline cursor in Insert", () => {
 			const editor = vimEditor("alfa");
 			editor.focused = true;
-			expect(editor.render(20).join("\n")).toContain("\x1b[7m");
+			expect(textCells(editor, 20, "alfa")[0]?.attrs.inverse).toBeTrue();
 
 			editor.handleInput("i");
 			expect(editor.vimMode).toBe("insert");
-			const insertFrame = editor.render(20).join("\n");
-			expect(insertFrame).toContain("\x1b[4m");
-			expect(insertFrame).not.toContain("\x1b[7m");
+			const insertCells = textCells(editor, 20, "alfa");
+			expect(insertCells[0]?.attrs.underline).toBeGreaterThan(0);
+			expect(insertCells.every(cell => !cell.attrs.inverse)).toBeTrue();
 		});
 
 		it("keeps the reverse-video cursor for non-modal editors", () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.setText("alfa");
 			editor.focused = true;
-			const frame = editor.render(20).join("\n");
-			expect(frame).not.toContain("\x1b[4m");
+			expect(textCells(editor, 20, "alfa").every(cell => cell.attrs.underline === 0)).toBeTrue();
 			expect(editor.vimEnabled).toBe(false);
 		});
 	});

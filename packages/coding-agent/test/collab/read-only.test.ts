@@ -71,7 +71,7 @@ function makeHostContext(): HostHarness {
 		eventBus: undefined,
 		statusLine: {
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
 		},
 		ui: { requestRender: () => {} },

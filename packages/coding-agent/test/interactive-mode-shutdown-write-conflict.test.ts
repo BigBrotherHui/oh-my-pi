@@ -113,6 +113,7 @@ describe("InteractiveMode shutdown when the session write conflicts (#12238)", (
 	});
 
 	afterEach(async () => {
+		mode.stop();
 		vi.restoreAllMocks();
 		authStorage.close();
 		tempDir.removeSync();

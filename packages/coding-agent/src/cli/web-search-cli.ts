@@ -7,8 +7,10 @@
 import { APP_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings } from "../config/settings";
-import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { renderSearchResult } from "@oh-my-pi/pi-tui/tools/web-search";
+import { renderToRows } from "@oh-my-pi/pi-tui/testing";
+import { createToolCallModel } from "@oh-my-pi/pi-tui/tools/model";
+import { resolveToolView } from "@oh-my-pi/pi-tui/tools/registry";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { runSearchQuery, type SearchQueryParams } from "../web/search/index";
 
 export interface SearchCommandArgs {
@@ -90,13 +92,22 @@ export async function runSearchCommand(cmd: SearchCommandArgs): Promise<void> {
 	};
 
 	const result = await runSearchQuery(params);
-	const component = renderSearchResult(result, { expanded: cmd.expanded, isPartial: false }, theme, {
-		query: cmd.query,
-		maxAnswerLines: cmd.expanded ? undefined : 6,
+	const model = createToolCallModel({
+		id: "cli-web-search",
+		toolName: "web_search",
+		label: "Web Search",
 	});
+	model.setUi({ expanded: cmd.expanded, showImages: false });
+	model.applyArgsChunk({
+		...params,
+		...(cmd.expanded ? {} : { maxAnswerLines: 6 }),
+	});
+	model.markRunning();
+	model.applyResult(result, { partial: false });
 
 	const width = Math.max(60, process.stdout.columns ?? 100);
-	process.stdout.write(`${component.render(width).join("\n")}\n`);
+	const { definition } = resolveToolView("web_search");
+	process.stdout.write(`${renderToRows(() => definition.view(model), width).join("\n")}\n`);
 
 	if (result.details?.error) {
 		process.exitCode = 1;

@@ -18,30 +18,42 @@
  *    UI indefinitely.
  */
 import { describe, expect, it } from "bun:test";
-import { type Component, type RenderTimer, TUI } from "@oh-my-pi/pi-tui";
+import { RichText } from "../src/core/richtext";
+import { Style } from "../src/core/style";
+import {
+	TUI,
+	type RenderTimer,
+	type TerminalFramePlan,
+	type TerminalFrameProvider,
+	type ViewportSize,
+} from "../src/tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
 const MIN_RENDER_INTERVAL_MS = 1000 / 30;
 const MAX_ADAPTIVE_RENDER_MS = 200;
 
-class ScriptedFrameCost implements Component {
+class ScriptedFrameCost implements TerminalFrameProvider {
 	#nextCostMs: number | null = null;
-	scheduler!: { nowMs: number };
 
-	/** Program the next render() to virtually consume `costMs` on the scheduler clock. */
+	constructor(private readonly scheduler: { nowMs: number }) {}
+
+	/** Program the next frame composition to virtually consume `costMs` on the scheduler clock. */
 	scheduleCost(costMs: number): void {
 		this.#nextCostMs = costMs;
 	}
 
-	invalidate(): void {}
-
-	render(_width: number): readonly string[] {
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
 		if (this.#nextCostMs !== null) {
 			this.scheduler.nowMs += this.#nextCostMs;
 			this.#nextCostMs = null;
 		}
-		return ["probe"];
+		const frame = new RichText();
+		frame.push(Style.NONE, "probe");
+		frame.br();
+		return { viewport: frame };
 	}
+
+	acknowledgeHistory(_id: number): void {}
 }
 
 class DeferredRenderScheduler {
@@ -82,10 +94,9 @@ describe("TUI adaptive render backpressure (#4145)", () => {
 	it("keeps the plain min-interval cadence when frames are cheap", () => {
 		const term = new VirtualTerminal(20, 4);
 		const scheduler = new DeferredRenderScheduler();
-		const probe = new ScriptedFrameCost();
-		probe.scheduler = scheduler;
+		const probe = new ScriptedFrameCost(scheduler);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(probe);
+		tui.setFrameProvider(probe);
 
 		try {
 			tui.start();
@@ -114,10 +125,9 @@ describe("TUI adaptive render backpressure (#4145)", () => {
 	it("inflates the next delay to the previous frame's cost when a slow frame busts the cadence", () => {
 		const term = new VirtualTerminal(20, 4);
 		const scheduler = new DeferredRenderScheduler();
-		const probe = new ScriptedFrameCost();
-		probe.scheduler = scheduler;
+		const probe = new ScriptedFrameCost(scheduler);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(probe);
+		tui.setFrameProvider(probe);
 
 		try {
 			tui.start();
@@ -147,10 +157,9 @@ describe("TUI adaptive render backpressure (#4145)", () => {
 	it("caps the adaptive delay so a pathological frame doesn't stall the UI", () => {
 		const term = new VirtualTerminal(20, 4);
 		const scheduler = new DeferredRenderScheduler();
-		const probe = new ScriptedFrameCost();
-		probe.scheduler = scheduler;
+		const probe = new ScriptedFrameCost(scheduler);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(probe);
+		tui.setFrameProvider(probe);
 
 		try {
 			tui.start();

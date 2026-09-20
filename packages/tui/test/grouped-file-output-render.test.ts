@@ -4,6 +4,7 @@ import {
 	classifyGroupedLines,
 	formatGroupedFiles,
 	groupLineIndicesByBlank,
+	parseGroupedOutputToStructure,
 } from "@oh-my-pi/pi-tui/tools/grouped-file-output";
 
 const REPO_ROOT = path.resolve("repo");
@@ -89,5 +90,57 @@ describe("groupLineIndicesByBlank", () => {
 
 	it("returns a single group of non-empty lines when no blanks are present", () => {
 		expect(groupLineIndicesByBlank(["a", "b", "c"])).toEqual([[0, 1, 2]]);
+	});
+});
+
+describe("structured presentation output", () => {
+	it("produces files, directories, matches, coordinates, notices alongside model text", () => {
+		const out = formatGroupedFiles(["src/index.ts", "src/util/helper.ts"], file => ({
+			modelLines: file.endsWith("index.ts")
+				? ["*10│export const foo = 1;"]
+				: [" 5│const bar = 2;", "*6│return bar;"],
+			headerSuffix: " (tag)",
+		}));
+
+		expect(out.structure).toBeDefined();
+		expect(out.files).toHaveLength(2);
+		expect(out.directories.length).toBeGreaterThanOrEqual(1);
+		expect(out.matches.length).toBe(3);
+		expect(out.coordinates.length).toBe(3);
+
+		const firstFile = out.files.find(f => f.path === "src/index.ts");
+		expect(firstFile).toBeDefined();
+		expect(firstFile?.matches).toHaveLength(1);
+		expect(firstFile?.matches[0]).toMatchObject({
+			filePath: "src/index.ts",
+			line: 10,
+			isMatch: true,
+			text: "export const foo = 1;",
+		});
+		expect(firstFile?.coordinates).toEqual([{ filePath: "src/index.ts", line: 10 }]);
+
+		const secondFile = out.files.find(f => f.path === "src/util/helper.ts");
+		expect(secondFile).toBeDefined();
+		expect(secondFile?.matches).toHaveLength(2);
+		expect(secondFile?.matches[0]).toMatchObject({ line: 5, isMatch: false });
+		expect(secondFile?.matches[1]).toMatchObject({ line: 6, isMatch: true });
+	});
+
+	it("parses grouped lines back into structured format with parseGroupedOutputToStructure", () => {
+		const lines = ["# src/", "## test.ts", "*42│const answer = 42;", " 43│return answer;", "Result limit reached"];
+		const parsed = parseGroupedOutputToStructure(lines, REPO_ROOT);
+
+		expect(parsed.directories).toHaveLength(1);
+		expect(parsed.directories[0]?.name).toBe("src");
+		expect(parsed.files).toHaveLength(1);
+		expect(parsed.files[0]?.name).toBe("test.ts");
+		expect(parsed.matches).toHaveLength(2);
+		expect(parsed.matches[0]).toMatchObject({ line: 42, isMatch: true, text: "const answer = 42;" });
+		expect(parsed.matches[1]).toMatchObject({ line: 43, isMatch: false, text: "return answer;" });
+		expect(parsed.coordinates).toEqual([
+			{ filePath: path.join(REPO_ROOT, "src", "test.ts"), line: 42 },
+			{ filePath: path.join(REPO_ROOT, "src", "test.ts"), line: 43 },
+		]);
+		expect(parsed.notices).toContain("Result limit reached");
 	});
 });

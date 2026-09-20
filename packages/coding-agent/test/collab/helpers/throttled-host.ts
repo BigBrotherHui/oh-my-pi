@@ -82,7 +82,7 @@ export function makeHostContext(snapshot: Snapshot, seen: HostObservations): Int
 			setCollabStatus: (status: { participantCount: number } | null) => {
 				if (status) seen.participantCounts.push(status.participantCount);
 			},
-			invalidate: () => {},
+			ingestSession: () => {},
 			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
 		},
 		ui: { requestRender: () => {} },

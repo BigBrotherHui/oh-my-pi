@@ -289,6 +289,7 @@ describe("default bench runtime", () => {
 					OPENCODE_API_KEY: apiKey,
 					PI_CODING_AGENT_DIR: tempDir.path(),
 				},
+				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
 			});
@@ -304,7 +305,7 @@ describe("default bench runtime", () => {
 		} finally {
 			await tempDir.remove();
 		}
-	});
+	}, 20_000);
 });
 
 describe("bench credential-aware provider selection", () => {

@@ -21,6 +21,7 @@ import { github } from "@oh-my-pi/pi-coding-agent/utils/github";
 import type { VcsGitRepo, VcsGitRepoInfo, VcsHeadState, VcsRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import { renderStatusLine } from "./helpers/status-line";
 
 const originalProjectDir = getProjectDir();
 
@@ -140,7 +141,7 @@ describe("StatusLineComponent PR lookup timeout guard", () => {
 		component.updateSettings(gitSegmentSettings);
 		try {
 			// Render triggers `#lookupPr` → github.run.
-			component.getTopBorder(80);
+			renderStatusLine(component, 80);
 
 			const call = await ghCalled;
 			expect(call.args).toEqual(["pr", "view", "--json", "number,url"]);
@@ -170,7 +171,7 @@ describe("StatusLineComponent PR lookup timeout guard", () => {
 		component.updateSettings(gitSegmentSettings);
 		try {
 			// First render fires the (rejecting) lookup.
-			component.getTopBorder(80);
+			renderStatusLine(component, 80);
 			// Drain the microtask queue so the catch/finally chain runs.
 			await Promise.resolve();
 			await Promise.resolve();
@@ -185,7 +186,7 @@ describe("StatusLineComponent PR lookup timeout guard", () => {
 				stdout: JSON.stringify({ number: 42, url: "https://github.com/x/y/pull/42" }),
 				stderr: "",
 			});
-			component.getTopBorder(80);
+			renderStatusLine(component, 80);
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();

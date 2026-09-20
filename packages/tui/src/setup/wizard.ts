@@ -1,15 +1,21 @@
 import { CURRENT_SETUP_VERSION } from "./setup-version";
-import type { SetupHost } from "./scenes/types";
 import { composerSetupScene } from "./scenes/composer";
 import { glyphSetupScene } from "./scenes/glyph";
 import { modelSetupScene } from "./scenes/model";
 import { providersSetupScene } from "./scenes/providers";
 import { themeSetupScene } from "./scenes/theme";
-import type { SetupScene } from "./scenes/types";
-import { SetupWizardComponent } from "./wizard-overlay";
+import type { SetupHost, SetupResult, SetupScene } from "./scenes/types";
+import { mountOverlay } from "../host/overlay";
+import { SetupWizard } from "./wizard-overlay";
 
-export type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
-
+export type {
+	SetupHost,
+	SetupResult,
+	SetupScene,
+	SetupSceneContext,
+	SetupSceneResult,
+	SetupUiHost,
+} from "./scenes/types";
 export { runStartupSplash } from "./startup-splash";
 export { CURRENT_SETUP_VERSION };
 
@@ -41,7 +47,7 @@ function setupSkipEnvEnabled(value: string | undefined): boolean {
 export async function selectSetupScenes(
 	storedVersion: number,
 	scenes: readonly SetupScene[],
-	ctx?: SetupHost,
+	host?: SetupHost,
 	options: SetupSceneSelectionOptions = {},
 ): Promise<SetupScene[]> {
 	const isTTY = options.isTTY ?? (process.stdin.isTTY && process.stdout.isTTY);
@@ -51,13 +57,11 @@ export async function selectSetupScenes(
 		if (setupSkipEnvEnabled(options.skipEnv ?? Bun.env.OMP_SKIP_SETUP)) return [];
 		if (options.setupWizardEnabled === false) return [];
 	}
-
 	const selected: SetupScene[] = [];
 	for (const scene of scenes) {
 		if (!options.force && scene.minVersion <= storedVersion) continue;
 		if (scene.shouldRun) {
-			if (!ctx) continue;
-			if (!(await scene.shouldRun(ctx))) continue;
+			if (!host || !(await scene.shouldRun(host))) continue;
 		}
 		selected.push(scene);
 	}
@@ -70,32 +74,33 @@ export interface RunSetupWizardOptions {
 	playWelcomeIntro?: boolean;
 }
 
-/** Own the fullscreen setup overlay until its scenes and outro finish. */
+/** Mount and own the fullscreen setup portal until its scenes and outro finish. */
 export async function runSetupWizard(
-	ctx: SetupHost,
+	host: SetupHost,
 	scenes: readonly SetupScene[] = ALL_SCENES,
 	options: RunSetupWizardOptions = {},
-): Promise<void> {
-	if (scenes.length === 0) return;
-	const component = new SetupWizardComponent(ctx, scenes);
-	const overlay = ctx.ui.showOverlay(component, {
-		width: "100%",
-		maxHeight: "100%",
-		anchor: "top-left",
-		margin: 0,
-		fullscreen: true,
-	});
+): Promise<SetupResult> {
+	if (scenes.length === 0) return { status: "completed", scenes: [] };
+	const completed = Promise.withResolvers<SetupResult>();
+	let settled = false;
+	const overlay = mountOverlay(host.tui, () =>
+		SetupWizard({
+			host,
+			scenes,
+			onComplete(result): void {
+				if (settled) return;
+				settled = true;
+				completed.resolve(result);
+			},
+		}),
+	);
+	let result: SetupResult;
 	try {
-		await component.run();
-		if (options.markComplete !== false) {
-			await ctx.markComplete(CURRENT_SETUP_VERSION);
-		}
+		result = await completed.promise;
 	} finally {
-		component.dispose();
-		ctx.ui.setFocus(component);
-		overlay.hide();
+		overlay.dispose();
 	}
-	if (options.playWelcomeIntro !== false) {
-		ctx.playWelcomeIntro();
-	}
+	if (result.status === "completed" && options.markComplete !== false) await host.markComplete(CURRENT_SETUP_VERSION);
+	if (result.status === "completed" && options.playWelcomeIntro !== false) host.playWelcomeIntro();
+	return result;
 }

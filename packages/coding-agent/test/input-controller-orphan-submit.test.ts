@@ -49,10 +49,9 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 	const steer = vi.fn(async (_text: string, _images?: unknown) => {});
 	const prompt = vi.fn(async () => {});
 	const updatePendingMessagesDisplay = vi.fn();
-	const requestRender = vi.fn();
 	const showError = vi.fn();
 	const addToHistory = vi.fn();
-	const flushPendingBashComponents = vi.fn();
+	const flushPendingExecutions = vi.fn();
 
 	const editor: FakeEditor = {
 		pendingImages: [] as ImageContent[],
@@ -101,7 +100,7 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 
 	const ctx = {
 		editor: editor as unknown as InteractiveModeContext["editor"],
-		ui: { requestRender } as unknown as InteractiveModeContext["ui"],
+		ui: {} as InteractiveModeContext["ui"],
 		session,
 		settings: session.settings,
 		sessionManager: { getSessionName: () => "named-session" } as InteractiveModeContext["sessionManager"],
@@ -134,7 +133,7 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		// No input waiter: the state under test.
 		onInputCallback: undefined,
 		updatePendingMessagesDisplay,
-		flushPendingBashComponents,
+		flushPendingExecutions,
 		showError,
 		isBashMode: false,
 		isPythonMode: false,
@@ -143,7 +142,7 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 	return {
 		ctx,
 		editor,
-		spies: { steer, prompt, updatePendingMessagesDisplay, requestRender, showError, addToHistory },
+		spies: { steer, prompt, updatePendingMessagesDisplay, showError, addToHistory },
 	};
 }
 
@@ -163,7 +162,6 @@ describe("InputController orphaned submit", () => {
 		// Delivery protection: the prompted message is marked as locally submitted.
 		expect(ctx.locallySubmittedUserSignatures.has("do not lose me\u00000")).toBe(true);
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalled();
-		expect(spies.requestRender).toHaveBeenCalled();
 		expect(spies.addToHistory).toHaveBeenCalledWith("do not lose me");
 	});
 

@@ -1,6 +1,5 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import {
 	BlockUnitCounter,
 	buildDisplayMessage,
@@ -11,12 +10,7 @@ import {
 	StreamingRevealController,
 	visibleUnits,
 } from "@oh-my-pi/pi-coding-agent/modes/controllers/streaming-reveal";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import { getSegmenter } from "@oh-my-pi/pi-tui";
-
-beforeAll(async () => {
-	await initTheme(false);
-});
+import { getSegmenter } from "@oh-my-pi/pi-tui/utils";
 
 function makeUsage(): AssistantMessage["usage"] {
 	return {
@@ -65,13 +59,6 @@ class RecordingComponent {
 	updateContent(message: AssistantMessage, opts?: { transient?: boolean }): void {
 		this.messages.push(message);
 		this.transientFlags.push(opts?.transient);
-	}
-
-	// Component protocol stub — the reveal controller now hands the component
-	// to `requestComponentRender`, which only exercises identity, so returning
-	// an empty rendered frame is sufficient for these tests.
-	render(): readonly string[] {
-		return [];
 	}
 }
 
@@ -146,9 +133,6 @@ describe("streaming reveal", () => {
 
 		expect(thinkingAt(display, 0)).toBe("...");
 		expect(textAt(display, 1)).toBe("");
-
-		const component = new AssistantMessageComponent(display);
-		expect(Bun.stripANSI(component.render(80).join("\n"))).toContain("...");
 	});
 
 	it("refreshes prose-only setting during unsmoothed streaming updates", () => {

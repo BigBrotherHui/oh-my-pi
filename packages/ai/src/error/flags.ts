@@ -198,7 +198,11 @@ export const ANTHROPIC_ACCOUNT_POLICY_PATTERN =
 	/\b(?:oauth_not_allowed_for_organization|permission_error)\b|\bOAuth authentication is currently not allowed for this organization\b/i;
 
 /** Whether an error message represents an Anthropic account-scoped permission/policy denial. */
-export function isAnthropicAccountPolicyText(text: string, provider?: string, statusArg?: number): boolean {
+export function isAnthropicAccountPolicyText(
+	text: string,
+	provider?: string,
+	statusArg?: number,
+): boolean {
 	if (provider !== undefined && provider !== "anthropic") return false;
 	const statusCandidate = statusArg ?? (text ? status({ message: text }) : undefined);
 	if (statusCandidate !== undefined && statusCandidate !== 403) return false;

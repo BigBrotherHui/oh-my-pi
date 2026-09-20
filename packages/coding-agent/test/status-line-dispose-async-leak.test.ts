@@ -1,17 +1,11 @@
 /**
  * Regression: fire-and-forget async IIFEs in StatusLineComponent
  * (`#isDefaultBranch`, `#lookupPr`) outlive `dispose()`. After tests call
- * `resetSettingsForTest()`, a late callback fires `#onBranchChange` →
- * `InteractiveMode.updateEditorTopBorder` → `settings.get(...)`, hitting the
- * global settings proxy and throwing "Settings not initialized".
+ * `resetSettingsForTest()`, a late update must not read reset settings.
  *
- * Contract: after `dispose()`, no async callback touches `settings` or
- * `#onBranchChange`, even when the awaited git/gh promise resolves later.
- *
- * The original cross-file failure was flaky and depended on git/gh shell
- * latency; these tests force the race deterministically by spying on
- * `VcsGitRepo.defaultBranch` (the same entry point `#isDefaultBranch` awaits) and
- * asserting `#onBranchChange` never fires post-dispose.
+ * Contract: after `dispose()`, awaited git/gh work cannot publish a revision,
+ * even when it resolves later. The tests force the race deterministically by
+ * delaying `VcsGitRepo.defaultBranch` and the PR lookup.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -23,7 +17,7 @@ import { github } from "@oh-my-pi/pi-coding-agent/utils/github";
 import type { VcsGitRepo, VcsGitRepoInfo, VcsHeadState, VcsRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
-import { StatusLineTestComponents } from "./helpers/status-line";
+import { StatusLineTestComponents, renderStatusLine } from "./helpers/status-line";
 
 const originalProjectDir = getProjectDir();
 
@@ -133,7 +127,7 @@ const gitSegmentSettings: StatusLineSettings = {
 };
 
 describe("StatusLineComponent dispose guards async callbacks", () => {
-	it("suppresses #onBranchChange when VcsGitRepo.defaultBranch resolves after dispose()", async () => {
+	it("does not publish after VcsGitRepo.defaultBranch resolves post-disposal", async () => {
 		// #isDefaultBranch seeds #defaultBranch = "main" synchronously. The
 		// fake HEAD is on "main", so #isDefaultBranch("main") returns true
 		// and #lookupPr short-circuits without spawning `gh pr view` — but
@@ -144,48 +138,46 @@ describe("StatusLineComponent dispose guards async callbacks", () => {
 		let resolveDefault: ((v: string | null) => void) | undefined;
 		defaultBranchMock.mockImplementation(() => new Promise<string | null>(r => (resolveDefault = r)));
 
-		const onBranchChange = vi.fn();
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
 		component.updateSettings(gitSegmentSettings);
-		component.watchBranch(onBranchChange);
 
 		// Render with a `pr` segment → #lookupPr → #isDefaultBranch("main")
 		// → starts the delayed git.branch.default IIFE (no gh spawn: the
 		// sync default-branch check returns true and PR lookup bails).
-		component.getTopBorder(80);
+		renderStatusLine(component, 80);
 		expect(resolveDefault).toBeDefined();
 
 		// Tear down the component before the awaited promise resolves.
 		component.dispose();
-		expect(onBranchChange).not.toHaveBeenCalled();
+		const revision = component.revision();
 
-		// Release the delayed lookup. Pre-fix this fired #onBranchChange.
+		// Release the delayed lookup.
 		resolveDefault!("develop");
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(onBranchChange).not.toHaveBeenCalled();
+		expect(component.revision()).toBe(revision);
 	});
 
-	it("suppresses #onBranchChange when a resolved IIFE's microtask runs after dispose()", async () => {
+	it("does not publish from an already-queued default-branch resolution after disposal", async () => {
 		// Same guard, but the awaited promise resolves synchronously before
 		// dispose; the queued microtask must still be suppressed by the
 		// disposed flag checked inside the IIFE continuation.
 		defaultBranchMock.mockResolvedValue("develop");
 
-		const onBranchChange = vi.fn();
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
 		component.updateSettings(gitSegmentSettings);
-		component.watchBranch(onBranchChange);
-		component.getTopBorder(80);
+
+		renderStatusLine(component, 80);
 
 		// Dispose before the resolved-promise microtask gets a chance to run.
 		component.dispose();
+		const revision = component.revision();
 
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(onBranchChange).not.toHaveBeenCalled();
+		expect(component.revision()).toBe(revision);
 	});
 
 	it("suppresses a pending PR lookup when tracked file teardown resets settings", async () => {
@@ -199,23 +191,22 @@ describe("StatusLineComponent dispose guards async callbacks", () => {
 			return { exitCode: 1, stdout: "", stderr: "" };
 		});
 
-		const onBranchChange = vi.fn();
 		const components = new StatusLineTestComponents();
 		const component = components.track(new StatusLineComponent(makeSession(), statusLineHost));
 		component.updateSettings(gitSegmentSettings);
-		component.watchBranch(onBranchChange);
-		component.getTopBorder(80);
+
+		renderStatusLine(component, 80);
 		await ghStarted.promise;
-		onBranchChange.mockClear();
 
 		components.dispose();
+		const revision = component.revision();
 		resetSettingsForTest();
 		releaseGh.resolve();
 		await Promise.resolve();
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(onBranchChange).not.toHaveBeenCalled();
+		expect(component.revision()).toBe(revision);
 		await Settings.init({ inMemory: true });
 	});
 });

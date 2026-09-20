@@ -1,4 +1,5 @@
-import { type ComposerStyle, registerComposerStyle } from "../index";
+import { type ComposerStyle } from "../components/composer/types";
+import { registerComposerStyle } from "../components/composer/registry";
 import type { SubmenuOption } from "./settings-defs";
 
 /** Composer shape id; extensions may register additional values at runtime. */

@@ -10,6 +10,8 @@
  * imports run, so it restores the user's real working directory in time for
  * import-time snapshots (e.g. `getProjectDir()` in `@oh-my-pi/pi-utils/dirs`).
  */
+import "@oh-my-pi/pi-tui/compiler/register";
+
 const launchCwd = process.env.OMP_LAUNCH_CWD;
 if (launchCwd) {
 	delete process.env.OMP_LAUNCH_CWD;

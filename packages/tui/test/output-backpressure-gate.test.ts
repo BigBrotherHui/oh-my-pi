@@ -16,7 +16,15 @@
  * 3. Terminals that do not report `pendingOutputBytes` are never gated.
  */
 import { describe, expect, it } from "bun:test";
-import { type RenderTimer, Text, TUI } from "@oh-my-pi/pi-tui";
+import {
+	RichText,
+	Style,
+	type TerminalFramePlan,
+	type TerminalFrameProvider,
+	TUI,
+	type ViewportSize,
+} from "@oh-my-pi/pi-tui";
+import type { RenderTimer } from "../src/tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
 class BackloggedTerminal extends VirtualTerminal {
@@ -31,6 +39,23 @@ class BackloggedTerminal extends VirtualTerminal {
 		this.written.push(data);
 		super.write(data);
 	}
+}
+
+class TextFrameProvider implements TerminalFrameProvider {
+	constructor(private text: string) {}
+
+	setText(text: string): void {
+		this.text = text;
+	}
+
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
+		const frame = new RichText();
+		frame.push(Style.NONE, this.text);
+		frame.br();
+		return { viewport: frame };
+	}
+
+	acknowledgeHistory(_id: number): void {}
 }
 
 class DeferredRenderScheduler {
@@ -71,9 +96,9 @@ describe("TUI output-backpressure render gate", () => {
 	it("skips stale frames while the terminal backlog is deep and paints the latest state on drain", () => {
 		const term = new BackloggedTerminal(40, 6);
 		const scheduler = new DeferredRenderScheduler();
-		const text = new Text("initial", 0, 0);
+		const frame = new TextFrameProvider("initial");
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(text);
+		tui.setFrameProvider(frame);
 
 		try {
 			tui.start();
@@ -82,14 +107,14 @@ describe("TUI output-backpressure render gate", () => {
 
 			// Deep backlog: due renders must emit nothing and re-arm a retry.
 			term.pendingBytes = 8 * 1024 * 1024;
-			text.setText("frame-A");
+			frame.setText("frame-A");
 			tui.requestRender();
 			stepRender(scheduler);
 			expect(term.written).toEqual([]);
 			expect(scheduler.timers.length).toBeGreaterThan(0);
 
 			// Still stalled; newer state supersedes frame-A without a paint.
-			text.setText("frame-B");
+			frame.setText("frame-B");
 			tui.requestRender();
 			stepRender(scheduler);
 			expect(term.written).toEqual([]);
@@ -110,15 +135,15 @@ describe("TUI output-backpressure render gate", () => {
 	it("never gates terminals that do not report an output backlog", () => {
 		const term = new VirtualTerminal(40, 6);
 		const scheduler = new DeferredRenderScheduler();
-		const text = new Text("plain", 0, 0);
+		const frame = new TextFrameProvider("plain");
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(text);
+		tui.setFrameProvider(frame);
 
 		try {
 			tui.start();
 			stepRender(scheduler);
 
-			text.setText("updated");
+			frame.setText("updated");
 			tui.requestRender();
 			stepRender(scheduler);
 			expect(term.getViewport().join("\n")).toContain("updated");

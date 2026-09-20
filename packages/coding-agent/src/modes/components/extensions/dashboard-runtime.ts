@@ -1,6 +1,6 @@
-import type { ExtensionDashboardRuntime } from "@oh-my-pi/pi-tui/overlays/extensions/extension-dashboard";
+import type { Extension, ExtensionProvider } from "@oh-my-pi/pi-tui/overlays/extensions/types";
 import { getMCPConfigPath } from "@oh-my-pi/pi-utils";
-import { parseRuleAgents, parseRuleConditionAndScope } from "../../../capability/rule";
+import { parseRuleAgents, parseRuleConditionAndScope, type Rule, type RuleFrontmatter } from "../../../capability/rule";
 import type { Settings } from "../../../config/settings";
 import { getAllProvidersInfo, isForeignUserProvider, isUserSourceEnabled } from "../../../discovery";
 import type { CustomTool } from "../../../extensibility/custom-tools/types";
@@ -11,6 +11,25 @@ import type { EventBus } from "../../../utils/event-bus";
 import { toolFileHeaderDescription } from "./inspector-runtime";
 import { applyMcpToggleRuntime } from "./mcp-runtime";
 import { loadAllExtensions, toggleProvider, toggleUserSource } from "./state-manager";
+
+interface ExtensionDashboardRuntime {
+	getDisabledExtensions(): string[];
+	setDisabledExtensions(ids: string[]): void;
+	getProviders(): ExtensionProvider[];
+	loadExtensions(disabledIds: string[]): Promise<Extension[]>;
+	toggleProvider(provider: string, enabled: boolean): void;
+	toggleUserSource(provider: string, enabled: boolean): void;
+	persistMcpToggle(name: string, enabled: boolean, sourcePath: string): Promise<void>;
+	applyMcpToggle(name: string, enabled: boolean): Promise<void>;
+	subscribeMcpChanges(onChange: (event: unknown) => void): Array<() => void>;
+	mcpSource?: MCPManager;
+	inspectorSource: {
+		readToolHeader(path: string | undefined): string | undefined;
+		parseRule(
+			raw: RuleFrontmatter,
+		): Pick<Rule, "condition" | "astCondition" | "scope"> & { agents: string[] | undefined };
+	};
+}
 
 /** Bind the dashboard's display-only contract to the live application. */
 export function createExtensionDashboardRuntime(options: {
@@ -24,17 +43,17 @@ export function createExtensionDashboardRuntime(options: {
 	const { cwd, settings, mcpManager, eventBus, onMcpToolsChanged, browserMcpFilterEnabled } = options;
 	return {
 		getDisabledExtensions: () => settings.get("disabledExtensions") ?? [],
-		setDisabledExtensions: ids => settings.set("disabledExtensions", ids),
+		setDisabledExtensions: (ids: string[]) => settings.set("disabledExtensions", ids),
 		getProviders: () =>
 			getAllProvidersInfo().map(provider => ({
 				...provider,
 				userSourceEnabled: isUserSourceEnabled(provider.id),
 				foreignUserSource: isForeignUserProvider(provider.id),
 			})),
-		loadExtensions: disabledIds => loadAllExtensions(cwd, disabledIds),
+		loadExtensions: (disabledIds: string[]) => loadAllExtensions(cwd, disabledIds),
 		toggleProvider,
 		toggleUserSource,
-		async persistMcpToggle(name, enabled, sourcePath) {
+		async persistMcpToggle(name: string, enabled: boolean, sourcePath: string) {
 			await setMcpServerEnabled({
 				userPath: getMCPConfigPath("user", cwd),
 				projectPath: getMCPConfigPath("project", cwd),
@@ -43,7 +62,7 @@ export function createExtensionDashboardRuntime(options: {
 				enabled,
 			});
 		},
-		applyMcpToggle: (name, enabled) =>
+		applyMcpToggle: (name: string, enabled: boolean) =>
 			applyMcpToggleRuntime({
 				name,
 				enabled,
@@ -57,7 +76,7 @@ export function createExtensionDashboardRuntime(options: {
 				},
 				onStatus: event => eventBus?.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, event),
 			}),
-		subscribeMcpChanges(onChange) {
+		subscribeMcpChanges(onChange: (event: unknown) => void) {
 			const subscriptions: Array<() => void> = [];
 			if (eventBus) subscriptions.push(eventBus.on(MCP_CONNECTION_STATUS_EVENT_CHANNEL, onChange));
 			if (mcpManager)
@@ -71,7 +90,10 @@ export function createExtensionDashboardRuntime(options: {
 		mcpSource: mcpManager,
 		inspectorSource: {
 			readToolHeader: toolFileHeaderDescription,
-			parseRule: raw => ({ ...parseRuleConditionAndScope(raw), agents: parseRuleAgents(raw.agents) }),
+			parseRule: (raw: RuleFrontmatter) => {
+				const rule = parseRuleConditionAndScope(raw);
+				return { ...rule, agents: parseRuleAgents(raw.agents) };
+			},
 		},
 	};
 }

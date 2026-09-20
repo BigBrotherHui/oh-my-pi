@@ -1,7 +1,9 @@
 import type { Model } from "@oh-my-pi/pi-ai";
+import type { Color } from "../core/style";
 import type { SessionState } from "@oh-my-pi/pi-wire";
 import type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "./schema";
 import type { ActiveRepoContext, StatusLineSession } from "./host";
+import type { JSX } from "../reactive";
 import type { LoopConditionConfig, LoopLimitRuntime } from "./loop";
 
 export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
@@ -74,7 +76,7 @@ export type RGB = readonly [number, number, number];
 
 export interface SegmentContext {
 	session: StatusLineSession;
-	/** Deterministic wall clock for previews/tests; production omits it. */
+	/** Root-clock or ingested domain timestamp; omitted fixtures render against the epoch. */
 	now?: Date;
 	/** Deterministic host label for previews/tests; production omits it. */
 	hostname?: string;
@@ -146,7 +148,7 @@ export interface SegmentContext {
 	autoCompactEnabled: boolean;
 	/** Background speculative-compaction state (async compaction). */
 	compactionSpeculation: "idle" | "running" | "armed";
-	/** Blink phase for the running-speculation pulse; toggled by the component's timer. */
+	/** Blink phase for the running-speculation pulse, sampled from the root clock. */
 	speculationBlinkOn: boolean;
 	subagentCount: number;
 	/**
@@ -154,7 +156,7 @@ export interface SegmentContext {
 	 * every `agent_start`→`agent_end` window plus the currently-streaming
 	 * window if the agent is running. Idle wall-clock never contributes, so
 	 * this is what {@link StatusLineSegmentId.time_spent} renders instead of
-	 * `Date.now() - sessionStart`.
+	 * elapsed idle wall-clock time.
 	 */
 	activeMs: number;
 	/**
@@ -164,12 +166,11 @@ export interface SegmentContext {
 	 */
 	turnElapsedMs: number | null;
 	/**
-	 * Sampled foreground ANSI for the `pi` brand segment — tweened between dim
-	 * gray (idle) and the accent (working) across turn edges (rust omp's
-	 * status-band brand fade). Absent in direct-segment fixtures and previews,
-	 * which fall back to the static dim color.
+	 * Sampled foreground for the `pi` brand segment — tweened between dim gray
+	 * (idle) and the accent (working) across turn edges. Absent in direct
+	 * segment fixtures and previews, which fall back to the static dim color.
 	 */
-	brandFgAnsi?: string;
+	brandFg?: Color;
 	git: {
 		branch: string | null;
 		status: { staged: number; unstaged: number; untracked: number } | null;
@@ -192,8 +193,8 @@ export interface SegmentContext {
 }
 
 export interface RenderedSegment {
-	content: string; // The segment text (may include ANSI color codes)
-	visible: boolean; // Whether to render (e.g., git hidden when not in repo)
+	content: JSX.Element;
+	visible: boolean;
 }
 
 export interface StatusLineSegment {

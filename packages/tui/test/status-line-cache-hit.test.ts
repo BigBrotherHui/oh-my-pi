@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { renderSegment } from "../src/status-line/segments";
-import type { SegmentContext } from "../src/status-line/types";
+import type { RenderedSegment, SegmentContext } from "../src/status-line/types";
 import { initTheme } from "../src/theme";
+import { renderVNode } from "./helpers/render-vnode";
 
 beforeAll(async () => {
 	await initTheme();
@@ -28,8 +29,8 @@ function ctxWith(usage: Partial<SegmentContext["usageStats"]>): SegmentContext {
 }
 
 // ANSI is irrelevant to the rate math; strip it before asserting the number.
-function plain(text: string): string {
-	return stripVTControlCharacters(text);
+function plain(result: RenderedSegment): string {
+	return stripVTControlCharacters(renderVNode(result.content));
 }
 
 describe("cache_hit status-line segment", () => {
@@ -38,7 +39,7 @@ describe("cache_hit status-line segment", () => {
 		// 800 / (800 + 0 + 200) = 80.00%.
 		const result = renderSegment("cache_hit", ctxWith({ cacheRead: 800, cacheWrite: 0, input: 200 }));
 		expect(result.visible).toBe(true);
-		expect(plain(result.content)).toContain("80.00%");
+		expect(plain(result)).toContain("80.00%");
 	});
 
 	it("counts uncached input in the denominator alongside cacheWrite (Anthropic/OpenRouter)", () => {
@@ -46,12 +47,12 @@ describe("cache_hit status-line segment", () => {
 		// (Dropping uncached input here would overstate the rate as 66.67%.)
 		const result = renderSegment("cache_hit", ctxWith({ cacheRead: 600, cacheWrite: 300, input: 100 }));
 		expect(result.visible).toBe(true);
-		expect(plain(result.content)).toContain("60.00%");
+		expect(plain(result)).toContain("60.00%");
 	});
 
 	it("is hidden until there is a cache read, even with uncached input", () => {
 		const result = renderSegment("cache_hit", ctxWith({ cacheRead: 0, cacheWrite: 0, input: 5_000 }));
 		expect(result.visible).toBe(false);
-		expect(result.content).toBe("");
+		expect(renderVNode(result.content)).toBe("");
 	});
 });

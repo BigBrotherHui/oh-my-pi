@@ -68,8 +68,8 @@ import {
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../tools/hub";
-import { LIST_STATUS_ORDER } from "@oh-my-pi/pi-tui/tools/hub";
-import { DEFAULT_HUB_LIST_LIMIT } from "@oh-my-pi/pi-tui/tools/hub";
+import { LIST_STATUS_ORDER } from "@oh-my-pi/pi-tui/tools/hub-contract";
+import { DEFAULT_HUB_LIST_LIMIT } from "@oh-my-pi/pi-tui/tools/hub-contract";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
 import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
 import { ToolAbortError } from "../tools/tool-errors";

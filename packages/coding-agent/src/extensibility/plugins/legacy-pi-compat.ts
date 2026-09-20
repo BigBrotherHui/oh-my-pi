@@ -6,8 +6,8 @@ import * as fs from "node:fs";
 import { createRequire, isBuiltin } from "node:module";
 import * as path from "node:path";
 import * as url from "node:url";
+import type * as BabelParser from "@babel/parser";
 import type { ParseResult, ParserPlugin } from "@babel/parser";
-import { parse as parseBabel } from "@babel/parser";
 import {
 	getDbBusyTimeoutMs,
 	getLegacyPiExtensionCacheDbPath,
@@ -15,6 +15,7 @@ import {
 	logger,
 	stripWindowsExtendedLengthPathPrefix,
 } from "@oh-my-pi/pi-utils";
+import { shouldTransformSolidTsx, transform as transformSolidTsx } from "@oh-my-pi/pi-tui/compiler/solid-jsx-plugin";
 import { registerPluginCacheInvalidator } from "../../discovery/helpers";
 
 const USE_BUNDLED_PI_MODULES = isCompiledBinary() || Boolean(process.env.PI_BUNDLED);
@@ -70,6 +71,9 @@ function parseExtensionSource(source: string, importerPath: string): ParseResult
 		plugins.push("jsx");
 	}
 
+	// Parse-first-use boundary: warm extension caches never reach the parser,
+	// so the 500 KB `@babel/parser` stays out of ordinary startup.
+	const { parse: parseBabel }: typeof BabelParser = require("@babel/parser");
 	try {
 		return parseBabel(source, {
 			sourceType: "unambiguous",
@@ -2426,7 +2430,7 @@ async function installExtensionGraphHook(
 					// `ensureExtensionGraphHook` refreshes it on every (re)load.
 					const synchronousSource = synchronousModuleSources.get(sourcePath);
 					if (synchronousSource !== undefined) {
-						return { contents: synchronousSource, loader: getLoader(sourcePath) };
+						return createExtensionLoadResult(synchronousSource, sourcePath);
 					}
 					const cached = asyncModules.get(sourcePath);
 					const resolvedImportMtimeTag = cacheBustResolvedImportModules.has(sourcePath) ? mtimeTag : null;
@@ -2439,10 +2443,13 @@ async function installExtensionGraphHook(
 						} else {
 							raw = await Bun.file(sourcePath).text();
 						}
-						return {
-							contents: await rewriteLegacyExtensionSource(raw, sourcePath, mtimeTag, resolvedImportMtimeTag),
-							loader: getLoader(sourcePath),
-						};
+						const rewritten = await rewriteLegacyExtensionSource(
+							raw,
+							sourcePath,
+							mtimeTag,
+							resolvedImportMtimeTag,
+						);
+						return createExtensionLoadResult(rewritten, sourcePath);
 					})();
 				});
 			},
@@ -2492,7 +2499,7 @@ async function installExtensionGraphHook(
 					if (source === undefined) {
 						throw new Error(`Missing pre-rewritten synchronous extension source: ${sourcePath}`);
 					}
-					return { contents: source, loader: getLoader(sourcePath) };
+					return createExtensionLoadResult(source, sourcePath);
 				});
 			},
 		});
@@ -2631,6 +2638,20 @@ function getLoader(path: string): "js" | "jsx" | "ts" | "tsx" {
 		return "ts";
 	}
 	return "js";
+}
+
+async function createExtensionLoadResult(
+	source: string,
+	path: string,
+): Promise<{ contents: string; loader: "js" | "jsx" | "ts" | "tsx" }> {
+	if (shouldTransformSolidTsx(source, path)) {
+		const renderer = toImportSpecifier(resolveCanonicalPiSpecifier("@oh-my-pi/pi-tui/host/renderer"));
+		const contents = (await transformSolidTsx(source, path))
+			.replaceAll('"@oh-my-pi/pi-tui/host/renderer"', JSON.stringify(renderer))
+			.replaceAll("'@oh-my-pi/pi-tui/host/renderer'", JSON.stringify(renderer));
+		return { contents, loader: "js" };
+	}
+	return { contents: source, loader: getLoader(path) };
 }
 
 function resolveLegacyPiSpecifier(args: { path: string; importer: string }): LegacyPiResolveResult | undefined {

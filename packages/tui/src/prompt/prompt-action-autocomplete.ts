@@ -3,9 +3,9 @@ import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
 	findLeadingSlashCommandStart,
-	getKeybindings,
 	type SlashCommand,
-} from "../index";
+} from "../autocomplete";
+import { getKeybindings } from "../keybindings";
 import { formatKeyHints, type KeybindingsManager } from "../app-keybindings";
 import { applyEmojiCompletion, getEmojiSuggestions, isEmojiPrefix, tryEmojiInlineReplace } from "./emoji-autocomplete";
 import { getGithubRefContext, getGithubRefSuggestions } from "./github-ref-autocomplete";

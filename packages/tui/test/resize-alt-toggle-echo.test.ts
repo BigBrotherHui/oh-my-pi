@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
-	type Component,
+	RichText,
+	Style,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
 	TUI,
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
 import type { RenderTimer } from "@oh-my-pi/pi-tui/tui";
+import { createComponent } from "../src/host/renderer";
+import { mountOverlay, Portal, type OverlayDisposer } from "../src/host/overlay";
 import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -27,15 +30,32 @@ const ALT_EXIT = "\x1b[?1049l";
 
 const TERMINAL_ENV = ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE"] as const;
 
-class LineComponent implements Component {
+function textFrame(rows: readonly string[]): RichText {
+	const frame = new RichText();
+	for (const row of rows) {
+		frame.push(Style.NONE, row);
+		frame.br();
+	}
+	return frame;
+}
+
+class LineFrameProvider implements TerminalFrameProvider {
 	constructor(
 		private readonly prefix: string,
 		private readonly count: number,
 	) {}
-	invalidate(): void {}
-	render(width: number): string[] {
-		return Array.from({ length: this.count }, (_v, i) => `${this.prefix}${i}`.slice(0, width));
+
+	renderFrame(viewport: ViewportSize): TerminalFramePlan {
+		return {
+			viewport: textFrame(
+				Array.from({ length: Math.min(this.count, viewport.rows) }, (_, index) =>
+					`${this.prefix}${index}`.slice(0, viewport.columns),
+				),
+			),
+		};
 	}
+
+	acknowledgeHistory(): void {}
 }
 
 /**
@@ -96,7 +116,7 @@ describe("resize on Warp, which SIGWINCHes on alt-buffer toggle", () => {
 		const term = new AltToggleEchoTerminal(40, 12);
 		const scheduler = new VirtualRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			await scheduler.settle(term);
@@ -119,7 +139,7 @@ describe("resize on Warp, which SIGWINCHes on alt-buffer toggle", () => {
 		const term = new AltToggleEchoTerminal(40, 12);
 		const scheduler = new VirtualRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			await scheduler.settle(term);
@@ -140,7 +160,7 @@ describe("resize on Warp, which SIGWINCHes on alt-buffer toggle", () => {
 		const term = new AltToggleEchoTerminal(40, 12);
 		const scheduler = new VirtualRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			await scheduler.settle(term);
@@ -166,7 +186,7 @@ describe("resize on Warp, which SIGWINCHes on alt-buffer toggle", () => {
 		};
 		const scheduler = new VirtualRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			await scheduler.settle(term);
@@ -195,11 +215,20 @@ describe("resize on Warp, which SIGWINCHes on alt-buffer toggle", () => {
 		};
 		const scheduler = new VirtualRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
+		let overlay: OverlayDisposer | undefined;
 		try {
 			tui.start();
 			await scheduler.settle(term);
-			tui.showOverlay({ render: () => ["modal"] }, { width: "100%", maxHeight: "100%", fullscreen: true });
+			overlay = mountOverlay(tui, () =>
+				createComponent(Portal, {
+					to: "overlay",
+					width: "100%",
+					maxHeight: "100%",
+					fullscreen: true,
+					children: "modal",
+				}),
+			);
 			await scheduler.settle(term);
 			expect(writes.join("")).toContain(ALT_ENTER);
 			writes.length = 0;
@@ -210,6 +239,7 @@ describe("resize on Warp, which SIGWINCHes on alt-buffer toggle", () => {
 			await scheduler.settle(term);
 			expect(writes.join("")).not.toContain("\x1b[6n");
 		} finally {
+			overlay?.dispose();
 			tui.stop();
 		}
 	});
@@ -224,7 +254,7 @@ describe("resize on Warp, which SIGWINCHes on alt-buffer toggle", () => {
 		};
 		const scheduler = new VirtualRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			await scheduler.settle(term);
@@ -408,7 +438,7 @@ describe("Warp echo expectation is single-shot", () => {
 		};
 		const scheduler = new SyncScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			scheduler.settle();
@@ -450,7 +480,7 @@ describe("Warp echo expectation is single-shot", () => {
 		};
 		const scheduler = new SyncScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			scheduler.settle();
@@ -488,7 +518,7 @@ describe("Warp echo expectation is single-shot", () => {
 		};
 		const scheduler = new SyncScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			scheduler.settle();
@@ -523,7 +553,7 @@ describe("Warp echo expectation is single-shot", () => {
 		};
 		const scheduler = new SyncScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new LineComponent("row-", 8));
+		tui.setFrameProvider(new LineFrameProvider("row-", 8));
 		try {
 			tui.start();
 			scheduler.settle();
@@ -584,7 +614,7 @@ class RebuildProvider implements TerminalFrameProvider {
 		this.lastViewport = viewport;
 		return {
 			history: this.history,
-			viewport: Array.from({ length: Math.min(8, viewport.rows) }, (_, i) => `live-${i}`),
+			viewport: textFrame(Array.from({ length: Math.min(8, viewport.rows) }, (_, i) => `live-${i}`)),
 		};
 	}
 

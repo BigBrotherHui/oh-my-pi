@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { Editor, type EditorTextAssistProvider } from "@oh-my-pi/pi-tui";
+import { renderToRows } from "../src/testing";
+import { Editor, EditorView, type EditorTextAssistProvider } from "../src/components/editor";
 import { defaultEditorTheme } from "./test-themes";
 
 describe("Editor text assistance", () => {
@@ -11,7 +12,7 @@ describe("Editor text assistance", () => {
 		editor.setTextAssistProvider(assist);
 		editor.setText("The weath");
 
-		expect(editor.render(40).join("\n")).toContain("er");
+		expect(renderToRows(() => EditorView({ editor }), 40).join("\n")).toContain("er");
 		editor.handleInput("\t");
 
 		expect(editor.getText()).toBe("The weather ");
@@ -139,7 +140,7 @@ describe("Editor text assistance", () => {
 		editor.handleInput("\x1b[46;5u");
 
 		expect(editor.isAutocompleteActive()).toBeTrue();
-		expect(editor.render(40).join("\n")).toContain("received");
+		expect(renderToRows(() => EditorView({ editor }), 40).join("\n")).toContain("received");
 		editor.handleInput("\t");
 		expect(editor.getText()).toBe("received ");
 		expect(editor.getCursor()).toEqual({ line: 0, col: 9 });
@@ -191,6 +192,6 @@ describe("Editor text assistance", () => {
 		await Promise.resolve();
 
 		expect(editor.isAutocompleteActive()).toBeTrue();
-		expect(editor.render(40).join("\n")).toContain("received");
+		expect(renderToRows(() => EditorView({ editor }), 40).join("\n")).toContain("received");
 	});
 });

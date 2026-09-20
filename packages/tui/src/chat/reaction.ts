@@ -8,16 +8,21 @@
  * Reactions are derived from the persisted assistant text, never stored, so a
  * rebuilt transcript reproduces them exactly.
  */
-import { type Component } from "../tui";
+import { createSignal, type Accessor } from "../reactive";
 
-/** A transcript block that can display an agent reaction badge. */
+/** A reactive transcript block that can display an agent reaction badge. */
 export interface ReactionTarget {
+	readonly reaction: Accessor<string | undefined>;
 	setReaction(emoji: string): void;
 }
 
-/** Whether `component` accepts a reaction badge. */
-export function isReactionTarget(component: Component | undefined): component is Component & ReactionTarget {
-	return component !== undefined && "setReaction" in component && typeof component.setReaction === "function";
+/** Create the durable reaction state shared by a user bubble and its reply. */
+export function createReactionTarget(): ReactionTarget {
+	const [reaction, setReaction] = createSignal<string>();
+	return {
+		reaction,
+		setReaction,
+	};
 }
 
 /** Longest emoji grapheme (UTF-16 units) still worth withholding for. */

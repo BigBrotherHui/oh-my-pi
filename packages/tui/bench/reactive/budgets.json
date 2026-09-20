@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "environment": "Apple M4 Max, Bun 1.4.2, 2026-09-19",
+  "method": "One warmup followed by five measured episodes; budget compares the median. Fixture construction is included. Counters are reset before every episode and reported from src/instrumentation.ts. Budgets are deliberately above the initial baseline so normal scheduler noise does not fail the run.",
+  "legacyMeasurements": {
+    "rapidStreaming": {
+      "command": "bun packages/coding-agent/bench/streaming-throughput.bench.ts",
+      "fixture": "legacy 30,520-grapheme reveal episode (61 ticks), closest available old-framework equivalent",
+      "episodeMs": 1.8189,
+      "stepMs": 0.02982
+    },
+    "largeTranscript": {
+      "command": "bun packages/coding-agent/bench/transcript-compose.bench.ts",
+      "fixture": "No like-for-like baseline: the old transcript benchmark only measures 500, 5,000, and 50,000 committed blocks."
+    },
+    "logDocument": {
+      "command": "bun packages/tui/bench/markdown-stream.ts",
+      "fixture": "The closest old markdown-stream benchmark failed during Stage B with `React is not defined` before measurement; no number was fabricated."
+    },
+    "agentTree": {
+      "fixture": "No old-framework benchmark exists for retained keyed agent-tree updates."
+    }
+  },
+  "renderMethod": "render.tsx mounts the real native renderer: a 2,000-block transcript plus 100 live tail paints, a 50,000-line log preview plus append, 200 keyed agent selections, and 1,000 document append/paint cycles. One warmup and five measured episodes; fixture construction and teardown included. Node identity and zero remaining timers are hard invariants. Timing ceilings are roughly three times the observed optimized native medians, not comparisons with the primitive-only scenarios below.",
+  "renderMeasurements": {
+    "before": { "transcript": 1363.194, "logDocument": 104.38, "agentTree": 343.371, "rapidStreaming": 50.197 },
+    "optimized": { "transcript": 87.81, "logDocument": 41.75, "agentTree": 89.007, "rapidStreaming": 43.399 }
+  },
+  "renderScenarios": {
+    "transcript": { "budgetMs": 275 },
+    "logDocument": { "budgetMs": 130 },
+    "agentTree": { "budgetMs": 275 },
+    "rapidStreaming": { "budgetMs": 135 }
+  },
+  "scenarios": {
+    "largeTranscript": { "budgetMs": 5 },
+    "logDocument": { "budgetMs": 25 },
+    "agentTree": { "budgetMs": 3 },
+    "rapidStreaming": { "budgetMs": 5 }
+  }
+}

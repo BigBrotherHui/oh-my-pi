@@ -1,23 +1,35 @@
 import { describe, expect, it } from "bun:test";
-import { type Component, type RenderTimer, TUI } from "@oh-my-pi/pi-tui";
+import {
+	RichText,
+	Style,
+	type TerminalFramePlan,
+	type TerminalFrameProvider,
+	TUI,
+	type ViewportSize,
+} from "@oh-my-pi/pi-tui";
+import type { RenderScheduler, RenderTimer } from "../src/tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
-class InputProbe implements Component {
-	constructor(private readonly events: string[]) {}
+class InputFrameProvider implements TerminalFrameProvider {
+	frames = 0;
+	inputs = 0;
 
-	invalidate(): void {}
-
-	render(_width: number): readonly string[] {
-		this.events.push("render");
-		return ["probe"];
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
+		this.frames++;
+		const frame = new RichText();
+		frame.push(Style.NONE, `input:${this.inputs} frame:${this.frames}`);
+		frame.br();
+		return { viewport: frame };
 	}
 
 	handleInput(_data: string): void {
-		this.events.push("input");
+		this.inputs++;
 	}
+
+	acknowledgeHistory(_id: number): void {}
 }
 
-class DeferredRenderScheduler {
+class DeferredRenderScheduler implements RenderScheduler {
 	nowMs = 0;
 	readonly immediates: Array<() => void> = [];
 	readonly timers: Array<{ callback: () => void; canceled: boolean }> = [];
@@ -41,51 +53,51 @@ class DeferredRenderScheduler {
 	}
 }
 
+function fireNextTimer(scheduler: DeferredRenderScheduler): void {
+	const timer = scheduler.timers.shift();
+	if (timer && !timer.canceled) timer.callback();
+}
+
 describe("TUI input/render scheduling", () => {
 	it("can commit a priority frame without waiting for queued immediates", () => {
-		const term = new VirtualTerminal(20, 4);
+		const terminal = new VirtualTerminal(20, 4);
 		const scheduler = new DeferredRenderScheduler();
-		const events: string[] = [];
-		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(new InputProbe(events));
+		const provider = new InputFrameProvider();
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
 
 		try {
 			tui.start();
 			tui.renderNow();
-			expect(events).toEqual(["render"]);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toContain("input:0 frame:1");
 
 			for (const immediate of scheduler.immediates.splice(0)) immediate();
-			expect(events).toEqual(["render"]);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toContain("input:0 frame:1");
 		} finally {
 			tui.stop();
 		}
 	});
 
 	it("can process terminal input before a deferred ordinary repaint", () => {
-		const term = new VirtualTerminal(20, 4);
+		const terminal = new VirtualTerminal(20, 4);
 		const scheduler = new DeferredRenderScheduler();
-		const events: string[] = [];
-		const probe = new InputProbe(events);
-		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(probe);
-		tui.setFocus(probe);
+		const provider = new InputFrameProvider();
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		tui.setHostInputHandler(data => provider.handleInput(data));
 
 		try {
 			tui.start();
 			scheduler.immediates.shift()?.();
-			const initialTimer = scheduler.timers.shift();
-			if (initialTimer && !initialTimer.canceled) initialTimer.callback();
-			events.length = 0;
+			fireNextTimer(scheduler);
 			scheduler.nowMs = 100;
 
 			tui.requestRender();
-			term.sendInput("x");
+			terminal.sendInput("x");
 			scheduler.immediates.shift()?.();
-			const repaintTimer = scheduler.timers.shift();
-			if (repaintTimer && !repaintTimer.canceled) repaintTimer.callback();
+			fireNextTimer(scheduler);
 
-			expect(events[0]).toBe("input");
-			expect(events).toContain("render");
+			expect(terminal.getViewport().map(row => row.trimEnd())).toContain("input:1 frame:2");
 		} finally {
 			tui.stop();
 		}

@@ -1,5 +1,11 @@
 import type { Theme } from "../theme";
+import { Style, type Color } from "../core/style";
 import type { SeparatorDef, StatusLineSeparatorStyle } from "./types";
+
+/** Style a powerline transition: the previous background becomes the glyph foreground. */
+export function powerlineTransitionStyle(previousBg: Color, nextBg: Color): Style {
+	return Style.of({ fg: previousBg, bg: nextBg });
+}
 
 function trimSep(value: string): string {
 	return value.trim();

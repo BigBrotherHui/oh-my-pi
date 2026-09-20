@@ -88,8 +88,8 @@ interface PendingSnapshot {
 /** Minimal context surface the idle-state reconciler mutates. */
 export interface GuestIdleReconcilerCtx {
 	statusLine: { markActivityEnd: () => void };
-	statusContainer: Pick<InteractiveModeContext["statusContainer"], "disposeChildren">;
-	loadingAnimation: { stop: () => void } | undefined;
+	statusContainer: Pick<InteractiveModeContext["statusContainer"], "clear">;
+	loadingAnimation: string | undefined;
 }
 
 /**
@@ -108,9 +108,8 @@ export function reconcileGuestIdleHostState(ctx: GuestIdleReconcilerCtx, isStrea
 	if (isStreaming) return;
 	ctx.statusLine.markActivityEnd();
 	if (ctx.loadingAnimation) {
-		ctx.loadingAnimation.stop();
 		ctx.loadingAnimation = undefined;
-		ctx.statusContainer.disposeChildren();
+		ctx.statusContainer.clear();
 	}
 }
 
@@ -138,14 +137,8 @@ export interface GuestTransientStatusCtx {
 
 /** Stop and forget status-area loaders before detaching their components. */
 export function clearGuestTransientStatus(ctx: GuestTransientStatusCtx): void {
-	if (ctx.autoCompactionLoader) {
-		ctx.autoCompactionLoader.stop();
-		ctx.autoCompactionLoader = undefined;
-	}
-	if (ctx.retryLoader) {
-		ctx.retryLoader.stop();
-		ctx.retryLoader = undefined;
-	}
+	ctx.autoCompactionLoader = undefined;
+	ctx.retryLoader = undefined;
 	ctx.statusContainer.clear();
 }
 
@@ -458,10 +451,6 @@ export class CollabGuestLink {
 		}
 		this.#replicaActivated = true;
 		if (this.#left) return;
-		const orphanedLiveBlocks = [
-			...this.#ctx.pendingTools.values(),
-			...this.#ctx.eventController.takeDisplaceableComponents(),
-		];
 		this.#clearTransientUi();
 		this.#clearAgentMirror();
 		this.state = pending.state;
@@ -476,28 +465,10 @@ export class CollabGuestLink {
 		// transcript and disposes the visible children only when the staged tree
 		// commits (ui-helpers), which both preserves its atomicity/rollback
 		// behavior and unregisters live tool blocks from the shared spinner
-		// ticker via ToolExecutionComponent.dispose().
+		// ticker via reactive view disposal.
 		try {
 			await this.#ctx.renderInitialMessages({ clearTerminalHistory: true });
 		} catch (err) {
-			// #clearTransientUi() above already dropped the pendingTools blocks,
-			// and #handleToolExecutionEnd settles a displaceable hub/todo result out
-			// of pendingTools into EventController's own trackers instead (Codex
-			// review on #9377): orphanedLiveBlocks folds both in via
-			// takeDisplaceableComponents() above, or a still-animated "waiting" card
-			// would survive the resync with no remaining reference to stop it. A
-			// failed renderInitialMessages() restores the untouched visible
-			// container without disposing its children (its own rollback only tears
-			// down the staged tree that never committed), so every orphaned block
-			// here is still a live, rendered row. dispose() would be wrong: it
-			// propagates teardown to a component's own renderer children
-			// (Container.dispose()), releasing resources that row's still-visible
-			// children may use (Codex review on #9377). seal() only unregisters the
-			// shared-ticker registration and stops the animation, leaving the
-			// rendered row and its children intact.
-			for (const handle of orphanedLiveBlocks) {
-				handle.seal();
-			}
 			throw err;
 		}
 		if (this.#left) return;
@@ -573,7 +544,7 @@ export class CollabGuestLink {
 				setSessionTerminalTitle(frame.state.sessionName, frame.state.cwd);
 				this.#updateStatusSegment();
 				reconcileGuestSnapshotHostState(this.#ctx, frame.state.isStreaming);
-				this.#ctx.statusLine.invalidate();
+				this.#ctx.statusLine.ingestSession();
 				this.#ctx.ui.requestRender();
 				break;
 			}
@@ -778,7 +749,7 @@ export class CollabGuestLink {
 		this.#ctx.streamingMessage = undefined;
 		this.#ctx.pendingTools.clear();
 		if (this.#ctx.loadingAnimation) {
-			this.#ctx.loadingAnimation.stop();
+			this.#ctx.statusContainer.remove(this.#ctx.loadingAnimation);
 			this.#ctx.loadingAnimation = undefined;
 		}
 	}
@@ -837,7 +808,7 @@ export class CollabGuestLink {
 			throw new Error("Local session restoration was cancelled");
 		}
 		setSessionTerminalTitle(this.#ctx.sessionManager.getSessionName(), this.#ctx.sessionManager.getCwd());
-		this.#ctx.statusLine.invalidate();
+		this.#ctx.statusLine.ingestSession();
 		this.#ctx.statusLine.resetActiveTime();
 		this.#ctx.ui.requestRender();
 		this.#ctx.updateEditorBorderColor();

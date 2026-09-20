@@ -182,13 +182,7 @@ export class AnthropicApiError extends ProviderHttpError {
 			if (parsed && typeof parsed === "object" && "error" in parsed) {
 				const err = parsed.error;
 				if (err && typeof err === "object") {
-					if (
-						"details" in err &&
-						err.details &&
-						typeof err.details === "object" &&
-						"error_code" in err.details &&
-						typeof err.details.error_code === "string"
-					) {
+					if ("details" in err && err.details && typeof err.details === "object" && "error_code" in err.details && typeof err.details.error_code === "string") {
 						code = err.details.error_code;
 					} else if ("type" in err && typeof err.type === "string") {
 						code = err.type;

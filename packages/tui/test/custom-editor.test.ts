@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { CURSOR_MARKER } from "@oh-my-pi/pi-tui";
+import { mountForTest, renderToRows } from "../src/testing";
+import { cellGrid } from "./cell-grid";
 import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
 import { $ } from "bun";
 import { getDefaultPasteImageKeys } from "@oh-my-pi/pi-tui/app-keybindings";
@@ -22,6 +23,28 @@ import {
 	SPACE_REPEAT_MAX_GAP_MS,
 } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { MacOSSpellingProvider, type SpellingBackend } from "@oh-my-pi/pi-tui/prompt/macos-spelling";
+import { RichText } from "../src/core/richtext";
+import { Style } from "../src/core/style";
+import { EditorView, type EditorTextDecorationContext } from "../src/components/editor";
+
+function decoratedRuns(editor: CustomEditor, text: string, context: EditorTextDecorationContext): RichText {
+	const runs = new RichText();
+	editor.decorateRuns(runs, text, context, Style.NONE);
+	runs.finish();
+	return runs;
+}
+
+function spellingBackend(overrides: Partial<SpellingBackend>): SpellingBackend {
+	return {
+		isAvailable: () => true,
+		checkSpelling: async () => [],
+		completeWord: async () => [],
+		autocorrectWord: async () => null,
+		spellingGuesses: async () => [],
+		...overrides,
+	};
+}
 
 function makeEditor() {
 	const editor = new CustomEditor(getEditorTheme());
@@ -62,11 +85,19 @@ function feedGaps(editor: CustomEditor, gaps: number[]): void {
 
 async function decorateInFreshProcess(text: string, imageLinks?: readonly string[]): Promise<string> {
 	const customEditorUrl = import.meta.resolve("@oh-my-pi/pi-tui/prompt/custom-editor");
+	const richTextUrl = import.meta.resolve("@oh-my-pi/pi-tui/core/richtext");
+	const styleUrl = import.meta.resolve("@oh-my-pi/pi-tui/core/style");
 	const script = `
 import { CustomEditor } from ${JSON.stringify(customEditorUrl)};
+import { RichText } from ${JSON.stringify(richTextUrl)};
+import { Style } from ${JSON.stringify(styleUrl)};
 const editor = new CustomEditor({});
 editor.imageLinks = ${JSON.stringify(imageLinks)};
-process.stdout.write(editor.decorateText(${JSON.stringify(text)}));
+const rows = new RichText();
+const text = ${JSON.stringify(text)};
+editor.decorateRuns(rows, text, { line: 0, startCol: 0, endCol: text.length }, Style.NONE);
+rows.finish();
+process.stdout.write(rows.rowText(0));
 `;
 	const child = await $`bun -e ${script}`.quiet().nothrow();
 	const stdout = child.stdout.toString();
@@ -84,6 +115,60 @@ describe("CustomEditor placeholder decoration", () => {
 	it("renders linked image placeholders before theme and settings initialization", async () => {
 		const output = await decorateInFreshProcess("[Image #1]", ["/tmp/example.png"]);
 		expect(output).toBe("[Image #1]");
+	});
+});
+
+describe("CustomEditor macOS spelling bridge", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("repaints a retained editor after native typo results arrive", async () => {
+		const checked = Promise.withResolvers<readonly { start: number; length: number }[]>();
+		const provider = new MacOSSpellingProvider(spellingBackend({ checkSpelling: () => checked.promise }), true);
+		const editor = new CustomEditor(getEditorTheme(), provider);
+		editor.setSpellingFeatures({ typoDetection: true, autocomplete: false, autocorrect: false });
+		editor.setText("recieved");
+		const mounted = mountForTest(() => EditorView({ editor }), { width: 40 });
+		try {
+			expect(
+				cellGrid(mounted.rows(), 40)
+					.flat()
+					.some(cell => cell.attrs.underline === 3),
+			).toBe(false);
+			checked.resolve([{ start: 0, length: 8 }]);
+			await checked.promise;
+			await Bun.sleep(0);
+
+			const underlined = cellGrid(mounted.rows(), 40)
+				.flat()
+				.filter(cell => cell.attrs.underline === 3);
+			expect(underlined.map(cell => cell.ch).join("")).toBe("recieved");
+		} finally {
+			mounted.dispose();
+		}
+	});
+
+	it("applies native autocorrection through the retained input path", async () => {
+		const correction = Promise.withResolvers<string | null>();
+		const provider = new MacOSSpellingProvider(spellingBackend({ autocorrectWord: () => correction.promise }), true);
+		const editor = new CustomEditor(getEditorTheme(), provider);
+		editor.setSpellingFeatures({ typoDetection: false, autocomplete: false, autocorrect: true });
+		editor.setText("teh");
+		const mounted = mountForTest(() => EditorView({ editor }), { width: 40 });
+		try {
+			mounted.rows();
+			editor.handleInput(" ");
+			correction.resolve("the");
+			await correction.promise;
+			await Bun.sleep(0);
+
+			expect(editor.getText()).toBe("the ");
+			expect(mounted.root.node.damage).toBeGreaterThan(0);
+			expect(Bun.stripANSI(mounted.rows().join("\n"))).toContain("the ");
+		} finally {
+			mounted.dispose();
+		}
 	});
 });
 
@@ -140,11 +225,11 @@ describe("CustomEditor queue shorthand decoration", () => {
 			const editor = new CustomEditor(getEditorTheme());
 			editor.setText(`${prefix}\nqueue this`);
 
-			expect(editor.decorateText(prefix, { line: 0, startCol: 0, endCol: prefix.length })).toBe(
-				theme.fg("dim", `Queueing ${theme.nav.selected}`),
-			);
+			const decorated = decoratedRuns(editor, prefix, { line: 0, startCol: 0, endCol: prefix.length });
+			expect(decorated.rowText(0)).toBe(`Queueing ${theme.nav.selected}`);
+			expect(decorated.style[0]?.fg).toBe(theme.fgColor("dim"));
 			editor.focused = true;
-			const rendered = editor.render(40).map(line => Bun.stripANSI(line.replace(CURSOR_MARKER, "")));
+			const rendered = renderToRows(() => EditorView({ editor }), 40).map(line => Bun.stripANSI(line));
 			expect(rendered.some(line => line.includes(`Queueing ${theme.nav.selected}`))).toBe(true);
 			expect(rendered.every(line => Bun.stringWidth(line) === 40)).toBe(true);
 			expect(rendered.some(line => line.includes("queue this"))).toBe(true);
@@ -159,25 +244,23 @@ describe("CustomEditor queue shorthand decoration", () => {
 			const editor = new CustomEditor(getEditorTheme());
 			editor.setText(input);
 			const text = `${marker} first`;
-			expect(
-				editor
-					.decorateText(text, { line: 1, startCol: 0, endCol: text.length })
-					.startsWith(theme.fg("accent", marker)),
-			).toBe(true);
+			const decorated = decoratedRuns(editor, text, { line: 1, startCol: 0, endCol: text.length });
+			expect(decorated.rowText(0).startsWith(marker)).toBe(true);
+			expect(decorated.style[0]?.fg).toBe(theme.fgColor("accent"));
 		}
 
 		const unfinished = new CustomEditor(getEditorTheme());
 		unfinished.setText("=>\n1. first\n2. second\n3. third\n4.");
-		expect(
-			unfinished.decorateText("1. first", { line: 1, startCol: 0, endCol: 8 }).startsWith(theme.fg("accent", "1.")),
-		).toBe(true);
-		expect(
-			unfinished.decorateText("4.", { line: 4, startCol: 0, endCol: 2 }).startsWith(theme.fg("accent", "4.")),
-		).toBe(true);
+		const first = decoratedRuns(unfinished, "1. first", { line: 1, startCol: 0, endCol: 8 });
+		expect(first.rowText(0).startsWith("1.")).toBe(true);
+		expect(first.style[0]?.fg).toBe(theme.fgColor("accent"));
+		const fourth = decoratedRuns(unfinished, "4.", { line: 4, startCol: 0, endCol: 2 });
+		expect(fourth.rowText(0).startsWith("4.")).toBe(true);
+		expect(fourth.style[0]?.fg).toBe(theme.fgColor("accent"));
 
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setText("=>\n1. first\n3. third");
-		expect(editor.decorateText("1. first", { line: 1, startCol: 0, endCol: 8 })).toBe("1. first");
+		expect(decoratedRuns(editor, "1. first", { line: 1, startCol: 0, endCol: 8 }).rowText(0)).toBe("1. first");
 	});
 });
 
@@ -390,7 +473,7 @@ describe("CustomEditor bracketed path paste", () => {
 
 			editor.handleInput("\x1b[A");
 			expect(editor.getText()).toBe(`use ${chip} `);
-			editor.decorateText(editor.getText(), { line: 0, startCol: 0, endCol: editor.getText().length });
+			decoratedRuns(editor, editor.getText(), { line: 0, startCol: 0, endCol: editor.getText().length });
 			expect(editor.atomicTokenPattern.source).not.toBe(COMPOSER_TOKEN_REGEX.source);
 
 			editor.handleInput("\x05");

@@ -63,6 +63,7 @@ export async function runCleanse(
 	let runtime: CleanseAgentRuntime | undefined;
 	let runtimePromise: Promise<CleanseAgentRuntime> | undefined;
 	let loopResult: CleanseLoopResult | undefined;
+	let runtimeClosed = false;
 	const board = ui.board;
 	const hooks: CleanseAgentHooks = {
 		onStart: (name, assignment) => board.agentStarted(name, assignment),
@@ -73,6 +74,20 @@ export async function runCleanse(
 		onCheckerStart: checker => board.checkerStarted(checker),
 		onCheckerEnd: (check, durationMs) => board.checkerFinished(check, durationMs),
 	};
+	const withStandalonePrompt = async <T>(prompt: () => Promise<T>): Promise<T> => {
+		board.suspend?.();
+		try {
+			return await prompt();
+		} finally {
+			board.resume?.();
+		}
+	};
+	const closeRuntime = async (): Promise<void> => {
+		if (runtimeClosed || runtime === undefined) return;
+		runtimeClosed = true;
+		await runtime.close(loopResult);
+	};
+
 	const ensureRuntime = async (): Promise<CleanseAgentRuntime> => {
 		runtimePromise ??= (async () => {
 			board.phase(`Resolving model ${model}...`);
@@ -94,33 +109,36 @@ export async function runCleanse(
 		if (!request) {
 			board.phase("Detecting configured project checkers...");
 			suite = await discoverCleanseDiagnosticSuite(cwd, { includeTests: options.includeTests });
+			const discoveredSuite = suite;
 			board.phase(undefined);
 			const pickTarget = options.all === true ? undefined : ui.pickTarget;
 			if (pickTarget) {
-				if (suite.checkers.length > 0) {
-					const choice = await pickTarget(suite.checkers);
+				if (discoveredSuite.checkers.length > 0) {
+					const choice = await withStandalonePrompt(() => pickTarget(discoveredSuite.checkers));
 					if (choice.kind === "cancel") {
+						board.close();
 						ui.printError("Cleanse cancelled.");
 						return {
 							exitCode: 130,
 							status: "cancelled",
-							report: { checks: [], diagnostics: [], skipped: [...suite.skipped] },
+							report: { checks: [], diagnostics: [], skipped: [...discoveredSuite.skipped] },
 						};
 					}
-					if (choice.kind === "checker") suite.select([choice.id]);
+					if (choice.kind === "checker") discoveredSuite.select([choice.id]);
 					if (choice.kind === "request") {
 						request = choice.request;
 						suite = undefined;
 					}
 				} else {
-					printSkippedChecks(ui, { checks: [], diagnostics: [], skipped: [...suite.skipped] });
+					board.suspend?.();
+					printSkippedChecks(ui, { checks: [], diagnostics: [], skipped: [...discoveredSuite.skipped] });
 					ui.print("No supported checker with an available executable was found.");
-					const answer = (await ui.promptRequest?.()) ?? null;
+					const answer = ui.promptRequest ? await withStandalonePrompt(ui.promptRequest) : null;
 					if (answer === null) {
 						return {
 							exitCode: 1,
 							status: "unsupported",
-							report: { checks: [], diagnostics: [], skipped: [...suite.skipped] },
+							report: { checks: [], diagnostics: [], skipped: [...discoveredSuite.skipped] },
 						};
 					}
 					request = answer;
@@ -143,6 +161,7 @@ export async function runCleanse(
 		}
 		if (!suite || suite.checkers.length === 0) {
 			const report: CleanseDiagnosticReport = { checks: [], diagnostics: [], skipped: [...(suite?.skipped ?? [])] };
+			board.close();
 			printSkippedChecks(ui, report);
 			ui.printError(
 				request
@@ -199,7 +218,7 @@ export async function runCleanse(
 			},
 		);
 		board.close();
-		await runtime?.close(loopResult);
+		await closeRuntime();
 		if (loopResult.status === "cancelled") {
 			ui.printError("Cleanse cancelled.");
 			return {
@@ -227,7 +246,7 @@ export async function runCleanse(
 		return { exitCode: 130, status: "cancelled", report, sessionFile: runtime?.sessionFile };
 	} finally {
 		board.close();
-		await runtime?.close(loopResult);
+		await closeRuntime();
 	}
 }
 
@@ -239,7 +258,7 @@ export async function runCleanseCommand(options: CleanseCommandOptions = {}): Pr
 	process.once("SIGTERM", abort);
 	const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
 	const ui: CleanseRunUi = {
-		board: createCleanseStatusBoard(),
+		board: createCleanseStatusBoard(process.stdout, process.stderr, { onCancel: abort }),
 		print: text => process.stdout.write(`${text}\n`),
 		printError: text => process.stderr.write(`${text}\n`),
 		pickTarget: interactive ? pickCleanseTarget : undefined,

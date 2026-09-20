@@ -9,6 +9,7 @@ import {
 	type SliceResult,
 } from "@oh-my-pi/pi-natives";
 import { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils";
+import { isTightLayout, setTightLayout } from "./reactive/layout";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 
@@ -618,33 +619,6 @@ export function moveWordRight(text: string, cursor: number): number {
 }
 
 /**
- * Apply background color to a line, padding to full width.
- *
- * @param line - Line of text (may contain ANSI codes)
- * @param width - Total width to pad to
- * @param bgFn - Background color function
- * @returns Line with background applied and padded to width
- */
-export function applyBackgroundToLine(line: string, width: number, bgFn: (text: string) => string): string {
-	// Calculate padding needed
-	const visibleLen = visibleWidth(line);
-	const paddingNeeded = Math.max(0, width - visibleLen);
-
-	// Apply background to content + padding
-	let withPadding = line + padding(paddingNeeded);
-	// Nested background resets (e.g. inline color chips closing with \x1b[49m)
-	// would terminate a plain open…close background wrapper early; re-open the
-	// line background after each one (same trick as Theme.bgFill).
-	if (line.includes("\x1b[49m")) {
-		const probe = bgFn("\x01");
-		const probeIdx = probe.indexOf("\x01");
-		const open = probeIdx > 0 ? probe.slice(0, probeIdx) : "";
-		if (open) withPadding = withPadding.replaceAll("\x1b[49m", `\x1b[49m${open}`);
-	}
-	return bgFn(withPadding);
-}
-
-/**
  * Extract a range of visible columns from a line. Handles ANSI codes and wide chars.
  *
  * @param strict - If true, exclude wide chars at boundary that would extend past the range
@@ -653,16 +627,17 @@ export function sliceByColumn(line: string, startCol: number, length: number, st
 	return sliceWithWidth(line, startCol, length, strict).text;
 }
 
-let globalTight = false;
-
+/** Update compact horizontal padding across retained presentation owners. */
 export function setTuiTight(tight: boolean): void {
-	globalTight = tight;
+	setTightLayout(tight);
 }
 
+/** Read the current compact-padding preference. */
 export function isTuiTight(): boolean {
-	return globalTight;
+	return isTightLayout();
 }
 
+/** Resolve a traditional horizontal inset against the live tight-layout preference. */
 export function getPaddingX(basePadding: number): number {
-	return globalTight ? Math.max(0, basePadding - 1) : basePadding;
+	return isTightLayout() ? Math.max(0, basePadding - 1) : basePadding;
 }

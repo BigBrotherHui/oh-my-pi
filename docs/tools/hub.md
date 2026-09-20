@@ -2,14 +2,18 @@
 
 > The single agent-coordination surface: peer messaging over the process-global mailbox bus, background-job control, and supervision of shared long-running processes.
 
-Merged from the former `irc`, `job`, and `launch` tools; each op family keeps its old behavior and rendering.
+Combines peer messaging, background jobs, and process supervision while preserving each operation family's behavior.
 
 ## Source
-- Entry: `packages/coding-agent/src/tools/hub/index.ts` (schema, `HubTool`, unified `wait`, renderer dispatch)
+- Entry: `packages/coding-agent/src/tools/hub/index.ts` (schema, `HubTool`, unified `wait`)
 - Messaging half: `packages/coding-agent/src/tools/hub/messaging.ts`
 - Jobs half: `packages/coding-agent/src/tools/hub/jobs.ts`
 - Launch half: `packages/coding-agent/src/tools/hub/launch.ts`
-- Shared types: `packages/coding-agent/src/tools/hub/types.ts`
+- Shared wire contracts: `packages/tui/src/tools/hub-contract.ts`
+- Execution error-result helper: `packages/coding-agent/src/tools/hub/types.ts`
+- Reactive view registration: `packages/tui/src/tools/hub.tsx`
+- Operation selection: `packages/tui/src/tools/hub-selection.ts`
+- Presentation families: `packages/tui/src/tools/hub-jobs.tsx`, `hub-messaging.tsx`, and `hub-process.tsx`; shared header in `hub-header.tsx`.
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/hub.md`
 - Key collaborators:
   - `packages/coding-agent/src/irc/bus.ts` — process-global `IrcBus`: per-agent mailboxes, delivery, waiter matching.
@@ -122,4 +126,4 @@ Unchanged from the former `launch` tool: the first process op starts a detached 
 - The IRC bus, agent registry, job manager, and launch broker are unchanged subsystems; only the tool surface merged.
 - A running recipient still gets messages injected as non-interrupting asides (`irc:incoming` custom messages, `prompts/system/irc-incoming.md`); replies are real turns.
 - Messaging a parked agent revives it — the only resume primitive; the task tool has no `resume` parameter.
-- TUI rendering is preserved per family: messaging cards (`IRC ➤ / ⟵` headers), job waiting frames (displaceable, shimmering rows), and launch frames render byte-identically to the pre-merge tools; the `hub` renderer only dispatches.
+- Retained views preserve messaging headers, live job trees, and supervised-process output. One selector resolves overlapping `send`/`wait` operations; family views track reconciled result fields, expansion, and root-owned time without remounting the tool call.

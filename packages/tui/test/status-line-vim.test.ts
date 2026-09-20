@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import type { SegmentContext } from "../src/status-line/segments";
 import { renderSegment } from "../src/status-line/segments";
 import { initTheme } from "../src/theme";
+import { renderSegmentContent } from "./helpers/render-vnode";
 
 beforeAll(async () => {
 	await initTheme();
@@ -27,7 +28,7 @@ describe("status line vim segment", () => {
 	it("stays hidden when vim mode is off", () => {
 		const rendered = renderSegment("vim", vimContext(null));
 		expect(rendered.visible).toBe(false);
-		expect(rendered.content).toBe("");
+		expect(renderSegmentContent(rendered)).toBe("");
 	});
 
 	it("names the active mode", () => {
@@ -40,7 +41,7 @@ describe("status line vim segment", () => {
 		for (const [mode, label] of modes) {
 			const rendered = renderSegment("vim", vimContext(textStatus({ mode, pending: "", selectedLines: 0 })));
 			expect(rendered.visible).toBe(true);
-			expect(plain(rendered.content)).toBe(label);
+			expect(plain(renderSegmentContent(rendered))).toBe(label);
 		}
 	});
 
@@ -49,7 +50,7 @@ describe("status line vim segment", () => {
 			"vim",
 			vimContext(textStatus({ mode: "normal", pending: "2d", selectedLines: 0 })),
 		);
-		expect(plain(rendered.content)).toBe("NORMAL 2d");
+		expect(plain(renderSegmentContent(rendered))).toBe("NORMAL 2d");
 	});
 
 	it("appends the Visual selection height only once it spans multiple lines", () => {
@@ -57,20 +58,20 @@ describe("status line vim segment", () => {
 			"vim",
 			vimContext(textStatus({ mode: "visual-line", pending: "", selectedLines: 1 })),
 		);
-		expect(plain(single.content)).toBe("V-LINE");
+		expect(plain(renderSegmentContent(single))).toBe("V-LINE");
 
 		const spanning = renderSegment(
 			"vim",
 			vimContext(textStatus({ mode: "visual-line", pending: "", selectedLines: 4 })),
 		);
-		expect(plain(spanning.content)).toBe("V-LINE 4L");
+		expect(plain(renderSegmentContent(spanning))).toBe("V-LINE 4L");
 	});
 
 	it("colors Insert differently from Normal so the mode reads at a glance", () => {
 		const insert = renderSegment("vim", vimContext(textStatus({ mode: "insert", pending: "", selectedLines: 0 })));
 		const normal = renderSegment("vim", vimContext(textStatus({ mode: "normal", pending: "", selectedLines: 0 })));
-		expect(insert.content).not.toBe(normal.content);
-		expect(insert.content).toContain("\x1b[");
+		expect(renderSegmentContent(insert)).not.toBe(renderSegmentContent(normal));
+		expect(renderSegmentContent(insert)).toContain("\x1b[");
 	});
 
 	it("collapses each mode to one distinct cell in every symbol preset", async () => {
@@ -87,7 +88,7 @@ describe("status line vim segment", () => {
 						"vim",
 						vimContext({ mode, pending: "", selectedLines: 0, display: "icon" }),
 					);
-					const glyph = plain(rendered.content);
+					const glyph = plain(renderSegmentContent(rendered));
 					expect(rendered.visible).toBe(true);
 					expect(Bun.stringWidth(glyph)).toBe(1);
 					glyphs.push(glyph);
@@ -105,7 +106,7 @@ describe("status line vim segment", () => {
 			"vim",
 			vimContext({ mode: "visual-line", pending: "2", selectedLines: 3, display: "icon" }),
 		);
-		const text = plain(rendered.content);
+		const text = plain(renderSegmentContent(rendered));
 		expect(text).toEndWith(" 3L 2");
 		expect(Bun.stringWidth(text)).toBe(6);
 	});
@@ -116,6 +117,6 @@ describe("status line vim segment", () => {
 			vimContext({ mode: "normal", pending: "2d", selectedLines: 4, display: "none" }),
 		);
 		expect(rendered.visible).toBe(false);
-		expect(rendered.content).toBe("");
+		expect(renderSegmentContent(rendered)).toBe("");
 	});
 });

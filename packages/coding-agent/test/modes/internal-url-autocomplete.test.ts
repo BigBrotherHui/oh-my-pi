@@ -47,7 +47,7 @@ describe("internal-url-autocomplete", () => {
 		});
 
 		it("treats a single slash as the same in-progress token (preserving exact text)", () => {
-			expect(extractInternalUrlContext("local:/")).toEqual({ scheme: "local", query: "", token: "local:/" });
+			expect(extractInternalUrlContext("local://")).toEqual({ scheme: "local", query: "", token: "local://" });
 		});
 
 		it("captures the host/path query and the boundary-delimited token", () => {

@@ -1,28 +1,20 @@
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import {
-	type AutocompleteProvider,
-	matchesKey,
-	parseSgrMouse,
-	type PasteOptions,
-	type SlashCommand,
-} from "@oh-my-pi/pi-tui";
+import { type AutocompleteProvider, matchesKey, parseSgrMouse } from "@oh-my-pi/pi-tui";
+import { previewLine, shortenPath, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { PasteOptions } from "@oh-my-pi/pi-tui/components/editor";
+import type { SlashCommand } from "@oh-my-pi/pi-tui/autocomplete";
 import { isEnoent, logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isSettingsInitialized, settings } from "../../config/settings";
 import { formatModelRoleAlias, roleCandidatePool } from "../../config/model-roles";
 import { resolveModelRoleValue } from "../../config/model-resolver";
-import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
-import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
-import { HistorySearchComponent } from "@oh-my-pi/pi-tui/overlays/history-search";
-import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
-import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
-import { renderSegmentTrack } from "@oh-my-pi/pi-tui/chrome/segment-track";
-import { TinyTitleDownloadProgressComponent } from "@oh-my-pi/pi-tui/overlays/tiny-title-download-progress";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
-import { TreeSelectorComponent } from "@oh-my-pi/pi-tui/overlays/tree-selector";
+import {
+	openTinyTitleDownloadProgress,
+	type TinyTitleDownloadProgressHandle,
+} from "@oh-my-pi/pi-tui/overlays/tiny-title-download-progress";
 import { chipLabel, compactImageMarkers, shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import { expandEmoticons } from "@oh-my-pi/pi-tui/prompt/emoji-autocomplete";
 import { materializeImageReferenceLinks, setCachedImageDimensions } from "@oh-my-pi/pi-tui/prompt/image-references";
@@ -44,7 +36,6 @@ import { getTinyLocalModelSpec, isTinyLocalModelKey } from "../../tiny/models";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { resolveReadPath } from "../../tools/path-utils";
-import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import { vocalizer } from "../../tts/vocalizer";
 import {
 	copyToClipboard,
@@ -92,14 +83,6 @@ export function shouldSkipHistory(slashText: string): boolean {
 		return args.startsWith("add") && /--token\s/.test(args);
 	}
 	return false;
-}
-
-interface Expandable {
-	setExpanded(expanded: boolean): void;
-}
-
-function isExpandable(obj: unknown): obj is Expandable {
-	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
 /** Minimal contract for any component that can receive a paste payload directly. */
@@ -229,7 +212,7 @@ export class InputController {
 	#expandToolsListenerInstalled = false;
 	#inlineMouseListenerInstalled = false;
 
-	/** Click-candidate id the hover band currently tracks; repaint only on change. */
+	/** Click-candidate id the hover band currently tracks. */
 	#lastHoverClickId: string | undefined;
 
 	/** Return the last full editor snapshot delivered by its change contract. */
@@ -244,55 +227,49 @@ export class InputController {
 	// Sequential index for `local://paste-N.md` references created by the large-paste
 	// flow. Seeded from 0 and bumped past existing paste files.
 	#pasteCounter = 0;
-	// Visible-chip signature from the last editor change; a difference escapes the
-	// scoped-input render fast path so the attachment chips band repaints.
-	#lastChipsSignature = "";
 
-	#showTinyTitleDownloadProgress(modelKey: string | undefined): (() => void) | undefined {
-		if (!modelKey || !isTinyLocalModelKey(modelKey)) return;
-		const spec = getTinyLocalModelSpec(modelKey);
-		if (!spec) return;
-		const component = new TinyTitleDownloadProgressComponent(spec.label);
-		let added = false;
+	#showTinyTitleDownloadProgress(modelKey: string): (() => void) | undefined {
+		const modelSpec = getTinyLocalModelSpec(modelKey);
+		if (!modelSpec) return;
+		let overlay: TinyTitleDownloadProgressHandle | undefined;
 		let disposed = false;
 		let removeTimer: NodeJS.Timeout | undefined;
+		let unsubscribe: (() => void) | undefined;
 		const remove = (): void => {
 			if (disposed) return;
 			disposed = true;
-			unsubscribe();
+			unsubscribe?.();
+			unsubscribe = undefined;
 			if (removeTimer) {
 				clearTimeout(removeTimer);
 				removeTimer = undefined;
 			}
-			if (added) {
-				this.ctx.chatContainer.removeChild(component);
-				this.ctx.ui.requestRender();
-			}
+			overlay?.dispose();
+			overlay = undefined;
 		};
 		const scheduleRemove = (): void => {
-			if (removeTimer) clearTimeout(removeTimer);
+			clearTimeout(removeTimer);
 			removeTimer = setTimeout(remove, TINY_TITLE_PROGRESS_DONE_TTL_MS);
 			removeTimer.unref?.();
 		};
 		let revealAt = 0;
 		const update = (event: TinyTitleProgressEvent): void => {
 			if (disposed || event.modelKey !== modelKey) return;
-			component.update(event);
 			if (revealAt === 0) revealAt = performance.now() + TINY_TITLE_PROGRESS_REVEAL_DELAY_MS;
-			const complete = component.isComplete();
+			const complete = event.status === "ready" || event.status === "error";
 			// Reveal only for a download still in flight past the grace window. Cache hits
 			// either complete or fall silent (onnx init emits no events) before this fires.
-			if (!added && !complete && performance.now() >= revealAt) {
-				this.ctx.chatContainer.addChild(component);
-				added = true;
+			if (!overlay && !complete && performance.now() >= revealAt) {
+				overlay = openTinyTitleDownloadProgress(this.ctx.ui, modelSpec.label, event);
+			} else {
+				overlay?.update(event);
 			}
-			if (added) this.ctx.ui.requestRender();
 			if (complete) {
-				if (added) scheduleRemove();
+				if (overlay) scheduleRemove();
 				else remove();
 			}
 		};
-		const unsubscribe = tinyTitleClient.onProgress(update);
+		unsubscribe = tinyTitleClient.onProgress(update);
 		return remove;
 	}
 
@@ -359,7 +336,7 @@ export class InputController {
 					return { consume: true };
 				}
 				if (this.ctx.keybindings.matches(data, "app.history.search")) {
-					if (this.ctx.ui.hasOverlay() || this.ctx.ui.getFocused() instanceof HistorySearchComponent) {
+					if (this.ctx.ui.hasOverlay()) {
 						return undefined;
 					}
 					this.ctx.showHistorySearch();
@@ -367,26 +344,12 @@ export class InputController {
 				}
 				if (this.ctx.keybindings.matches(data, "app.editor.external")) {
 					if (this.ctx.ui.hasOverlay()) return undefined;
-					const focused = this.ctx.ui.getFocused();
-					if (
-						focused instanceof HookEditorComponent ||
-						focused === this.ctx.hookSelector ||
-						focused === this.ctx.hookInput
-					) {
-						return undefined;
-					}
 					void this.openExternalEditor();
 					return { consume: true };
 				}
 				if (this.ctx.keybindings.matches(data, "app.tools.toggleVisibility")) {
 					if (this.ctx.ui.hasOverlay()) return undefined;
-					const focused = this.ctx.ui.getFocused();
-					if (
-						focused instanceof TreeSelectorComponent &&
-						(matchesKey(data, "shift+ctrl+o") || matchesKey(data, "ctrl+shift+o"))
-					) {
-						return undefined;
-					}
+					if (matchesKey(data, "shift+ctrl+o") || matchesKey(data, "ctrl+shift+o")) return undefined;
 					this.toggleToolActivityVisibility();
 					return { consume: true };
 				}
@@ -405,15 +368,6 @@ export class InputController {
 			this.ctx.ui.addInputListener(data => {
 				if (!this.ctx.keybindings.matches(data, "app.tools.expand")) return undefined;
 				if (this.ctx.ui.hasOverlay()) return undefined;
-				if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o"))
-					return undefined;
-				const focused = this.ctx.ui.getFocused();
-				// A truncated ask question lives in the editor slot, not chat
-				// transcript, so expand it in-place instead of (or before)
-				// toggling tool-output previews.
-				if (focused instanceof AskDialogComponent && focused.toggleQuestionExpansion()) {
-					return { consume: true };
-				}
 				this.toggleToolOutputExpansion();
 				return { consume: true };
 			});
@@ -507,7 +461,6 @@ export class InputController {
 				// steer-flush submit if needed.
 				if (this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText("");
-					this.ctx.ui.requestRender();
 				} else {
 					void this.ctx.unfocusSession();
 				}
@@ -556,12 +509,6 @@ export class InputController {
 						} else {
 							this.ctx.showUserMessageSelector();
 						}
-						// Forced viewport repaint only: `resetDisplay()` replays the whole
-						// committed transcript (and clears native scrollback on direct
-						// terminals), which blocks on PTY backpressure for tens of seconds
-						// on long sessions — the selector opens invisibly and double-Esc
-						// reads as dead. O(viewport) is enough to settle the editor-slot swap.
-						this.ctx.ui.requestRender(true);
 						this.ctx.lastEscapeTime = 0;
 					} else {
 						this.ctx.lastEscapeTime = now;
@@ -578,9 +525,9 @@ export class InputController {
 			// Explicit user gesture (display reset, Alt+L by default): re-query the
 			// terminal background once so a mid-session light/dark switch is picked
 			// up even on terminals without an end-to-end Mode 2031 notification
-			// path (#5352). The appearance callback re-evaluates the auto theme; the
-			// repaint below then renders the resolved palette. Bounded to one OSC 11
-			// probe per gesture — no timers, no periodic polling.
+			// path (#5352). The appearance callback re-evaluates the auto theme before
+			// the display replay. Bounded to one OSC 11 probe per gesture — no timers,
+			// no periodic polling.
 			this.ctx.resetDisplayAfterAppearanceRefresh();
 		};
 		this.ctx.editor.onExit = () => this.handleCtrlD();
@@ -698,18 +645,6 @@ export class InputController {
 			if (wasBashMode !== this.ctx.isBashMode || wasPythonMode !== this.ctx.isPythonMode) {
 				this.ctx.updateEditorBorderColor();
 			}
-			// Editor input repaints through the scoped fast path (only the editor
-			// component). The attachment chips band lives outside the editor, so a
-			// visibility change — a chip pasted in or its token deleted — must escape
-			// the fast path with a full render or the band goes stale.
-			const chipsSignature = this.ctx.editor
-				.composerChips()
-				.map(chip => `${chip.kind}${chip.n}`)
-				.join(",");
-			if (chipsSignature !== this.#lastChipsSignature) {
-				this.#lastChipsSignature = chipsSignature;
-				this.ctx.ui.requestRender();
-			}
 		};
 	}
 
@@ -738,8 +673,8 @@ export class InputController {
 	}
 
 	/**
-	 * Track the hovered click target, repainting only when it changes. The band
-	 * is id-anchored in the composer, so it follows an agent whose rows shift
+	 * Track the hovered click target. The band is id-anchored in the composer, so
+	 * it follows an agent whose rows shift
 	 * while streaming; pointing at chrome clears it.
 	 */
 	#updateHoverHighlight(screenRow: number): void {
@@ -747,7 +682,6 @@ export class InputController {
 		if (hovered === this.#lastHoverClickId) return;
 		this.#lastHoverClickId = hovered;
 		this.ctx.setClickHoverId(hovered);
-		this.ctx.ui.requestRender();
 	}
 
 	// Candidates under a screen row, or none when the published viewport is
@@ -761,8 +695,8 @@ export class InputController {
 	}
 
 	/**
-	 * Forget the last hovered target without repainting. Disabling mouse
-	 * capture clears the composer's band, but with reporting off no motion
+	 * Forget the last hovered target. Disabling mouse capture clears the composer's
+	 * band, but with reporting off no motion
 	 * event will ever refresh this cache — so a re-enable plus motion over
 	 * the same card would look unchanged and skip restoring the band.
 	 */
@@ -848,7 +782,6 @@ export class InputController {
 				const focused = this.ctx.ui.getFocused();
 				const target = focused && focused !== this.ctx.editor && hasPasteText(focused) ? focused : this.ctx.editor;
 				target.pasteText(text);
-				this.ctx.ui.requestRender();
 			},
 			pasteImage: async image => {
 				// Images can only land in the main editor — when a modal Input is
@@ -900,7 +833,6 @@ export class InputController {
 					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 					await aborting;
 					this.ctx.updatePendingMessagesDisplay();
-					this.ctx.ui.requestRender();
 				}
 				return;
 			}
@@ -1162,7 +1094,6 @@ export class InputController {
 					this.ctx.showError(error instanceof Error ? error.message : String(error));
 				}
 				this.ctx.updatePendingMessagesDisplay();
-				this.ctx.ui.requestRender();
 				return;
 			}
 			// Normal message submission
@@ -1175,8 +1106,7 @@ export class InputController {
 			if (this.ctx.loopModeEnabled) {
 				this.ctx.setLoopPrompt(text);
 			}
-			// First, move any pending bash components to chat
-			this.ctx.flushPendingBashComponents();
+			this.ctx.flushPendingExecutions();
 
 			if (this.ctx.onInputCallback) {
 				// Include any pending images from clipboard paste
@@ -1245,7 +1175,6 @@ export class InputController {
 					if (this.ctx.loopPrompt === text) this.ctx.pauseLoop();
 				}
 				this.ctx.updatePendingMessagesDisplay();
-				this.ctx.ui.requestRender();
 			}
 			this.ctx.editor.addToHistory(text);
 		};
@@ -1287,7 +1216,6 @@ export class InputController {
 				const aborting = target.abort({ reason: USER_INTERRUPT_LABEL });
 				await aborting;
 				this.ctx.updatePendingMessagesDisplay();
-				this.ctx.ui.requestRender();
 			}
 			return;
 		}
@@ -1313,7 +1241,6 @@ export class InputController {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
 		this.ctx.updatePendingMessagesDisplay();
-		this.ctx.ui.requestRender();
 	}
 
 	handleCtrlC(): void {
@@ -1392,7 +1319,6 @@ export class InputController {
 		const onResume = (): void => {
 			clearInterval(suspendKeepalive);
 			this.ctx.ui.start();
-			this.ctx.ui.requestRender(true);
 		};
 		process.once("SIGCONT", onResume);
 
@@ -1439,7 +1365,6 @@ export class InputController {
 			// bring the TUI back so the user is not stranded on a frozen prompt.
 			process.removeListener("SIGCONT", onResume);
 			this.ctx.ui.start();
-			this.ctx.ui.requestRender(true);
 			const reason = err instanceof Error ? err.message : String(err);
 			this.ctx.showError(`Failed to suspend: ${reason}`);
 		}
@@ -1520,7 +1445,6 @@ export class InputController {
 		} finally {
 			if (this.ctx.session.isStreaming) {
 				this.ctx.updatePendingMessagesDisplay();
-				this.ctx.ui.requestRender();
 			}
 		}
 	}
@@ -1585,7 +1509,6 @@ export class InputController {
 					? "Queued message for after compaction"
 					: `Queued ${messages.length} messages for after compaction`,
 			);
-			this.ctx.ui.requestRender();
 			return;
 		}
 
@@ -1655,7 +1578,6 @@ export class InputController {
 						: `Queued ${queuedCount} messages for when the agent yields`,
 			);
 		}
-		this.ctx.ui.requestRender();
 	}
 
 	/** Send editor text as a follow-up message (queued behind current stream). */
@@ -1731,7 +1653,6 @@ export class InputController {
 				restoreOnError(error);
 			}
 			this.ctx.updatePendingMessagesDisplay();
-			this.ctx.ui.requestRender();
 			return;
 		}
 
@@ -1843,7 +1764,6 @@ export class InputController {
 			? `[${kind === "video" ? "Video" : "Image"} #${imageNum}, ${dims.width}x${dims.height}]`
 			: `[${kind === "video" ? "Video" : "Image"} #${imageNum}]`;
 		this.ctx.editor.insertAtom(chipLabel(kind, imageNum), expansion);
-		this.ctx.ui.requestRender();
 	}
 
 	/** Probe pixel dimensions for the marker label (`[Image #N, WxH]`). Returns undefined when the
@@ -1918,7 +1838,6 @@ export class InputController {
 		} catch (error) {
 			if (error instanceof VideoError) {
 				this.ctx.editor.pasteText(pastedPath);
-				this.ctx.ui.requestRender();
 				this.ctx.showStatus(error.message);
 				return;
 			}
@@ -1958,7 +1877,6 @@ export class InputController {
 				// locked transient screenshot file). Prefer the clipboard bytes.
 				if (await this.#tryPasteClipboardImage()) return;
 				this.ctx.editor.pasteText(path);
-				this.ctx.ui.requestRender();
 				this.ctx.showStatus("Pasted path is not a supported image");
 				return;
 			}
@@ -1969,7 +1887,6 @@ export class InputController {
 		} catch (error) {
 			if (error instanceof ImageInputTooLargeError) {
 				this.ctx.editor.pasteText(path);
-				this.ctx.ui.requestRender();
 				this.ctx.showStatus(error.message);
 				return;
 			}
@@ -1986,14 +1903,7 @@ export class InputController {
 				// displayed length before splicing it into the status string.
 				const env = process.env;
 				const overSsh = Boolean(env.SSH_CONNECTION || env.SSH_TTY || env.SSH_CLIENT);
-				const displayPath = truncateToWidth(
-					shortenPath(
-						sanitizeText(path)
-							.replace(/[\r\n\t]+/g, " ")
-							.trim(),
-					),
-					TRUNCATE_LENGTHS.CONTENT,
-				);
+				const displayPath = previewLine(shortenPath(sanitizeText(path)), TRUNCATE_LENGTHS.CONTENT);
 				this.ctx.showStatus(
 					overSsh
 						? `Image not found at ${displayPath}. Over SSH this path is local to your terminal — paste the image directly (clipboard image-paste shortcut) to send its bytes.`
@@ -2003,7 +1913,6 @@ export class InputController {
 			}
 			if (await this.#tryPasteClipboardImage()) return;
 			this.ctx.editor.pasteText(path);
-			this.ctx.ui.requestRender();
 			this.ctx.showStatus("Failed to read pasted image path");
 		}
 	}
@@ -2108,7 +2017,6 @@ export class InputController {
 				const target = promptTarget ?? this.ctx.editor;
 				target.pasteText(text);
 			}
-			this.ctx.ui.requestRender();
 			return true;
 		} catch {
 			this.ctx.showStatus("Failed to read clipboard");
@@ -2123,7 +2031,6 @@ export class InputController {
 			const text = await this.clipboard.readText();
 			if (text) {
 				this.ctx.editor.insertText(text);
-				this.ctx.ui.requestRender();
 			} else {
 				this.ctx.showStatus("No text in clipboard to paste raw");
 			}
@@ -2194,7 +2101,6 @@ export class InputController {
 				this.ctx.editor.insertTextAttachment(text);
 				break;
 		}
-		this.ctx.ui.requestRender();
 	}
 
 	/**
@@ -2331,7 +2237,7 @@ export class InputController {
 		if (newLevel === undefined) {
 			this.ctx.showStatus("Current model does not support thinking");
 		} else {
-			this.ctx.statusLine.invalidate();
+			this.ctx.statusLine.ingestSession();
 			this.ctx.updateEditorBorderColor();
 		}
 	}
@@ -2349,18 +2255,17 @@ export class InputController {
 				return;
 			}
 
-			this.ctx.statusLine.invalidate();
+			this.ctx.statusLine.ingestSession();
 			this.ctx.updateEditorBorderColor();
 			// The status line already reports the resolved model + thinking level, so
 			// the cycle status is just a status-line-style chip track (active role
 			// filled), matching the plan-approval model slider. It renders into its
 			// own anchored container above the editor (cleared+rebuilt each cycle),
 			// so it updates in place instead of stacking duplicates in the scrollback.
-			const track = renderSegmentTrack(
+			this.ctx.showModelCycleTrack(
 				cycleOrder.map(role => ({ label: role })),
 				cycleOrder.indexOf(result.role),
 			);
-			this.ctx.showModelCycleTrack(track);
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
@@ -2385,16 +2290,11 @@ export class InputController {
 			this.ctx.toolOutputExpanded = false;
 		}
 
-		for (const child of this.ctx.chatContainer.children) {
-			if (
-				!this.ctx.hideToolActivity &&
-				(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
-			) {
-				child.setExpanded(false);
-			} else if (child instanceof AssistantMessageComponent) {
-				child.setToolResultImagesVisible(!this.ctx.hideToolActivity);
-			}
-		}
+		this.ctx.toolPresentation.setExpanded(false);
+		this.ctx.toolPresentation.setVisibility({
+			showImages: this.ctx.assistantImagesVisible,
+			hidden: this.ctx.hideToolActivity,
+		});
 		this.ctx.chatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
 
 		if (this.ctx.hideToolActivity) this.ctx.ui.clearInlineImages();
@@ -2405,14 +2305,7 @@ export class InputController {
 
 	setToolsExpanded(expanded: boolean): void {
 		this.ctx.toolOutputExpanded = expanded;
-		for (const child of this.ctx.chatContainer.children) {
-			if (isExpandable(child)) {
-				child.setExpanded(expanded);
-			}
-		}
-		// Toggling expansion mutates every live block; blocks already committed to
-		// terminal history stay at their committed presentation.
-		this.ctx.ui.requestRender(true);
+		this.ctx.toolPresentation.setExpanded(expanded);
 	}
 
 	toggleThinkingBlockVisibility(): void {
@@ -2430,24 +2323,9 @@ export class InputController {
 		this.ctx.hideThinkingBlock = !this.ctx.hideThinkingBlock;
 		this.ctx.settings.set("hideThinkingBlock", this.ctx.hideThinkingBlock);
 
-		for (const child of this.ctx.chatContainer.children) {
-			if (child instanceof AssistantMessageComponent) {
-				child.setHideThinkingBlock(this.ctx.hideThinkingBlock);
-			}
-		}
-
-		if (this.ctx.streamingComponent && this.ctx.streamingMessage) {
-			this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.hideThinkingBlock);
-			this.ctx.streamingComponent.updateContent(this.ctx.streamingMessage);
-		}
-
-		// This is an explicit user display gesture: rebuild native history so the
-		// visibility change also applies to rows already retired from the viewport.
-		// Append-only thinking heads emitted their stable rows to scrollback while
-		// streaming (visible); forget that emission ledger so the paired scrollback
-		// clear re-renders them under the new visibility instead of replaying the
-		// captured reasoning (#10177).
-		this.ctx.chatContainer.resetStableEmission();
+		// This is an explicit display gesture, so rebuild retained transcript state
+		// from the session snapshot under the new visibility preference.
+		this.ctx.rebuildChatFromMessages();
 		this.ctx.ui.resetDisplay();
 
 		this.ctx.showStatus(`Thinking blocks: ${this.ctx.hideThinkingBlock ? "hidden" : "visible"}`);
@@ -2474,7 +2352,6 @@ export class InputController {
 			);
 		} finally {
 			this.ctx.ui.start();
-			this.ctx.ui.requestRender();
 		}
 	}
 

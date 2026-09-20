@@ -33,15 +33,6 @@ function makeTempDir(prefix = "@pi-autoresearch-tools-"): TempDir {
 	return TempDir.createSync(prefix);
 }
 
-function dashboardStub() {
-	return {
-		clear(): void {},
-		requestRender(): void {},
-		showOverlay: async (): Promise<void> => {},
-		updateWidget(): void {},
-	};
-}
-
 function createCtx(cwd: string): ExtensionContext {
 	return { cwd, hasUI: false } as ExtensionContext;
 }
@@ -183,7 +174,7 @@ describe("init_experiment", () => {
 		await writeHarnessStub(dir);
 		const runtime = createSessionRuntime();
 		const tool = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -224,7 +215,7 @@ describe("init_experiment", () => {
 		await writeHarnessStub(dir);
 		const runtime = createSessionRuntime();
 		const tool = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -255,7 +246,7 @@ describe("init_experiment", () => {
 		await writeHarnessStub(dir);
 		const runtime = createSessionRuntime();
 		const tool = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -275,7 +266,7 @@ describe("init_experiment", () => {
 		const dir = freshRepo().dir;
 		const runtime = createSessionRuntime();
 		const tool = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -297,7 +288,7 @@ describe("init_experiment", () => {
 		await writeHarnessStub(dir);
 		const runtime = createSessionRuntime();
 		const tool = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -323,7 +314,7 @@ describe("init_experiment", () => {
 		await writeHarnessStub(dir);
 		const runtime = createSessionRuntime();
 		const tool = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -361,7 +352,7 @@ describe("run_experiment", () => {
 		const dir = freshRepo().dir;
 		const runtime = createSessionRuntime();
 		const run = createRunExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -374,7 +365,7 @@ describe("run_experiment", () => {
 		await writeHarnessStub(dir, "echo METRIC runtime_ms=42; echo METRIC memory_mb=12; echo ASI hypothesis=baseline");
 		const runtime = createSessionRuntime();
 		const init = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -386,7 +377,7 @@ describe("run_experiment", () => {
 			createCtx(dir),
 		);
 		const run = createRunExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -412,13 +403,13 @@ describe("run_experiment", () => {
 		await writeHarnessStub(dir);
 		const runtime = createSessionRuntime();
 		const initTool = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
 		await initTool.execute("i", { name: "x", primary_metric: "m" }, undefined, undefined, createCtx(dir));
 		const run = createRunExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -452,7 +443,7 @@ describe("log_experiment", () => {
 		await writeHarnessStub(dir, "echo METRIC runtime_ms=10");
 		const harness = createPiHarness();
 		const init = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -476,7 +467,7 @@ describe("log_experiment", () => {
 			parsedMetrics: { runtime_ms: 10 },
 		});
 		const log = createLogExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -489,13 +480,13 @@ describe("log_experiment", () => {
 		const runtime = createSessionRuntime();
 		const harness = createPiHarness();
 		const init = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
 		await init.execute("i", { name: "x", primary_metric: "m" }, undefined, undefined, createCtx(dir));
 		const log = createLogExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -627,7 +618,7 @@ describe("log_experiment", () => {
 		});
 		const runtime = createSessionRuntime();
 		const log = createLogExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
@@ -662,7 +653,7 @@ describe("log_experiment", () => {
 		const runtime = createSessionRuntime();
 		const harness = createPiHarness();
 		const init = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -674,7 +665,7 @@ describe("log_experiment", () => {
 			createCtx(dir),
 		);
 		const run = createRunExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -686,7 +677,7 @@ describe("log_experiment", () => {
 		await Bun.write(path.join(dir, "src", "new.ts"), "export const NEW = true;\n");
 
 		const log = createLogExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -710,7 +701,7 @@ describe("log_experiment", () => {
 		const runtime = createSessionRuntime();
 		const harness = createPiHarness();
 		const init = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -729,7 +720,7 @@ describe("log_experiment", () => {
 		await Bun.write(path.join(dir, "scratch.ts"), "// junk\n");
 
 		const log = createLogExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -758,7 +749,7 @@ describe("log_experiment", () => {
 		const runtime = createSessionRuntime();
 		const harness = createPiHarness();
 		const init = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -776,7 +767,7 @@ describe("log_experiment", () => {
 		seedCompletedRun(storage, storage.getActiveSession()!, { parsedPrimary: 1, parsedMetrics: { m: 1 } });
 
 		const log = createLogExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -800,7 +791,7 @@ describe("log_experiment", () => {
 		const runtime = createSessionRuntime();
 		const harness = createPiHarness();
 		const init = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -818,7 +809,7 @@ describe("log_experiment", () => {
 		seedCompletedRun(storage, storage.getActiveSession()!, { parsedPrimary: 1, parsedMetrics: { m: 1 } });
 
 		const log = createLogExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
@@ -855,13 +846,13 @@ describe("update_notes", () => {
 		const runtime = createSessionRuntime();
 		const harness = createPiHarness();
 		const init = createInitExperimentTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});
 		await init.execute("i", { name: "x", primary_metric: "m" }, undefined, undefined, createCtx(dir));
 		const notes = createUpdateNotesTool({
-			dashboard: dashboardStub(),
+			refreshDashboard: () => {},
 			getRuntime: () => runtime,
 			pi: harness.api,
 		});

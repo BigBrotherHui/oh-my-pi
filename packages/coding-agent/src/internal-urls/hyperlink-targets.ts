@@ -1,7 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as url from "node:url";
-import { getMarkdownLinkUrls, TERMINAL } from "@oh-my-pi/pi-tui";
+import { getMarkdownLinkUrls } from "@oh-my-pi/pi-tui/components/markdown-engine";
+import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { fileUriForTerminal } from "@oh-my-pi/pi-tui/render/hyperlink";
 import {
 	extractUriScheme,

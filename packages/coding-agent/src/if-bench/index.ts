@@ -15,11 +15,17 @@ import {
 	resolveBenchTargets,
 	type StreamSimpleFn,
 } from "../cli/bench-runtime";
-import type { LiveBoardOutput } from "@oh-my-pi/pi-tui/chrome/live-board";
 import { initialArray } from "./actions";
 import { createIfBenchBoard, formatIfBenchScoreboard } from "@oh-my-pi/pi-tui/apps/if-bench-board";
 import { DEFAULT_NYA_MAX } from "./protocol";
 import { type IfBenchSummary, runIfBench } from "./runner";
+
+interface LiveBoardOutput {
+	readonly isTTY?: boolean;
+	readonly columns?: number;
+	readonly rows?: number;
+	write(text: string): boolean;
+}
 
 const DEFAULT_TURNS = 24;
 const DEFAULT_ARRAY_LENGTH = 24;

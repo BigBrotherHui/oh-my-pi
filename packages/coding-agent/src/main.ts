@@ -605,7 +605,7 @@ async function runInteractiveMode(
 			lspServers,
 			mcpManager,
 			eventBus,
-			startupLease?.composer,
+			startupLease,
 			subagentEventBus,
 		);
 		startupLease?.adopt();

@@ -1,4 +1,9 @@
-import { createGradientHighlighter, type KeywordHighlighter } from "./gradient-highlight";
+import {
+	createGradientDecorator,
+	createGradientHighlighter,
+	type KeywordDecorator,
+	type KeywordHighlighter,
+} from "./gradient-highlight";
 import { magicKeywordRegex } from "./magic-keyword-boundary";
 import { keywordInProse } from "./markdown-prose";
 
@@ -18,9 +23,12 @@ export function containsOrchestrate(text: string): boolean {
  * cool teal→violet gradient (hue 150..280), visually distinct from ultrathink's
  * full-spectrum rainbow.
  */
-export const highlightOrchestrate: KeywordHighlighter = createGradientHighlighter({
+const ORCHESTRATE_GRADIENT = {
 	probe: /orchestrate/,
 	highlight: magicKeywordRegex("orchestrate", "g"),
 	stops: 14,
-	hue: t => 150 + t * 130,
-});
+	hue: (t: number) => 150 + t * 130,
+};
+
+export const highlightOrchestrate: KeywordHighlighter = createGradientHighlighter(ORCHESTRATE_GRADIENT);
+export const decorateOrchestrate: KeywordDecorator = createGradientDecorator(ORCHESTRATE_GRADIENT);

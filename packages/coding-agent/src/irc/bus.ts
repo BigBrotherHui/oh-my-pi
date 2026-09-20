@@ -1,4 +1,4 @@
-import { type IrcMessage, type IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/hub";
+import { type IrcMessage, type IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/hub-contract";
 /**
  * IrcBus - Process-global mailbox bus for agent-to-agent messaging.
  *

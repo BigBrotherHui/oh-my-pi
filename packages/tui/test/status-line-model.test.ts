@@ -3,6 +3,10 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { SegmentContext } from "../src/status-line/segments";
 import { renderSegment } from "../src/status-line/segments";
 import { initTheme, theme } from "../src/theme";
+import { visibleWidth } from "../src/utils";
+import type { JSX } from "../src/reactive";
+import { cellGrid, expectSameCells } from "./cell-grid";
+import { renderVNode } from "./helpers/render-vnode";
 
 beforeAll(async () => {
 	await initTheme();
@@ -61,24 +65,37 @@ function createModelContext(advisorActive: boolean): SegmentContext {
 	};
 }
 
+function expectGlyphStyle(view: JSX.Element, glyph: string, expected: string): void {
+	const content = renderVNode(view);
+	const plain = Bun.stripANSI(content);
+	const index = plain.indexOf(glyph);
+	expect(index).toBeGreaterThanOrEqual(0);
+	const column = visibleWidth(plain.slice(0, index));
+	const actualCell = cellGrid([content], Math.max(120, column + 2))[0]![column]!;
+	const expectedCell = cellGrid([expected], 120)[0]![0]!;
+	expect(actualCell.fg).toEqual(expectedCell.fg);
+	expect(actualCell.attrs).toEqual(expectedCell.attrs);
+}
+
 describe("status line stream segment", () => {
 	it("renders the live viewer badge only while attached", () => {
 		const ctx = createModelContext(false);
 		ctx.stream = { viewers: 7 };
-		expect(renderSegment("stream", ctx)).toEqual({
-			content: theme.fg("thinkingHigh", "● LIVE 7"),
-			visible: true,
-		});
+		const rendered = renderSegment("stream", ctx);
+		expect(rendered.visible).toBe(true);
+		expectSameCells([theme.fg("thinkingHigh", "● LIVE 7")], [renderVNode(rendered.content)], 120);
 		ctx.stream = null;
-		expect(renderSegment("stream", ctx)).toEqual({ content: "", visible: false });
+		const hidden = renderSegment("stream", ctx);
+		expect(hidden.visible).toBe(false);
+		expect(renderVNode(hidden.content)).toBe("");
 	});
 });
 
 describe("status line model segment advisor badge", () => {
 	it("appends a success-colored advisor symbol when all advisors run", () => {
 		const rendered = renderSegment("model", createModelContext(true));
-		expect(rendered.content).toContain("Test Model");
-		expect(rendered.content).toContain(theme.fg("success", ` ${theme.icon.advisor}`));
+		expect(renderVNode(rendered.content)).toContain("Test Model");
+		expectGlyphStyle(rendered.content, theme.icon.advisor, theme.fg("success", theme.icon.advisor));
 	});
 
 	it("colors the badge by the worst roster status", () => {
@@ -90,7 +107,11 @@ describe("status line model segment advisor badge", () => {
 				{ name: "b", status: "quota_exhausted", yielded: false },
 			],
 		});
-		expect(renderSegment("model", ctx).content).toContain(theme.fg("warning", ` ${theme.icon.advisor}`));
+		expectGlyphStyle(
+			renderSegment("model", ctx).content,
+			theme.icon.advisor,
+			theme.fg("warning", theme.icon.advisor),
+		);
 		ctx.session.getAdvisorStatusOverview = () => ({
 			configured: true,
 			advisors: [
@@ -98,7 +119,7 @@ describe("status line model segment advisor badge", () => {
 				{ name: "b", status: "quota_exhausted", yielded: false },
 			],
 		});
-		expect(renderSegment("model", ctx).content).toContain(theme.fg("error", ` ${theme.icon.advisor}`));
+		expectGlyphStyle(renderSegment("model", ctx).content, theme.icon.advisor, theme.fg("error", theme.icon.advisor));
 	});
 	it("closes the eye once every advisor has yielded its review", () => {
 		const ctx = createModelContext(true);
@@ -106,8 +127,9 @@ describe("status line model segment advisor badge", () => {
 			configured: true,
 			advisors: [{ name: "default", status: "running", yielded: true }],
 		});
-		const rendered = renderSegment("model", ctx).content;
-		expect(rendered).toContain(theme.fg("success", ` ${theme.icon.advisorClosed}`));
+		const view = renderSegment("model", ctx).content;
+		const rendered = renderVNode(view);
+		expectGlyphStyle(view, theme.icon.advisorClosed, theme.fg("success", theme.icon.advisorClosed));
 		// ASCII mode resolves both icons to `(adv)`, so absence is only provable
 		// when the two tokens differ.
 		if (theme.icon.advisorClosed !== theme.icon.advisor) {
@@ -124,17 +146,18 @@ describe("status line model segment advisor badge", () => {
 				{ name: "b", status: "running", yielded: false },
 			],
 		});
-		const rendered = renderSegment("model", ctx).content;
-		expect(rendered).toContain(theme.fg("success", ` ${theme.icon.advisor}`));
+		const view = renderSegment("model", ctx).content;
+		const rendered = renderVNode(view);
+		expectGlyphStyle(view, theme.icon.advisor, theme.fg("success", theme.icon.advisor));
 		if (theme.icon.advisorClosed !== theme.icon.advisor) {
 			expect(rendered).not.toContain(theme.icon.advisorClosed);
 		}
 	});
 
 	it("omits the badge when the advisor is inactive", () => {
-		const rendered = renderSegment("model", createModelContext(false));
-		expect(rendered.content).toContain("Test Model");
-		expect(rendered.content).not.toContain(theme.icon.advisor);
+		const rendered = renderVNode(renderSegment("model", createModelContext(false)).content);
+		expect(rendered).toContain("Test Model");
+		expect(rendered).not.toContain(theme.icon.advisor);
 	});
 });
 
@@ -161,14 +184,14 @@ describe("status line model segment compact thinking level", () => {
 		const display = theme.thinking.high;
 		const modelPrefix = theme.icon.model ? `${theme.icon.model} ` : "";
 		const rendered = renderSegment("model", createThinkingContext(false));
-		expect(Bun.stripANSI(rendered.content)).toBe(`${modelPrefix}Test Model${theme.sep.dot}${display}`);
+		expect(Bun.stripANSI(renderVNode(rendered.content))).toBe(`${modelPrefix}Test Model${theme.sep.dot}${display}`);
 	});
 
 	it("swaps the model icon for the level glyph and drops the suffix when compact", () => {
 		const display = theme.thinking.high;
 		const glyph = display.includes(" ") ? display.slice(0, display.indexOf(" ")) : display;
 		const rendered = renderSegment("model", createThinkingContext(true));
-		expect(Bun.stripANSI(rendered.content)).toBe(`${glyph} Test Model`);
-		expect(Bun.stripANSI(rendered.content)).not.toContain(theme.sep.dot);
+		expect(Bun.stripANSI(renderVNode(rendered.content))).toBe(`${glyph} Test Model`);
+		expect(Bun.stripANSI(renderVNode(rendered.content))).not.toContain(theme.sep.dot);
 	});
 });

@@ -4,7 +4,7 @@ import {
 	type DaemonReadySpec,
 	type DaemonSpec,
 	type DaemonSnapshot,
-} from "@oh-my-pi/pi-tui/tools/hub";
+} from "@oh-my-pi/pi-tui/tools/hub-contract";
 /**
  * Cross-process daemon broker protocol shared by the tool, client, and broker.
  */

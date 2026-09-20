@@ -4,7 +4,7 @@ import {
 	type LaunchToolDetails,
 	readyPendingSummary,
 	waitPendingSummary,
-} from "@oh-my-pi/pi-tui/tools/hub";
+} from "@oh-my-pi/pi-tui/tools/hub-contract";
 /**
  * Hub launch half — supervision of project-scoped long-running processes
  * (dev servers, watchers, debuggers, REPLs) through the shared daemon broker.
@@ -18,7 +18,7 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 import { type DaemonBrokerClient, DaemonBrokerRejectedError, daemonClientForProject } from "../../launch/client";
 import type { DaemonOperation, DaemonRpcResult } from "../../launch/protocol";
-import type { DaemonSnapshot, DaemonSpec } from "@oh-my-pi/pi-tui/tools/hub";
+import type { DaemonSnapshot, DaemonSpec } from "@oh-my-pi/pi-tui/tools/hub-contract";
 import { renderTerminalOutputIsolated } from "../../launch/terminal-output-worker-client";
 
 import type { ToolSession } from "..";

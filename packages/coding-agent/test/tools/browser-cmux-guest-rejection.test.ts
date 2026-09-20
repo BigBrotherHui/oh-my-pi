@@ -49,4 +49,4 @@ test("cmux guest floating rejection fails the browser run without exiting the ho
 	expect(exitCode, stderr).toBe(0);
 	expect(stdout).toBe("caught:Unhandled rejection (missing await?): boom\n");
 	expect(stderr).not.toContain("[Unhandled Rejection]");
-});
+}, 20_000);

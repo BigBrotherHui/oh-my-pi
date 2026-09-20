@@ -1,0 +1,37 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "alpha\nbeta\n\n[Showing lines 1-2 of 4. Read artifact://42 for full output]"
+    },
+    {
+      "type": "image",
+      "data": "aW1hZ2U=",
+      "mimeType": "image/png",
+      "path": "preview.png"
+    }
+  ],
+  "details": {
+    "exitCode": 0,
+    "meta": {
+      "truncation": {
+        "direction": "head",
+        "truncatedBy": "lines",
+        "totalLines": 4,
+        "totalBytes": 22,
+        "outputLines": 2,
+        "outputBytes": 10,
+        "shownRange": {
+          "start": 1,
+          "end": 2
+        },
+        "artifactId": "42"
+      },
+      "source": {
+        "type": "path",
+        "value": "fixture.txt"
+      }
+    }
+  },
+  "isError": false
+}

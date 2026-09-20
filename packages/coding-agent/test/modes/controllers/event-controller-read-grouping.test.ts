@@ -1,68 +1,38 @@
-/**
- * Read-group accretion across assistant completions.
- *
- * Reasoning models (and codex-style providers) frequently emit one `read` per
- * completion as `[thinking?, toolCall]` rather than batching parallel calls.
- * The transcript should still collapse an uninterrupted run of those reads into
- * a single {@link ReadToolGroupComponent}; a completion that renders visible
- * content (non-empty text/thinking) is the only thing that breaks the run, so a
- * fresh group starts after it.
- *
- * Regression: every completion used to reset the active group at `message_start`,
- * so consecutive single-read completions never grouped (each rendered as its own
- * one-entry block).
- */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
-import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
-import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
-import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
-import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { Settings, resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { type Component, Image, ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
+import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
+import { TranscriptView } from "@oh-my-pi/pi-tui/chat/transcript-store";
+import { TranscriptController } from "@oh-my-pi/pi-tui/compositor/transcript";
+import { createPaintContext } from "@oh-my-pi/pi-tui/host/paint";
+import { resolveStyle } from "@oh-my-pi/pi-tui/style/cascade";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { mountForTest } from "@oh-my-pi/pi-tui/testing";
+import "@oh-my-pi/pi-tui/host/elements/badge";
+import "@oh-my-pi/pi-tui/host/elements/box";
+import "@oh-my-pi/pi-tui/host/elements/code";
+import "@oh-my-pi/pi-tui/host/elements/frame";
+import "@oh-my-pi/pi-tui/host/elements/link";
+import "@oh-my-pi/pi-tui/host/elements/preview";
+import "@oh-my-pi/pi-tui/host/elements/row";
+import "@oh-my-pi/pi-tui/host/elements/span";
+import "@oh-my-pi/pi-tui/host/elements/stack";
+import "@oh-my-pi/pi-tui/host/elements/status";
+import "@oh-my-pi/pi-tui/host/elements/text";
+import "@oh-my-pi/pi-tui/host/elements/transcript";
+import "@oh-my-pi/pi-tui/host/elements/transcript-block";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
 
-beforeAll(async () => {
-	await initTheme(false, undefined, undefined, "dark", "light");
-});
+const READ_BODY_SENTINEL = "READ_GROUP_BODY_MUST_STAY_HIDDEN";
 
-const originalImageProtocol = TERMINAL.imageProtocol;
-
-beforeEach(async () => {
-	resetSettingsForTest();
-	await Settings.init({ inMemory: true });
-});
-
-afterEach(() => {
-	resetSettingsForTest();
-	setTerminalImageProtocol(originalImageProtocol);
-	vi.restoreAllMocks();
-});
-
-type Block = AssistantMessage["content"][number];
-
-function read(path: string): Block {
-	return { type: "toolCall", id: `read-${path}`, name: "read", arguments: { path } } as Block;
-}
-
-function toolCall(name: string, id: string, args: Record<string, unknown>): Block {
-	return { type: "toolCall", id, name, arguments: args } as Block;
-}
-
-function thinking(text: string): Block {
-	return { type: "thinking", thinking: text } as Block;
-}
-
-function assistantMessage(content: Block[]): AssistantMessage {
+function assistantWithToolCalls(content: AssistantMessage["content"], timestamp: number): AssistantMessage {
 	return {
 		role: "assistant",
 		content,
-		api: "openai-codex-responses",
-		provider: "openai-codex",
-		model: "gpt-5.5",
-		stopReason: "toolUse",
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-test",
 		usage: {
 			input: 0,
 			output: 0,
@@ -71,197 +41,239 @@ function assistantMessage(content: Block[]): AssistantMessage {
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		timestamp: Date.now(),
+		stopReason: "toolUse",
+		timestamp,
 	};
 }
 
-function createFixture() {
-	const ctx = createInteractiveModeContext();
-	return { controller: new EventController(ctx), chatContainer: ctx.chatContainer };
-}
-
-/** Drive one assistant completion: message_start then a single full message_update. */
-async function streamCompletion(controller: EventController, content: Block[]): Promise<void> {
-	const message = assistantMessage(content);
-	await controller.handleEvent({ type: "message_start", message } as AgentSessionEvent);
-	await controller.handleEvent({ type: "message_update", message } as AgentSessionEvent);
-}
-
-function readGroups(chatContainer: TranscriptContainer): ReadToolGroupComponent[] {
-	return chatContainer.children.filter((c): c is ReadToolGroupComponent => c instanceof ReadToolGroupComponent);
-}
-
-function header(group: ReadToolGroupComponent): string {
-	return Bun.stripANSI(group.render(120).join("\n")).split("\n")[0] ?? "";
-}
-
-function hasImageComponent(component: Component): boolean {
-	if (component instanceof Image) return true;
-	if (!("children" in component) || !Array.isArray(component.children)) return false;
-	return component.children.some(child => hasImageComponent(child));
-}
-
-describe("EventController read-group accretion", () => {
-	it("collapses a run of single-read completions into one group (mixed/empty thinking)", async () => {
-		const { controller, chatContainer } = createFixture();
-
-		// Mirrors the reported session: first read carries reasoning, the rest have
-		// empty or absent thinking. None of them should break the run. Distinct files
-		// keep one aggregated row per read so the count reflects the run size.
-		await streamCompletion(controller, [thinking("Considering performance optimizations"), read("a.ts:180-250")]);
-		await streamCompletion(controller, [thinking(""), read("b.ts:1-120")]);
-		await streamCompletion(controller, [read("c.ts:1-220")]);
-		await streamCompletion(controller, [read("d.ts:450-535")]);
-
-		const groups = readGroups(chatContainer);
-		expect(groups.length).toBe(1);
-		expect(header(groups[0]!)).toContain("Read (4)");
+describe("reactive read groups", () => {
+	beforeAll(async () => {
+		await initTheme(false);
 	});
 
-	it("nests a read-only completion's usage inside the active group", async () => {
-		settings.set("display.showTokenUsage", true);
-		const { controller, chatContainer } = createFixture();
-		const message = assistantMessage([thinking("Reviewing the target"), read("usage.ts:1-50")]);
-		message.usage = {
-			input: 1234,
-			output: 7,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 1241,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		message.timestamp = new Date(2026, 0, 2, 3, 4, 5).getTime();
-
-		await controller.handleEvent({ type: "message_start", message } as AgentSessionEvent);
-		await controller.handleEvent({ type: "message_update", message } as AgentSessionEvent);
-		await controller.handleEvent({ type: "message_end", message } as AgentSessionEvent);
-
-		const [group] = readGroups(chatContainer);
-		expect(group).toBeDefined();
-		const usageBlocks = chatContainer.children.filter(component =>
-			Bun.stripANSI(component.render(120).join("\n")).includes("2026-01-02 03:04:05"),
-		);
-		expect(usageBlocks).toEqual([group!]);
+	beforeEach(async () => {
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true });
 	});
 
-	it("keeps usage standalone when visible content follows a read", async () => {
-		settings.set("display.showTokenUsage", true);
-		const { controller, chatContainer } = createFixture();
-		const message = assistantMessage([read("usage.ts:1-50"), thinking("Read complete")]);
-		message.usage = {
-			input: 1234,
-			output: 7,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 1241,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		message.timestamp = new Date(2026, 0, 2, 3, 4, 5).getTime();
-
-		await controller.handleEvent({ type: "message_start", message } as AgentSessionEvent);
-		await controller.handleEvent({ type: "message_update", message } as AgentSessionEvent);
-		await controller.handleEvent({ type: "message_end", message } as AgentSessionEvent);
-
-		const [group] = readGroups(chatContainer);
-		expect(group).toBeDefined();
-		const usageBlocks = chatContainer.children.filter(component =>
-			Bun.stripANSI(component.render(120).join("\n")).includes("2026-01-02 03:04:05"),
-		);
-		expect(usageBlocks).toHaveLength(1);
-		expect(usageBlocks[0]).not.toBe(group!);
+	afterEach(() => {
+		resetSettingsForTest();
 	});
 
-	it("starts a fresh group after standalone usage for a mixed-tool turn ending in read", async () => {
-		settings.set("display.showTokenUsage", true);
-		const { controller, chatContainer } = createFixture();
-		const message = assistantMessage([toolCall("bash", "bash-mixed", { command: "true" }), read("first.ts:1-50")]);
-		message.usage = {
-			input: 1234,
-			output: 7,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 1241,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		message.timestamp = new Date(2026, 0, 2, 3, 4, 5).getTime();
+	it("replays adjacent reads as one compact group and breaks at a mixed tool", () => {
+		const ctx = createInteractiveModeContext();
+		const helpers = new UiHelpers(ctx);
+		ctx.addMessageToChat = message => helpers.addMessageToChat(message);
+		const root = mountForTest(() => TranscriptView({ store: ctx.chatContainer }), { width: 100 });
+		try {
+			helpers.addMessageToChat(
+				assistantWithToolCalls(
+					[
+						{ type: "toolCall", id: "read-one", name: "read", arguments: { path: "src/one.ts" } },
+						{ type: "toolCall", id: "read-two", name: "read", arguments: { path: "src/two.ts:4-8" } },
+						{ type: "toolCall", id: "bash-after", name: "bash", arguments: { command: "pwd" } },
+						{ type: "toolCall", id: "read-after", name: "read", arguments: { path: "src/after.ts" } },
+					],
+					1,
+				),
+			);
+			helpers.addMessageToChat({
+				role: "toolResult",
+				toolCallId: "read-one",
+				toolName: "read",
+				timestamp: 2,
+				content: [{ type: "text", text: READ_BODY_SENTINEL }],
+				isError: false,
+			});
+			helpers.addMessageToChat({
+				role: "toolResult",
+				toolCallId: "read-two",
+				toolName: "read",
+				timestamp: 3,
+				content: [{ type: "text", text: READ_BODY_SENTINEL }],
+				isError: false,
+			});
+			helpers.addMessageToChat({
+				role: "toolResult",
+				toolCallId: "read-after",
+				toolName: "read",
+				timestamp: 4,
+				content: [{ type: "text", text: READ_BODY_SENTINEL }],
+				isError: false,
+			});
 
-		await controller.handleEvent({ type: "message_start", message } as AgentSessionEvent);
-		await controller.handleEvent({ type: "message_update", message } as AgentSessionEvent);
-		await controller.handleEvent({ type: "message_end", message } as AgentSessionEvent);
-		await streamCompletion(controller, [read("second.ts:1-50")]);
-
-		const groups = readGroups(chatContainer);
-		expect(groups).toHaveLength(2);
-		const firstGroupIndex = chatContainer.children.indexOf(groups[0]!);
-		const usageIndex = chatContainer.children.findIndex(component =>
-			Bun.stripANSI(component.render(120).join("\n")).includes("2026-01-02 03:04:05"),
-		);
-		const secondGroupIndex = chatContainer.children.indexOf(groups[1]!);
-		expect(firstGroupIndex).toBeLessThan(usageIndex);
-		expect(usageIndex).toBeLessThan(secondGroupIndex);
+			const transcript = root.text().join("\n");
+			expect(transcript).toContain("Read (2)");
+			expect(transcript).toContain("src/one.ts");
+			expect(transcript).toContain("src/two.ts:4-8");
+			expect(transcript).toContain("src/after.ts");
+			expect(transcript).not.toContain(READ_BODY_SENTINEL);
+			expect(transcript.indexOf("src/two.ts:4-8")).toBeLessThan(transcript.indexOf("pwd"));
+			expect(transcript.indexOf("pwd")).toBeLessThan(transcript.indexOf("src/after.ts"));
+		} finally {
+			root.dispose();
+		}
 	});
 
-	it("starts a new group after a completion that renders visible reasoning", async () => {
-		const { controller, chatContainer } = createFixture();
+	it("retires completed reads under pressure and starts a fresh run for later reads", () => {
+		const ctx = createInteractiveModeContext();
+		const helpers = new UiHelpers(ctx);
+		const root = mountForTest(() => TranscriptView({ store: ctx.chatContainer }), { width: 100 });
+		try {
+			helpers.addMessageToChat(
+				assistantWithToolCalls(
+					[{ type: "toolCall", id: "first", name: "read", arguments: { path: "src/first.ts" } }],
+					1,
+				),
+			);
+			helpers.addMessageToChat({
+				role: "toolResult",
+				toolCallId: "first",
+				toolName: "read",
+				timestamp: 2,
+				content: [{ type: "text", text: READ_BODY_SENTINEL }],
+				isError: false,
+			});
+			expect(root.text().join("\n")).toContain("src/first.ts");
+			root.flush();
+			const transcript = root.root.node.children[0];
+			if (transcript?.kind !== "element" || !(transcript.state instanceof TranscriptController)) {
+				throw new Error("Expected transcript controller");
+			}
+			const context = createPaintContext(root.root, node => resolveStyle(node, { theme: root.root.theme }), {
+				now: 0,
+			});
+			const batch = transcript.state.peekFinalizedBatch(100, 0, context);
+			expect(batch?.rows.join("\n")).toContain("src/first.ts");
+			if (batch) transcript.state.acknowledgeHistory(batch.id);
 
-		await streamCompletion(controller, [read("a.ts:1-50")]);
-		await streamCompletion(controller, [read("b.ts:1-50")]);
-		// Visible reasoning is a separator: the next reads form a distinct group.
-		await streamCompletion(controller, [thinking("Now let me check the other files"), read("c.ts:1-40")]);
-		await streamCompletion(controller, [read("d.ts:1-40")]);
-
-		const groups = readGroups(chatContainer);
-		expect(groups.length).toBe(2);
-		expect(header(groups[0]!)).toContain("Read (2)");
-		expect(header(groups[1]!)).toContain("Read (2)");
+			helpers.addMessageToChat(
+				assistantWithToolCalls(
+					[{ type: "toolCall", id: "second", name: "read", arguments: { path: "src/second.ts" } }],
+					3,
+				),
+			);
+			helpers.addMessageToChat({
+				role: "toolResult",
+				toolCallId: "second",
+				toolName: "read",
+				timestamp: 4,
+				content: [{ type: "text", text: READ_BODY_SENTINEL }],
+				isError: false,
+			});
+			const joined = root.text().join("\n");
+			expect(joined).not.toContain("src/first.ts");
+			expect(joined).toContain("src/second.ts");
+		} finally {
+			root.dispose();
+		}
 	});
 
-	it("keeps the active group repaintable until it is finalized", async () => {
-		const { controller, chatContainer } = createFixture();
+	it("shows no success checkmark and spaces failed entries within the joined tree", async () => {
+		const ctx = createInteractiveModeContext();
+		const events = new EventController(ctx);
+		const root = mountForTest(() => TranscriptView({ store: ctx.chatContainer }), { width: 100 });
+		try {
+			await events.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: "success",
+				toolName: "read",
+				args: { path: "src/success.ts" },
+			});
+			await events.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: "success",
+				toolName: "read",
+				result: { content: [{ type: "text", text: READ_BODY_SENTINEL }] },
+				isError: false,
+			});
+			expect(
+				root
+					.text()
+					.filter(line => line.trim())
+					.map(line => line.trim()),
+			).toEqual([`${theme.format.bullet} Read src/success.ts`]);
 
-		await streamCompletion(controller, [read("a.ts:1-50")]);
-		const [group] = readGroups(chatContainer);
-		// While it is the active run the block must stay in the live region so its
-		// header can re-layout from `Read <path>` to `Read (N)` on risk terminals.
-		expect(group!.isTranscriptBlockFinalized()).toBe(false);
-
-		// Settle the read so the group has no in-flight result. A finalized group
-		// only commits to native scrollback once its pending entries resolve, so an
-		// unsettled read would keep it live even after the run breaks.
-		group!.updateResult({ content: [{ type: "text", text: "x" }], isError: false }, false, "read-a.ts:1-50");
-		expect(group!.isTranscriptBlockFinalized()).toBe(false);
-
-		// A visible-reasoning completion breaks the run and finalizes the prior group.
-		await streamCompletion(controller, [thinking("done exploring"), read("b.ts:1-50")]);
-		expect(group!.isTranscriptBlockFinalized()).toBe(true);
+			await events.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: "failed",
+				toolName: "read",
+				args: { path: "src/missing.ts" },
+			});
+			await events.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: "failed",
+				toolName: "read",
+				result: { content: [{ type: "text", text: "File missing" }] },
+				isError: true,
+			});
+			const tree = root
+				.text()
+				.filter(line => line.trim())
+				.map(line => line.trim());
+			expect(tree).toEqual([
+				`${theme.format.bullet} Read (2)`,
+				`${theme.tree.branch} src/success.ts`,
+				`${theme.tree.last} ${theme.status.error} src/missing.ts`,
+			]);
+		} finally {
+			events.dispose();
+			root.dispose();
+		}
 	});
 
-	it("retains live read images while hidden so the visibility toggle can reveal them", async () => {
-		Settings.instance.override("terminal.showImages", false);
-		setTerminalImageProtocol(ImageProtocol.Sixel);
-		const { controller, chatContainer } = createFixture();
-		const toolCall = read("hidden.png");
-		await streamCompletion(controller, [toolCall]);
-		const image: ImageContent = {
-			type: "image",
-			data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
-			mimeType: "image/png",
-		};
+	it("keeps live read results compact until the explicit preview preference is enabled", async () => {
+		const ctx = createInteractiveModeContext();
+		const events = new EventController(ctx);
+		const root = mountForTest(() => TranscriptView({ store: ctx.chatContainer }), { width: 100 });
+		try {
+			await events.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: "read-live",
+				toolName: "read",
+				args: { path: "src/live.ts" },
+			});
+			await events.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: "read-live",
+				toolName: "read",
+				result: { content: [{ type: "text", text: READ_BODY_SENTINEL }] },
+				isError: false,
+			});
+			expect(root.text().join("\n")).toContain("src/live.ts");
+			expect(root.text().join("\n")).not.toContain(READ_BODY_SENTINEL);
 
-		await controller.handleEvent({
-			type: "tool_execution_end",
-			toolCallId: toolCall.type === "toolCall" ? toolCall.id : "",
-			toolName: "read",
-			result: { content: [image], isError: false },
-			isError: false,
-		} as AgentSessionEvent);
-
-		const assistant = chatContainer.children.find(
-			(child): child is AssistantMessageComponent => child instanceof AssistantMessageComponent,
-		);
-		expect(assistant).toBeDefined();
-		expect(hasImageComponent(assistant!)).toBe(false);
-		assistant?.setImagesVisible(true);
-		expect(hasImageComponent(assistant!)).toBe(true);
+			await events.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: "boundary",
+				toolName: "bash",
+				args: { command: "pwd" },
+			});
+			await events.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: "boundary",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "pwd" }] },
+				isError: false,
+			});
+			ctx.settings.override("read.toolResultPreview", true);
+			await events.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: "read-preview",
+				toolName: "read",
+				args: { path: "src/preview.ts" },
+			});
+			await events.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: "read-preview",
+				toolName: "read",
+				result: { content: [{ type: "text", text: READ_BODY_SENTINEL }] },
+				isError: false,
+			});
+			expect(root.text().join("\n")).toContain(READ_BODY_SENTINEL);
+		} finally {
+			events.dispose();
+			root.dispose();
+		}
 	});
 });

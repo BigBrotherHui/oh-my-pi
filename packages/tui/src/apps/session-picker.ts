@@ -1,9 +1,11 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import {
-	SessionSelectorComponent,
+	createSessionSelectorController,
+	SessionSelectorView,
 	type SessionSelectorEntry,
 	type SessionHistoryMatcher,
 } from "../overlays/session-selector";
+import { Portal } from "../host/overlay";
 import { runStandaloneTui } from "./standalone-picker";
 
 /** Persistence and history capabilities supplied by the session-owning host. */
@@ -51,45 +53,44 @@ export async function selectSession<T extends SessionSelectorEntry>(
 		}
 	}
 
-	return runStandaloneTui<T | null>(
-		({ ui, finish }) => {
-			const selector = new SessionSelectorComponent(
-				sessions,
-				(session: T) => finish(session),
-				() => finish(null),
-				() => {
-					ui.stop();
-					process.exit(0);
-				},
-				{
-					onDelete: options.allowDelete === false ? undefined : host.deleteSession,
-					historyMatcher,
-					loadAllSessions: options.allowGlobalScope === false ? undefined : host.loadAllSessions,
-					allSessions: options.allSessions,
-					getTerminalRows: () => ui.terminal.rows,
-					fillHeight: true,
-					title: options.title,
-					scopeLabel: options.scopeLabel,
-					showCwd: options.showCwd,
-					pinnedIds,
-				},
-			);
-			selector.setOnRequestRender(() => ui.requestRender());
-			return selector;
-		},
-		// Present as a fullscreen overlay so the picker borrows the terminal's
-		// alternate screen buffer (vim/less idiom): the list scrolls and rows are
-		// clickable via the mouse tracking the overlay enables for its lifetime.
-		// Anchored top-left at full size so a mouse row maps directly to a rendered
-		// line (the overlay paints from screen row 0).
-		{
-			overlay: {
-				anchor: "top-left",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-				fullscreen: true,
+	return runStandaloneTui(({ finish }) => {
+		const selector = createSessionSelectorController(
+			sessions,
+			(session: T) => finish(session),
+			() => finish(null),
+			() => process.exit(0),
+			{
+				onDelete: options.allowDelete === false ? undefined : host.deleteSession,
+				historyMatcher,
+				loadAllSessions: options.allowGlobalScope === false ? undefined : host.loadAllSessions,
+				allSessions: options.allSessions,
+				fillHeight: true,
+				title: options.title,
+				scopeLabel: options.scopeLabel,
+				showCwd: options.showCwd,
+				pinnedIds,
 			},
-		},
-	);
+		);
+		return Portal({
+			to: "overlay",
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+			mouseTracking: true,
+			get children() {
+				return SessionSelectorView({
+					controller: selector,
+					options: {
+						fillHeight: true,
+						title: options.title,
+						scopeLabel: options.scopeLabel,
+						showCwd: options.showCwd,
+						pinnedIds,
+					},
+				});
+			},
+		});
+	});
 }

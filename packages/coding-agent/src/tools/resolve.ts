@@ -222,16 +222,18 @@ async function runResolveInvocation(
 		onApplyError?(error: unknown): void;
 	},
 ): Promise<AgentToolResult<ResolveDetails>> {
+	const action = params.action ?? (params.device === REJECT_DEVICE_NAME ? "discard" : "apply");
+	const reason = params.reason ?? "";
 	const baseDetails: ResolveDetails = {
-		action: params.action,
-		reason: params.reason,
-		sourceToolName: options.sourceToolName,
+		device: params.device,
+		action,
+		reason,
 		label: options.label,
 	};
-	if (params.action === "apply") {
+	if (action === "apply") {
 		let result: AgentToolResult<unknown>;
 		try {
-			result = await options.apply(params.reason);
+			result = await options.apply(reason);
 		} catch (error) {
 			try {
 				options.onApplyError?.(error);
@@ -251,7 +253,7 @@ async function runResolveInvocation(
 		};
 	}
 	if (options.reject != null) {
-		const result = await options.reject(params.reason);
+		const result = await options.reject(reason);
 		if (result != null) {
 			return {
 				...result,
@@ -263,7 +265,7 @@ async function runResolveInvocation(
 		}
 	}
 	return {
-		content: [{ type: "text" as const, text: `Discarded: ${options.label}. Reason: ${params.reason}` }],
+		content: [{ type: "text" as const, text: `Discarded: ${options.label}. Reason: ${reason}` }],
 		details: baseDetails,
 	};
 }
@@ -317,7 +319,7 @@ export async function dispatchResolutionDevice(
 			`No pending action to apply — ${RESOLVE_DEVICE_PATH} is only valid while a staged preview is pending.${proposeHint}`,
 		);
 	}
-	const invocation: ResolveInvocation = { action, reason: body };
+	const invocation: ResolveInvocation = { device, action, reason: body };
 	const result = (await invoker(invocation)) as AgentToolResult<ResolveDetails>;
 	return { result, xdev: { ...xdevBase, inner: result.details } };
 }

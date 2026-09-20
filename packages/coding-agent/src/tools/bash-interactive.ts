@@ -1,4 +1,4 @@
-import { BashInteractiveOverlayComponent } from "@oh-my-pi/pi-tui/tools/bash-interactive";
+import { BashInteractiveSession, openBashInteractiveOverlay } from "@oh-my-pi/pi-tui/tools/bash-interactive";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
@@ -41,23 +41,22 @@ export async function runInteractiveBashPty(
 	});
 	try {
 		const result = await ui.custom<BashInteractiveResult>(
-			(tui, uiTheme, _keybindings, done) => {
+			(tui, _uiTheme, _keybindings, done) => {
 				const session = new PtySession();
-				const component = new BashInteractiveOverlayComponent(
-					options.command,
-					uiTheme,
-					() => tui.terminal.rows,
-					XtermTerminal,
-					{ resize: (columns, rows) => session.resize(columns, rows) },
-				);
+				const interactiveSession = new BashInteractiveSession(options.command, XtermTerminal, {
+					resize: (columns, rows) => session.resize(columns, rows),
+				});
 				let finished = false;
 				const finalize = (run: PtyRunResult) => {
 					if (finished) return;
 					finished = true;
-					component.setComplete({ exitCode: run.exitCode, cancelled: run.cancelled, timedOut: run.timedOut });
-					tui.requestRender();
+					interactiveSession.setComplete({
+						exitCode: run.exitCode,
+						cancelled: run.cancelled,
+						timedOut: run.timedOut,
+					});
 					void (async () => {
-						await component.flushOutput();
+						await interactiveSession.flushOutput();
 						const tail = graphics.finish();
 						if (tail) sink.push(tail);
 						const [summary, images] = await Promise.all([sink.dump(), graphics.images()]);
@@ -72,7 +71,7 @@ export async function runInteractiveBashPty(
 				};
 				const cols = Math.max(20, tui.terminal.columns - 2);
 				const rows = Math.max(5, tui.terminal.rows - 4);
-				component.setHandlers(
+				interactiveSession.setHandlers(
 					data => {
 						try {
 							session.write(data);
@@ -115,10 +114,9 @@ export async function runInteractiveBashPty(
 						},
 						(err, chunk) => {
 							if (finished || err || !chunk) return;
-							component.appendOutput(chunk);
+							interactiveSession.appendOutput(chunk);
 							const clean = graphics.push(chunk);
 							if (clean) sink.push(clean.replace(/\r\n?/gu, "\n"));
-							tui.requestRender();
 						},
 					)
 					.then(finalize)
@@ -126,7 +124,7 @@ export async function runInteractiveBashPty(
 						sink.push(`PTY error: ${error instanceof Error ? error.message : String(error)}\n`);
 						finalize({ exitCode: undefined, cancelled: false, timedOut: false });
 					});
-				return component;
+				return openBashInteractiveOverlay(tui, interactiveSession);
 			},
 			{ overlay: true },
 		);

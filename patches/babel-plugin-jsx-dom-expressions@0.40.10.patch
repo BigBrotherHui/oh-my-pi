@@ -1,0 +1,17 @@
+diff --git a/index.js b/index.js
+index 3ee4f8107111bb12a5c78dbc6d8130149a9af45d..168f2cf389c5577c7dc9cf8d67add482dd5133ab 100644
+--- a/index.js
++++ b/index.js
+@@ -4065,9 +4065,11 @@ function transformNode(path, info = {}) {
+   } else if (t__namespace.isJSXText(node) || (staticValue = getStaticExpression(path)) !== false) {
+     const text =
+     staticValue !== undefined ?
+-    info.doNotEscape ?
++    info.doNotEscape || config.generate === "universal" ?
+     staticValue.toString() :
+     escapeHTML(staticValue.toString()) :
++    config.generate === "universal" ?
++    htmlEntities.decode(trimWhitespace(node.extra.raw)) :
+     trimWhitespace(node.extra.raw);
+     if (!text.length) return null;
+     const results = {

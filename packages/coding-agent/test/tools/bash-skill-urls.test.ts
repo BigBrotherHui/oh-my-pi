@@ -297,7 +297,7 @@ describe("expandInternalUrls", () => {
 			getArtifactsDir: () => "/tmp/session-artifacts",
 			getSessionId: () => "session-1",
 		};
-		const command = 'cat "local:/PLAN.md"';
+		const command = 'cat "local://PLAN.md"';
 		const expectedPath = resolveLocalUrlToPath("local:///PLAN.md", localOptions);
 
 		await expect(expandInternalUrls(command, { skills: [], localOptions })).resolves.toBe(
@@ -310,7 +310,7 @@ describe("expandInternalUrls", () => {
 			getArtifactsDir: () => "/tmp/session-artifacts",
 			getSessionId: () => "session-1",
 		};
-		const command = "cat 'local:/PLAN.md'";
+		const command = "cat 'local://PLAN.md'";
 		const expectedPath = resolveLocalUrlToPath("local:///PLAN.md", localOptions);
 
 		await expect(expandInternalUrls(command, { skills: [], localOptions })).resolves.toBe(
@@ -323,7 +323,7 @@ describe("expandInternalUrls", () => {
 			getArtifactsDir: () => "/tmp/session-artifacts",
 			getSessionId: () => "session-1",
 		};
-		const command = "cat local:/PLAN.md";
+		const command = "cat local://PLAN.md";
 		const expectedPath = resolveLocalUrlToPath("local:///PLAN.md", localOptions);
 
 		await expect(expandInternalUrls(command, { skills: [], localOptions })).resolves.toBe(
@@ -357,13 +357,13 @@ describe("expandInternalUrls", () => {
 		await expect(expandInternalUrls(command, { skills: [], internalRouter: router })).resolves.toBe(command);
 	});
 
-	it("does not match local:/ inside filesystem paths (e.g. /repo/local:/PLAN.md)", async () => {
-		const command = "cat /repo/local:/PLAN.md";
+	it("does not match local:/ inside filesystem paths (e.g. /repo/local://PLAN.md)", async () => {
+		const command = "cat /repo/local://PLAN.md";
 		await expect(expandInternalUrls(command, { skills: [] })).resolves.toBe(command);
 	});
 
 	it("does not match local:/ after ./ or ../ prefixes", async () => {
-		const command = "cat ./local:/PLAN.md ../local:/other.md";
+		const command = "cat ./local://PLAN.md ../local://other.md";
 		await expect(expandInternalUrls(command, { skills: [] })).resolves.toBe(command);
 	});
 
@@ -372,7 +372,7 @@ describe("expandInternalUrls", () => {
 			getArtifactsDir: () => "/tmp/session-artifacts",
 			getSessionId: () => "session-1",
 		};
-		const command = "cat local:/PLAN.md";
+		const command = "cat local://PLAN.md";
 		const expectedPath = resolveLocalUrlToPath("local://PLAN.md", localOptions);
 		await expect(expandInternalUrls(command, { skills: [], localOptions })).resolves.toBe(
 			`cat ${shellEscape(expectedPath)}`,
@@ -396,8 +396,8 @@ describe("expandInternalUrls", () => {
 		await expect(expandInternalUrls(command1, { skills: [], localOptions })).resolves.toBe(command1);
 	});
 
-	it("does not match local:/ after a hyphen (e.g. not-local:/PLAN.md)", async () => {
-		const command = "cat not-local:/PLAN.md";
+	it("does not match local:/ after a hyphen (e.g. not-local://PLAN.md)", async () => {
+		const command = "cat not-local://PLAN.md";
 		await expect(expandInternalUrls(command, { skills: [] })).resolves.toBe(command);
 
 		const localOptions = {

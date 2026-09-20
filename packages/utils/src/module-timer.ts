@@ -40,8 +40,8 @@
  * - **Dev runs only.** In the compiled `omp` binary every module is pre-bundled
  *   into bunfs, so `onLoad` never fires; profile with a `bun --preload` dev run.
  */
-import { readFileSync } from "node:fs";
 import { plugin } from "bun";
+import { readFileSync } from "node:fs";
 import { moduleLoadBuffer } from "./timing-buffer";
 
 // Restrict to TS/TSX only. node_modules ships CommonJS `.js`/`.cjs` that Bun

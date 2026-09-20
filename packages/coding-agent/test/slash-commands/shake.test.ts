@@ -96,8 +96,7 @@ describe("/shake dispatch (TUI)", () => {
 describe("CommandController /shake", () => {
 	it("reports thinking-only drops and rebuilds the transcript", async () => {
 		const rebuildChatFromMessages = vi.fn();
-		const invalidate = vi.fn();
-		const requestRender = vi.fn();
+		const ingestSession = vi.fn();
 		const showStatus = vi.fn();
 		const ctx = {
 			session: {
@@ -110,8 +109,7 @@ describe("CommandController /shake", () => {
 				})),
 			},
 			rebuildChatFromMessages,
-			statusLine: { invalidate },
-			ui: { requestRender },
+			statusLine: { ingestSession },
 			showStatus,
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -119,8 +117,7 @@ describe("CommandController /shake", () => {
 		await new CommandController(ctx).handleShakeCommand("thinking");
 
 		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
-		expect(invalidate).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledTimes(1);
+		expect(ingestSession).toHaveBeenCalledTimes(1);
 		expect(showStatus).toHaveBeenCalledWith("Dropped 2 thinking blocks from this session.");
 	});
 });

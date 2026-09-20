@@ -1,35 +1,14 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { RenderResultOptions } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
-import { getThemeByName, initTheme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import {
 	expandDelimitedPathEntries,
 	parseFindPattern,
 	resolveToolSearchScope,
 	splitDelimitedPathEntry,
 } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
-import type { Component } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { globToolRenderer } from "@oh-my-pi/pi-tui/tools/glob";
-
-let uiTheme: Theme;
-
-beforeAll(async () => {
-	await initTheme(false, undefined, undefined, "dark", "light");
-	const theme = await getThemeByName("dark");
-	if (!theme) throw new Error("Missing dark theme");
-	uiTheme = theme;
-});
-const renderOptions: RenderResultOptions = {
-	expanded: false,
-	isPartial: true,
-};
-
-function renderText(component: Component): string {
-	return Bun.stripANSI(component.render(160).join("\n"));
-}
 
 describe("delimited path expansion", () => {
 	let tempDir: string;
@@ -149,36 +128,5 @@ describe("delimited path expansion", () => {
 
 		expect(scope.searchPath).toBe(path.join(tempDir, "apps"));
 		expect(scope.globFilter).toBe("**/*.txt");
-	});
-});
-
-describe("globToolRenderer", () => {
-	it("accepts a single string paths value before validation", async () => {
-		const args = { paths: "src/**/*.ts" };
-		const renderings = [
-			globToolRenderer.renderCall(args, renderOptions, uiTheme),
-			globToolRenderer.renderResult(
-				{ content: [{ type: "text", text: "src/index.ts\n" }] },
-				renderOptions,
-				uiTheme,
-				args,
-			),
-			globToolRenderer.renderResult(
-				{ content: [{ type: "text", text: "" }], details: { fileCount: 0, files: [] } },
-				renderOptions,
-				uiTheme,
-				args,
-			),
-			globToolRenderer.renderResult(
-				{ content: [{ type: "text", text: "src/index.ts" }], details: { fileCount: 1, files: ["src/index.ts"] } },
-				renderOptions,
-				uiTheme,
-				args,
-			),
-		];
-
-		for (const component of renderings) {
-			expect(renderText(component)).toContain("src/**/*.ts");
-		}
 	});
 });

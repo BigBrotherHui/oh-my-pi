@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { KeybindingsManager as AppKeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { getGithubRefContext, getGithubRefSuggestions } from "@oh-my-pi/pi-tui/prompt/github-ref-autocomplete";
 import { createPromptActionAutocompleteProvider } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
-import type { SlashCommand } from "@oh-my-pi/pi-tui";
+import type { SlashCommand } from "../src/autocomplete";
 
 function makeProvider(commands: SlashCommand[] = []) {
 	return createPromptActionAutocompleteProvider({

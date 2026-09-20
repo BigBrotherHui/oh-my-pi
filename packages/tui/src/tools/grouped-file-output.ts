@@ -11,6 +11,52 @@ import { buildPathTree, isUrlLikePath, type PathTreeInput, walkPathTree } from "
  * by `formatGroupedFiles` (one `#` per nesting level); use `headerSuffix` to tack
  * on extras like ` (1 replacement)`.
  */
+/** One match or context line within a grouped file presentation. */
+export interface GroupedMatch {
+	filePath: string;
+	line?: number;
+	column?: number;
+	text: string;
+	isMatch: boolean;
+	raw: string;
+}
+
+/** One coordinate reference (file, line, column). */
+export interface GroupedCoordinate {
+	filePath: string;
+	line?: number;
+	column?: number;
+}
+
+/** One directory entry in the grouped directory tree. */
+export interface GroupedDirectory {
+	path: string;
+	name: string;
+	depth: number;
+}
+
+/** One file entry with its presentation structure. */
+export interface GroupedFile {
+	path: string;
+	name: string;
+	depth: number;
+	headerSuffix?: string;
+	lines: string[];
+	displayLines: string[];
+	matches: GroupedMatch[];
+	coordinates: GroupedCoordinate[];
+	notices: string[];
+}
+
+/** Structured presentation output beside model-facing and display-facing text. */
+export interface GroupedFilesStructure {
+	files: GroupedFile[];
+	directories: GroupedDirectory[];
+	matches: GroupedMatch[];
+	coordinates: GroupedCoordinate[];
+	notices: string[];
+}
+
 export interface GroupedFileSection {
 	/** Optional suffix appended to the file header. */
 	headerSuffix?: string;
@@ -20,12 +66,24 @@ export interface GroupedFileSection {
 	displayLines?: string[];
 	/** When true, the file (and its header) is omitted entirely. */
 	skip?: boolean;
+	/** Optional notices associated with this file. */
+	notices?: string[];
+	/** Optional pre-parsed coordinates for matches in this file. */
+	coordinates?: GroupedCoordinate[];
+	/** Optional pre-parsed matches in this file. */
+	matches?: GroupedMatch[];
 }
 
-/** Parallel model-facing and display-facing lines for grouped files. */
+/** Parallel model-facing and display-facing lines for grouped files, with structured presentation. */
 export interface GroupedFilesOutput {
 	model: string[];
 	display: string[];
+	structure: GroupedFilesStructure;
+	files: GroupedFile[];
+	directories: GroupedDirectory[];
+	matches: GroupedMatch[];
+	coordinates: GroupedCoordinate[];
+	notices: string[];
 }
 
 /**
@@ -61,6 +119,11 @@ export function formatGroupedFiles(
 	const tree = buildPathTree(inputs);
 	const model: string[] = [];
 	const display: string[] = [];
+	const allFiles: GroupedFile[] = [];
+	const directories: GroupedDirectory[] = [];
+	const allMatches: GroupedMatch[] = [];
+	const allCoordinates: GroupedCoordinate[] = [];
+	const allNotices: string[] = [];
 	let emitted = false;
 
 	for (const event of walkPathTree(tree)) {
@@ -75,15 +138,213 @@ export function formatGroupedFiles(
 			const header = `${hashes} ${event.name}/`;
 			model.push(header);
 			display.push(header);
+			directories.push({
+				path: event.name,
+				name: event.name,
+				depth: event.depth,
+			});
 			continue;
 		}
 		const section = sections.get(event.key)!;
+		const filePath = event.key;
 		const header = `${hashes} ${event.name}${section.headerSuffix ?? ""}`;
 		model.push(header, ...section.modelLines);
-		display.push(header, ...(section.displayLines ?? section.modelLines));
+		const displayLines = section.displayLines ?? section.modelLines;
+		display.push(header, ...displayLines);
+
+		const fileMatches: GroupedMatch[] = section.matches ? [...section.matches] : [];
+		const fileCoordinates: GroupedCoordinate[] = section.coordinates ? [...section.coordinates] : [];
+		const fileNotices: string[] = section.notices ? [...section.notices] : [];
+
+		if (!section.matches) {
+			for (const line of displayLines) {
+				const match = SEARCH_LINE_RE.exec(line);
+				if (match) {
+					const isMatch = match[1] === "*" || (!line.startsWith(" ") && match[1] === "");
+					const lineNum = Number.parseInt(match[2]!, 10);
+					const text = match[3] ?? "";
+					const m: GroupedMatch = { filePath, line: lineNum, text, isMatch, raw: line };
+					fileMatches.push(m);
+					fileCoordinates.push({ filePath, line: lineNum });
+				} else if (NOTICE_LINE_RE.test(line.trim())) {
+					fileNotices.push(line.trim());
+				}
+			}
+		}
+
+		allMatches.push(...fileMatches);
+		allCoordinates.push(...fileCoordinates);
+		allNotices.push(...fileNotices);
+
+		allFiles.push({
+			path: filePath,
+			name: event.name,
+			depth: event.depth,
+			headerSuffix: section.headerSuffix,
+			lines: section.modelLines,
+			displayLines,
+			matches: fileMatches,
+			coordinates: fileCoordinates,
+			notices: fileNotices,
+		});
 	}
 
-	return { model, display };
+	const structure: GroupedFilesStructure = {
+		files: allFiles,
+		directories,
+		matches: allMatches,
+		coordinates: allCoordinates,
+		notices: allNotices,
+	};
+
+	return {
+		model,
+		display,
+		structure,
+		files: allFiles,
+		directories,
+		matches: allMatches,
+		coordinates: allCoordinates,
+		notices: allNotices,
+	};
+}
+
+const SEARCH_LINE_RE = /^\s*(\*?)\s*(\d+)(?:│|[:|])(.*)$/;
+const FILE_LINE_RE = /^([^\s:]+):(\d+)(?::(.*))?$/;
+const NOTICE_LINE_RE = /^(?:Parse issues:|Result limit reached|limit reached|skipped missing:|warning:|notice:)/i;
+
+/**
+ * Parse text or lines of grouped output back into the structured presentation format.
+ * Enables views to consume the exact same structured presentation format without
+ * ever re-parsing `#` headers in view code.
+ */
+export function parseGroupedOutputToStructure(
+	textOrLines: string | readonly string[],
+	headerBase?: string,
+): GroupedFilesStructure {
+	const rawLines = typeof textOrLines === "string" ? textOrLines.split("\n") : textOrLines;
+	const lines = rawLines.map(line => line.trimEnd());
+	const contexts = classifyGroupedLines(lines, headerBase);
+
+	const files: GroupedFile[] = [];
+	const directories: GroupedDirectory[] = [];
+	const matches: GroupedMatch[] = [];
+	const coordinates: GroupedCoordinate[] = [];
+	const notices: string[] = [];
+
+	let currentFile: GroupedFile | null = null;
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i]!;
+		if (!line) continue;
+		const ctx = contexts[i]!;
+
+		if (ctx.kind === "dir") {
+			directories.push({
+				path: ctx.headerPath ?? line.replace(/^#+\s+/, "").replace(/\/$/, ""),
+				name: line.replace(/^#+\s+/, "").replace(/\/$/, ""),
+				depth: ctx.depth,
+			});
+			currentFile = null;
+			continue;
+		}
+
+		if (ctx.kind === "file") {
+			const cleanHeader = line.replace(/^#+\s+/, "");
+			const filePath = ctx.headerPath ?? cleanHeader.replace(HEADER_SUFFIX_RE, "").replace(HEADER_HASH_TAG_RE, "");
+			const suffixMatch = HEADER_SUFFIX_RE.exec(cleanHeader);
+			const hashMatch = HEADER_HASH_TAG_RE.exec(cleanHeader);
+			const headerSuffix = suffixMatch ? suffixMatch[0] : hashMatch ? hashMatch[0] : undefined;
+			const name = path.basename(filePath);
+
+			currentFile = {
+				path: filePath,
+				name,
+				depth: ctx.depth,
+				headerSuffix,
+				lines: [],
+				displayLines: [],
+				matches: [],
+				coordinates: [],
+				notices: [],
+			};
+			files.push(currentFile);
+			continue;
+		}
+
+		// Content line
+		if (NOTICE_LINE_RE.test(line.trim())) {
+			notices.push(line.trim());
+			if (currentFile) currentFile.notices.push(line.trim());
+			continue;
+		}
+
+		if (currentFile === null && (ctx.filePath || headerBase)) {
+			const filePath = ctx.filePath ?? headerBase!;
+			currentFile = {
+				path: filePath,
+				name: path.basename(filePath),
+				depth: 0,
+				lines: [],
+				displayLines: [],
+				matches: [],
+				coordinates: [],
+				notices: [],
+			};
+			files.push(currentFile);
+		}
+
+		const searchMatch = SEARCH_LINE_RE.exec(line);
+		const fileMatch = !searchMatch ? FILE_LINE_RE.exec(line) : null;
+		if (fileMatch) {
+			const targetFile = fileMatch[1]!;
+			const lineNum = Number.parseInt(fileMatch[2]!, 10);
+			const text = fileMatch[3] ?? "";
+			if (!currentFile || currentFile.path !== targetFile) {
+				currentFile = {
+					path: targetFile,
+					name: path.basename(targetFile),
+					depth: 0,
+					lines: [],
+					displayLines: [],
+					matches: [],
+					coordinates: [],
+					notices: [],
+				};
+				files.push(currentFile);
+			}
+			const m: GroupedMatch = { filePath: targetFile, line: lineNum, text, isMatch: true, raw: line };
+			matches.push(m);
+			coordinates.push({ filePath: targetFile, line: lineNum });
+			currentFile.matches.push(m);
+			currentFile.coordinates.push({ filePath: targetFile, line: lineNum });
+		} else if (searchMatch) {
+			const targetFile = currentFile?.path ?? ctx.filePath ?? "";
+			const isMatch = searchMatch[1] === "*" || (!line.startsWith(" ") && searchMatch[1] === "");
+			const lineNum = Number.parseInt(searchMatch[2]!, 10);
+			const text = searchMatch[3] ?? "";
+			const m: GroupedMatch = { filePath: targetFile, line: lineNum, text, isMatch, raw: line };
+			matches.push(m);
+			coordinates.push({ filePath: targetFile, line: lineNum });
+			if (currentFile) {
+				currentFile.matches.push(m);
+				currentFile.coordinates.push({ filePath: targetFile, line: lineNum });
+			}
+		}
+
+		if (currentFile) {
+			currentFile.lines.push(line);
+			currentFile.displayLines.push(line);
+		}
+	}
+
+	return {
+		files,
+		directories,
+		matches,
+		coordinates,
+		notices,
+	};
 }
 
 // =============================================================================

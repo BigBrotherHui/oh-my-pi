@@ -1,5 +1,5 @@
 import { formatNumber } from "@oh-my-pi/pi-utils";
-import type { ThemeColor } from "../theme/index";
+import type { ThemeColor } from "../theme/schema";
 export type ContextUsageLevel = "normal" | "warning" | "purple" | "error";
 
 const CONTEXT_WARNING_PERCENT_THRESHOLD = 50;

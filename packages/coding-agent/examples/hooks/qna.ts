@@ -8,7 +8,8 @@
  */
 import { complete, type UserMessage } from "@oh-my-pi/pi-ai";
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent";
-import { BorderedLoader } from "@oh-my-pi/pi-coding-agent";
+import { BorderedLoaderView } from "@oh-my-pi/pi-tui/overlays/bordered-loader";
+import { onCleanup } from "@oh-my-pi/pi-tui/reactive";
 
 const SYSTEM_PROMPT = `You are a question extractor. Given text from a conversation, extract any questions that need answering and format them for the user to fill in.
 
@@ -70,9 +71,12 @@ export default function (pi: HookAPI) {
 			}
 
 			// Run extraction with loader UI
-			const result = await ctx.ui.custom<string | null>((tui, theme, done) => {
-				const loader = new BorderedLoader(tui, theme, `Extracting questions using ${ctx.model!.id}…`);
-				loader.onAbort = () => done(null);
+			const result = await ctx.ui.custom<string | null>((_tui, _theme, _keybindings, done) => {
+				const request = new AbortController();
+				const cancel = () => {
+					request.abort();
+					done(null);
+				};
 
 				// Do the work
 				const doExtract = async () => {
@@ -86,7 +90,7 @@ export default function (pi: HookAPI) {
 					const response = await complete(
 						ctx.model!,
 						{ systemPrompt: [SYSTEM_PROMPT], messages: [userMessage] },
-						{ apiKey, signal: loader.signal },
+						{ apiKey, signal: request.signal },
 					);
 
 					if (response.stopReason === "aborted") {
@@ -103,7 +107,10 @@ export default function (pi: HookAPI) {
 					.then(done)
 					.catch(() => done(null));
 
-				return loader;
+				return () => {
+					onCleanup(() => request.abort());
+					return BorderedLoaderView({ message: `Extracting questions using ${ctx.model!.id}…`, onAbort: cancel });
+				};
 			});
 
 			if (result === null) {

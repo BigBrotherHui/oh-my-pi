@@ -3,6 +3,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
+import { createSolidJsxEntrypointPlugin, solidJsxPlugin } from "@oh-my-pi/pi-tui/compiler/solid-jsx-plugin";
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createJsonParsePlugin } from "./json-parse-plugin";
 import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
@@ -89,11 +90,18 @@ export async function bundleDist(outDir: string = defaultOutDir): Promise<void> 
 		// Build in-process: the docs embed payload is far larger than Linux's
 		// 128KiB per-argv-string cap, so it can never be passed as a CLI
 		// `--define` (posix_spawn fails with E2BIG).
+		const entrypoint = path.join(packageDir, "src/cli.ts");
 		const output = await Bun.build({
-			entrypoints: [path.join(packageDir, "src/cli.ts")],
+			entrypoints: [entrypoint],
 			outdir: outDir,
 			target: "bun",
-			plugins: [createJsonParsePlugin(), await createLegacyPiVirtualModulePlugin()],
+			conditions: ["browser"],
+			plugins: [
+				createSolidJsxEntrypointPlugin(entrypoint),
+				solidJsxPlugin,
+				createJsonParsePlugin(),
+				await createLegacyPiVirtualModulePlugin(),
+			],
 			external: [...ALWAYS_EXTERNAL, ...RUNTIME_EXTERNAL],
 			define: {
 				"process.env.PI_BUNDLED": JSON.stringify("true"),

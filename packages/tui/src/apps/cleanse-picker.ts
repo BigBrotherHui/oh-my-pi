@@ -5,8 +5,7 @@
  * prompts, resolved on select/submit/cancel so the command can keep writing
  * plain stdout afterwards.
  */
-import { type SelectItem } from "../components/select-list";
-import { promptStandaloneText, selectStandaloneItem } from "./standalone-picker";
+import { promptStandaloneText, selectStandaloneItem, type StandaloneSelectItem } from "./standalone-picker";
 
 /** Checker metadata presented by the target picker. */
 export interface CleanseCheckerChoice {
@@ -25,7 +24,7 @@ export type CleanseTargetChoice =
 
 /** Pick between running every discovered checker, one specific checker, or a free-form request. */
 export async function pickCleanseTarget(checkers: readonly CleanseCheckerChoice[]): Promise<CleanseTargetChoice> {
-	const items: SelectItem[] = [
+	const items: StandaloneSelectItem[] = [
 		{
 			value: "all",
 			label: `Run all ${checkers.length} discovered checker${checkers.length === 1 ? "" : "s"}`,

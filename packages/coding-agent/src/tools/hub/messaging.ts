@@ -1,4 +1,4 @@
-import { LIST_STATUS_ORDER } from "@oh-my-pi/pi-tui/tools/hub";
+import { LIST_STATUS_ORDER } from "@oh-my-pi/pi-tui/tools/hub-contract";
 /**
  * Hub messaging half — agent-to-agent messaging over the process-global IrcBus.
  *
@@ -16,7 +16,7 @@ import { formatDuration } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 
 import { IrcAwaitTargetStopped, IrcBus } from "../../irc/bus";
-import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
+import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/hub-contract";
 
 import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { ensurePersistedRoster, isCurrentSessionRosterRef } from "../../registry/persisted-agents";
@@ -28,7 +28,7 @@ import {
 	type HubListStatus,
 	type HubRosterCounts,
 	MAX_HUB_LIST_LIMIT,
-} from "@oh-my-pi/pi-tui/tools/hub";
+} from "@oh-my-pi/pi-tui/tools/hub-contract";
 import { hubErrorResult } from "./types";
 
 export const DEFAULT_IRC_TIMEOUT_MS = 120_000;

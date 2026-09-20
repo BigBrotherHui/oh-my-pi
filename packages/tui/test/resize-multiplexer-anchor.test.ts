@@ -1,12 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
-	CURSOR_MARKER,
+	RichText,
+	Style,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
 	TUI,
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
+
+function textFrame(rows: readonly string[], cursor?: { row: number; col: number }): RichText {
+	const frame = new RichText();
+	for (let row = 0; row < rows.length; row++) {
+		const text = rows[row]!;
+		frame.push(Style.NONE, text);
+		if (cursor?.row === row) frame.cursor();
+		frame.br();
+	}
+	return frame;
+}
 
 // Regression coverage for tmux pane zoom corrupting scrollback (duplication and
 // committed-row loss). Multiplexers re-lay the pane on their own schedule
@@ -28,15 +40,22 @@ class FullFrameProvider implements TerminalFrameProvider {
 		const rows = Array.from({ length: this.liveRows }, (_, i) =>
 			this.rowPad > 0 ? `live-${i}`.padEnd(this.rowPad, "x") : `live-${i}`,
 		);
-		if (this.markerRow !== undefined) rows[this.markerRow] = `${rows[this.markerRow]}${CURSOR_MARKER}`;
+		const visible = rows.slice(-Math.min(this.liveRows, viewport.rows));
+		const firstRow = rows.length - visible.length;
+		const markerRow = this.markerRow === undefined ? undefined : this.markerRow - firstRow;
 		const plan: TerminalFramePlan = {
 			history: this.history,
-			viewport: rows.slice(-Math.min(this.liveRows, viewport.rows)),
+			viewport: textFrame(
+				visible,
+				markerRow === undefined || markerRow < 0
+					? undefined
+					: { row: markerRow, col: visible[markerRow]?.length ?? 0 },
+			),
 		};
 		return plan;
 	}
-	renderResizeFrame(viewport: ViewportSize): readonly string[] {
-		return Array.from({ length: Math.min(8, viewport.rows) }, (_, i) => `resize-${i}`);
+	renderResizeFrame(viewport: ViewportSize): RichText {
+		return textFrame(Array.from({ length: Math.min(8, viewport.rows) }, (_, i) => `resize-${i}`));
 	}
 	acknowledgeHistory(): void {
 		this.history = undefined;

@@ -27,7 +27,6 @@ import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import { prewarmOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { isOpenAICodexWebSocketPreferred } from "@oh-my-pi/pi-ai/providers/openai-codex-transport";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
-import type { Component } from "@oh-my-pi/pi-tui";
 import { $env, $flag } from "@oh-my-pi/pi-utils/env";
 import { getAgentDir, getModelDbPath, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import * as logger from "@oh-my-pi/pi-utils/logger";
@@ -1059,18 +1058,8 @@ export function customToolToDefinition(tool: CustomTool, sourcePath?: string): T
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
 			tool.execute(toolCallId, params, onUpdate, createCustomToolContext(ctx), signal),
 		onSession: tool.onSession ? (event, ctx) => tool.onSession?.(event, createCustomToolContext(ctx)) : undefined,
-		renderCall: tool.renderCall,
-		renderResult: tool.renderResult
-			? (result, options, theme): Component => {
-					const component = tool.renderResult?.(
-						result,
-						{ expanded: options.expanded, isPartial: options.isPartial, spinnerFrame: options.spinnerFrame },
-						theme,
-					);
-					// Return empty component if undefined to match Component type requirement
-					return component ?? ({ render: () => [] } as unknown as Component);
-				}
-			: undefined,
+		toolView: tool.toolView,
+		messageView: tool.messageView,
 		[TOOL_DEFINITION_MARKER]: true,
 	};
 	return definition;
@@ -1399,10 +1388,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			startupCredentialDisabledEvents.push(event);
 		}
 	});
-	await logger.time("hydrateCredentialScopedModelCaches", () => modelRegistry.hydrateCredentialScopedModelCaches());
-	if (!options.modelRegistry) {
-		modelRegistry.refreshInBackground();
-	}
 	// Kick off workspace tree discovery early. The native workspace scan returns
 	// both the rendered-tree input and the AGENTS.md directory-context index, so
 	// startup does not perform a second recursive filesystem search. Subagents
@@ -1460,6 +1445,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				})
 			: undefined;
 	discoveredSkillsPromise?.catch(() => {});
+
+	// Credential-scoped catalogs must be ready for model selection, but filesystem
+	// discovery is independent and can run while those cache rows are hydrated.
+	await logger.time("hydrateCredentialScopedModelCaches", () => modelRegistry.hydrateCredentialScopedModelCaches());
+	if (!options.modelRegistry) {
+		modelRegistry.refreshInBackground();
+	}
 
 	const sessionManager =
 		options.sessionManager ??

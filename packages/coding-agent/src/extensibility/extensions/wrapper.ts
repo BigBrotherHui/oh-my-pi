@@ -10,7 +10,7 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import { sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
-import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import type { ToolViewDefinition } from "@oh-my-pi/pi-tui/tools/view";
 import {
 	denyError,
 	formatApprovalPrompt,
@@ -23,7 +23,7 @@ import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
 import { applyToolProxy } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
-import type { RegisteredTool, ToolCallEventResult } from "./types";
+import type { MessageView, RegisteredTool, ToolCallEventResult } from "./types";
 
 /**
  * Adapts a RegisteredTool into an AgentTool.
@@ -35,8 +35,8 @@ export class RegisteredToolAdapter implements AgentTool<any, any, any> {
 	declare label: string;
 	declare strict: boolean;
 
-	renderCall?: (args: any, options: any, theme: any) => any;
-	renderResult?: (result: any, options: any, theme: any, args?: any) => any;
+	toolView?: ToolViewDefinition<unknown, unknown>;
+	messageView?: MessageView;
 	readonly loadMode: ToolLoadMode;
 
 	constructor(
@@ -46,22 +46,11 @@ export class RegisteredToolAdapter implements AgentTool<any, any, any> {
 		applyToolProxy(registeredTool.definition, this);
 		this.loadMode = defaultLoadModeForToolName(registeredTool.definition.name, registeredTool.definition.loadMode);
 
-		// Only define render methods when the underlying definition provides them.
-		// If these exist unconditionally on the prototype, ToolExecutionComponent
-		// enters the custom-renderer path, gets undefined back, and silently
-		// discards tool result text (extensions without renderers show blank).
-		if (registeredTool.definition.renderCall) {
-			this.renderCall = (args: any, options: any, theme: any) =>
-				registeredTool.definition.renderCall!(args, options, theme as Theme);
+		if (registeredTool.definition.toolView) {
+			this.toolView = registeredTool.definition.toolView;
 		}
-		if (registeredTool.definition.renderResult) {
-			this.renderResult = (result: any, options: any, theme: any, args?: any) =>
-				registeredTool.definition.renderResult!(
-					result,
-					{ expanded: options.expanded, isPartial: options.isPartial, spinnerFrame: options.spinnerFrame },
-					theme as Theme,
-					args,
-				);
+		if (registeredTool.definition.messageView) {
+			this.messageView = registeredTool.definition.messageView;
 		}
 	}
 

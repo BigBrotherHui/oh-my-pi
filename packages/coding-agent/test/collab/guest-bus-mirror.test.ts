@@ -57,7 +57,7 @@ function makeGuestContext(eventBus: EventBus): InteractiveModeContext {
 				return 0;
 			},
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			resetActiveTime: () => {},
 			markActivityStart: () => {},
 			markActivityEnd: () => {},
@@ -71,7 +71,7 @@ function makeGuestContext(eventBus: EventBus): InteractiveModeContext {
 		showError: () => {},
 		updateEditorTopBorder: () => {},
 		updateEditorBorderColor: () => {},
-		eventController: { handleEvent: () => Promise.resolve(), takeDisplaceableComponents: () => [] },
+		eventController: { handleEvent: () => Promise.resolve() },
 		syncRunningSubagentBadge: () => {},
 		eventBus,
 		subagentEventBus: eventBus,

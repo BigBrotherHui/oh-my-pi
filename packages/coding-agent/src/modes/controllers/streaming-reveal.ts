@@ -1,8 +1,7 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { type Component, getSegmenter } from "@oh-my-pi/pi-tui";
+import { getSegmenter } from "@oh-my-pi/pi-tui/utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { formatThinkingForDisplay, hasDisplayableThinking } from "@oh-my-pi/pi-tui/chat/thinking-display";
-import type { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 
 export const STREAMING_REVEAL_FRAME_MS = 1000 / 30;
 export const MIN_STEP = 3;
@@ -10,21 +9,18 @@ export const CATCHUP_FRAMES = 8;
 
 type AssistantContentBlock = AssistantMessage["content"][number];
 type DisplayThinkingContentBlock = Extract<AssistantContentBlock, { type: "thinking" }> & { rawThinking?: string };
-/** The concrete streaming-reveal target is an {@link AssistantMessageComponent}; the
- *  Component intersection is what lets the reveal request component-scoped renders
- *  through {@link TUI.requestComponentRender} instead of forcing a full-tree walk. */
-type StreamingRevealComponent = Pick<AssistantMessageComponent, "updateContent"> & Component;
+/** Mutable ingress target used by the streaming presentation model. */
+type StreamingRevealComponent = {
+	updateContent(message: AssistantMessage, options: { transient: boolean }): void;
+};
 type GraphemeSlicer = (index: number, text: string, units: number) => string;
 
 type StreamingRevealControllerOptions = {
 	getSmoothStreaming(): boolean;
 	getHideThinkingBlock(): boolean;
 	getProseOnlyThinking(): boolean;
-	/** Called after each reveal tick with the component whose subtree changed;
-	 *  callers scope the render to that subtree (a full tree walk here at 30fps
-	 *  costs 5% of CPU on its own and drives the Box/Container overhead that
-	 *  cascades into another ~15% — see issue #4377). */
-	requestRender(component: Component): void;
+	/** Called after each reveal tick to schedule the host's reactive flush. */
+	requestRender(component: StreamingRevealComponent): void;
 };
 
 const graphemeCountCache = new LRUCache<string, number>({ max: 128 });
@@ -217,7 +213,7 @@ export class StreamingRevealController {
 	readonly #getSmoothStreaming: () => boolean;
 	readonly #getHideThinkingBlock: () => boolean;
 	readonly #getProseOnlyThinking: () => boolean;
-	readonly #requestRender: (component: Component) => void;
+	readonly #requestRender: (component: StreamingRevealComponent) => void;
 	#target: AssistantMessage | undefined;
 	#component: StreamingRevealComponent | undefined;
 	#timer: NodeJS.Timeout | undefined;

@@ -1,4 +1,5 @@
-import { MCP_TOOL_NAME_PREFIX, type MCPToolDetails } from "@oh-my-pi/pi-tui/tools/mcp";
+import { MCP_TOOL_NAME_PREFIX, type MCPToolDetails, mcpToolView } from "@oh-my-pi/pi-tui/tools/mcp";
+import type { ToolViewDefinition } from "@oh-my-pi/pi-tui/tools/view";
 /**
  * MCP to CustomTool bridge.
  *
@@ -10,21 +11,14 @@ import { normalizeSchemaForMCP } from "@oh-my-pi/pi-ai/utils/schema";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { SourceMeta } from "../capability/types";
-import type {
-	CustomTool,
-	CustomToolContext,
-	CustomToolResult,
-	RenderResultOptions,
-} from "../extensibility/custom-tools/types";
+import type { CustomTool, CustomToolContext, CustomToolResult } from "../extensibility/custom-tools/types";
 import { resolveLocalUrlToFile } from "../internal-urls/local-protocol";
-import type { Theme } from "@oh-my-pi/pi-tui/theme";
 
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { schemaDeclaresIntentField } from "../utils/tool-schema";
 import { callTool } from "./client";
 import { formatMCPToolFailure, MCPTransportError } from "./errors";
-import { renderMCPCall, renderMCPResult } from "@oh-my-pi/pi-tui/tools/mcp";
 import type {
 	MCPAuthChallenge,
 	MCPServerConnection,
@@ -678,13 +672,7 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		this.mcpServerName = connection.name;
 	}
 
-	renderCall(args: unknown, _options: RenderResultOptions, theme: Theme) {
-		return renderMCPCall(normalizeToolArgs(args), theme, this.label);
-	}
-
-	renderResult(result: CustomToolResult<MCPToolDetails>, options: RenderResultOptions, theme: Theme, args?: unknown) {
-		return renderMCPResult(result, options, theme, normalizeToolArgs(args));
-	}
+	readonly toolView: ToolViewDefinition<unknown, MCPToolDetails> = mcpToolView;
 
 	async execute(
 		_toolCallId: string,
@@ -801,13 +789,7 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		this.#fallbackProviderName = source?.providerName;
 	}
 
-	renderCall(args: unknown, _options: RenderResultOptions, theme: Theme) {
-		return renderMCPCall(normalizeToolArgs(args), theme, this.label);
-	}
-
-	renderResult(result: CustomToolResult<MCPToolDetails>, options: RenderResultOptions, theme: Theme, args?: unknown) {
-		return renderMCPResult(result, options, theme, normalizeToolArgs(args));
-	}
+	readonly toolView: ToolViewDefinition<unknown, MCPToolDetails> = mcpToolView;
 
 	async execute(
 		_toolCallId: string,

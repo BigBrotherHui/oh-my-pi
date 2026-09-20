@@ -7,7 +7,6 @@ interface SuspendCtx {
 	ui: {
 		start: Mock<() => void>;
 		stop: Mock<() => void>;
-		requestRender: Mock<(force?: boolean) => void>;
 	};
 	showStatus: Mock<(message: string) => void>;
 	showError: Mock<(message: string) => void>;
@@ -17,7 +16,6 @@ function createCtx(): SuspendCtx {
 	const ui = {
 		start: vi.fn(),
 		stop: vi.fn(),
-		requestRender: vi.fn(),
 	};
 	const showStatus = vi.fn();
 	const showError = vi.fn();
@@ -105,7 +103,6 @@ describe("InputController.handleCtrlZ", () => {
 		sigcontListener?.();
 		expect(clearIntervalSpy).toHaveBeenCalledWith(suspendKeepalive);
 		expect(ui.start).toHaveBeenCalledTimes(1);
-		expect(ui.requestRender).toHaveBeenCalledWith(true);
 	});
 
 	it("restores the TUI and drops the SIGCONT listener when process.kill rejects the signal", () => {
@@ -137,7 +134,6 @@ describe("InputController.handleCtrlZ", () => {
 		expect(killSpy).toHaveBeenCalledTimes(1);
 		expect(ui.stop).toHaveBeenCalledTimes(1);
 		expect(ui.start).toHaveBeenCalledTimes(1);
-		expect(ui.requestRender).toHaveBeenCalledWith(true);
 		expect(showError).toHaveBeenCalledTimes(1);
 		expect(showError.mock.calls[0]?.[0]).toMatch(/Failed to suspend/);
 		expect(showStatus).not.toHaveBeenCalled();

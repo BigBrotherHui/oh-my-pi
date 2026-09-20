@@ -15,6 +15,7 @@ interface NewSessionHarness {
 		unfocusSession: () => number;
 		resetTranscriptAnchors: () => number;
 		resetTranscript: () => number;
+		resetDisplay: () => number;
 		presented: () => number;
 	};
 	setFocused: (id: string | undefined) => void;
@@ -25,6 +26,7 @@ function makeHarness(): NewSessionHarness {
 	let unfocusSession = 0;
 	let resetTranscriptAnchors = 0;
 	let resetTranscript = 0;
+	let resetDisplay = 0;
 	let presented = 0;
 	let focusedAgentId: string | undefined = "subagent-1";
 
@@ -54,7 +56,7 @@ function makeHarness(): NewSessionHarness {
 		},
 		resetObserverRegistry: () => {},
 		statusLine: {
-			invalidate: () => {},
+			ingestSession: () => {},
 			resetActiveTime: () => {},
 		},
 		updateEditorBorderColor: () => {},
@@ -66,7 +68,11 @@ function makeHarness(): NewSessionHarness {
 			presented++;
 		},
 		reloadTodos: async () => {},
-		ui: { requestRender: () => {} },
+		ui: {
+			resetDisplay: () => {
+				resetDisplay++;
+			},
+		},
 	} as unknown as InteractiveModeContext;
 
 	return {
@@ -77,6 +83,7 @@ function makeHarness(): NewSessionHarness {
 			unfocusSession: () => unfocusSession,
 			resetTranscriptAnchors: () => resetTranscriptAnchors,
 			resetTranscript: () => resetTranscript,
+			resetDisplay: () => resetDisplay,
 			presented: () => presented,
 		},
 		setFocused: id => {
@@ -96,6 +103,7 @@ describe("CommandController new-session teardown", () => {
 		expect(harness.ctx.focusedAgentId).toBeUndefined();
 		expect(harness.counts.resetTranscriptAnchors()).toBe(1);
 		expect(harness.counts.resetTranscript()).toBe(1);
+		expect(harness.counts.resetDisplay()).toBe(1);
 		expect(harness.counts.presented()).toBe(1);
 	});
 

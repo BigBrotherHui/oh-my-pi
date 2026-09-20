@@ -5,6 +5,7 @@ import type { Model } from "@oh-my-pi/pi-catalog/types";
 import { renderSegment } from "../src/status-line/segments";
 import type { SegmentContext } from "../src/status-line/types";
 import { initTheme } from "../src/theme";
+import { renderVNode } from "./helpers/render-vnode";
 
 beforeAll(async () => {
 	await initTheme();
@@ -57,7 +58,7 @@ describe("cost status-line segment", () => {
 		const rendered = renderSegment("cost", ctx);
 
 		expect(probes).toBe(0);
-		expect(stripVTControlCharacters(rendered.content)).toContain("$0.50");
+		expect(stripVTControlCharacters(renderVNode(rendered.content))).toContain("$0.50");
 	});
 
 	it("still probes advisor subscription state exactly once when advisor cost is present", () => {
@@ -67,7 +68,7 @@ describe("cost status-line segment", () => {
 		const rendered = renderSegment("cost", ctx);
 
 		expect(probes).toBe(1);
-		expect(stripVTControlCharacters(rendered.content)).toContain("0.25");
+		expect(stripVTControlCharacters(renderVNode(rendered.content))).toContain("0.25");
 	});
 
 	it("shows the active scheduled tariff without repricing accumulated spend", () => {
@@ -78,14 +79,14 @@ describe("cost status-line segment", () => {
 			now: new Date("2026-09-10T03:59:59.999Z"),
 			onAdvisorSubscriptionProbe: () => {},
 		});
-		expect(stripVTControlCharacters(renderSegment("cost", ctx).content)).toBe("$1.25 ↑");
+		expect(stripVTControlCharacters(renderVNode(renderSegment("cost", ctx).content))).toBe("$1.25 ↑");
 		ctx.now = new Date("2026-09-10T04:00:00Z");
-		expect(stripVTControlCharacters(renderSegment("cost", ctx).content)).toBe("$1.25 ↓");
+		expect(stripVTControlCharacters(renderVNode(renderSegment("cost", ctx).content))).toBe("$1.25 ↓");
 
 		// History and accumulated spend stay put; only the active model changes.
 		const { timeBased: _schedule, ...flatCost } = model.cost;
 		ctx.session.state.model = { ...model, provider: "openrouter", cost: flatCost };
-		expect(stripVTControlCharacters(renderSegment("cost", ctx).content)).toBe("$1.25");
+		expect(stripVTControlCharacters(renderVNode(renderSegment("cost", ctx).content))).toBe("$1.25");
 		expect(ctx.usageStats.cost).toBe(1.25);
 	});
 
@@ -97,7 +98,7 @@ describe("cost status-line segment", () => {
 		});
 		const rendered = renderSegment("cost", ctx);
 		expect(rendered.visible).toBe(true);
-		expect(stripVTControlCharacters(rendered.content)).toBe("$0.00 ↓");
+		expect(stripVTControlCharacters(renderVNode(rendered.content))).toBe("$0.00 ↓");
 		const { timeBased: _schedule, ...flatCost } = ctx.session.state.model!.cost;
 		ctx.session.state.model = { ...ctx.session.state.model!, cost: flatCost };
 		expect(renderSegment("cost", ctx).visible).toBe(false);
@@ -113,7 +114,7 @@ describe("cost status-line segment", () => {
 			now: new Date("2026-09-10T02:00:00Z"),
 			onAdvisorSubscriptionProbe: () => {},
 		});
-		const rendered = stripVTControlCharacters(renderSegment("cost", ctx).content);
+		const rendered = stripVTControlCharacters(renderVNode(renderSegment("cost", ctx).content));
 		expect(rendered).toMatch(/1\.25.*↑ ★ 2 \+ .*0\.50/);
 		expect(rendered).not.toContain("↓");
 	});

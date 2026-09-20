@@ -227,7 +227,7 @@ function makeHostHarness(sessionManager: HostReplicationSource): HostHarness {
 		eventBus: undefined,
 		statusLine: {
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
 		},
 		ui: { requestRender: () => {} },

@@ -18,6 +18,7 @@ import {
 	type EditFileOutcome,
 	type EditInspection,
 	type EditPolicy,
+	type EditPreviewBatch,
 	type EditWriteRequest,
 	type EditWriteResponse,
 } from "@oh-my-pi/pi-natives";
@@ -70,7 +71,6 @@ import {
 import { getEditStore } from "./store";
 
 export type {
-	EditRenderContext,
 	EditToolDetails,
 	EditToolPerFileResult,
 	Operation,
@@ -89,6 +89,11 @@ type TInput =
 	| typeof sloppyEditSchema;
 
 type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams | SloppyParams;
+
+/** Native preview batch enriched with the actual mode that produced it. */
+export interface EditStreamPreviewUpdate extends EditPreviewBatch {
+	readonly editMode: EditMode;
+}
 
 const PATCH_EXAMPLES = [
 	{
@@ -258,7 +263,7 @@ function toPerFileResult(file: EditFileOutcome, mode: EditMode): EditToolPerFile
 		newText: file.newText,
 		snapshotsPruned: file.snapshotsPruned || undefined,
 		meta: outputMeta()
-			.diagnostics(diagnostics?.summary ?? "", diagnostics?.messages ?? [])
+			.diagnostics(diagnostics?.summary ?? "", [...(diagnostics?.messages ?? [])])
 			.get(),
 	};
 }
@@ -454,7 +459,8 @@ export class EditTool implements AgentTool<TInput> {
 				logger.debug("Native edit preview failed", { error: error.message, toolCallId: init.toolCallId });
 				return;
 			}
-			init.emit(batch);
+			const update: EditStreamPreviewUpdate = { ...batch, editMode: this.mode };
+			init.emit(update);
 		});
 		this.#sessions.delete(init.toolCallId);
 		this.#sessions.set(init.toolCallId, editSession);

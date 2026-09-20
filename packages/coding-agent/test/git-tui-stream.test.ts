@@ -12,6 +12,7 @@ import {
 	DiffPane,
 } from "@oh-my-pi/pi-tui/apps/git/diff-pane";
 import { GitModel } from "../src/cli/git-tui/state";
+import { renderToText } from "@oh-my-pi/pi-tui/testing";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 const RED_PNG = Buffer.from(
@@ -22,6 +23,10 @@ const LFS_POINTER_VERSION = "version https://git-lfs.github.com/spec/v1";
 beforeAll(async () => {
 	await initTheme(false);
 });
+
+function renderPane(pane: DiffPane, width: number, height: number): string[] {
+	return renderToText(() => pane.viewNode(width, height), width);
+}
 
 async function withReviewRepo(run: (repo: string) => Promise<void>): Promise<void> {
 	const repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-git-tui-stream-"));
@@ -109,7 +114,7 @@ describe("git TUI streamed document", () => {
 		const control = /[\x00-\x08\x0b-\x1f\x7f]/;
 		for (const mode of ["split", "inline", "file", "hunk"] as const) {
 			pane.setMode(mode);
-			for (const row of pane.render(80, 20)) {
+			for (const row of renderPane(pane, 80, 20)) {
 				expect(control.test(row.replace(/\x1b\[[0-9;]*m/g, ""))).toBe(false);
 			}
 		}
@@ -131,7 +136,7 @@ describe("git TUI asset previews", () => {
 
 			const pane = new DiffPane();
 			pane.setAsset(file.path, contents.old, contents.new);
-			const rendered = sanitizeText(pane.render(80, 12).join("\n"));
+			const rendered = sanitizeText(renderPane(pane, 80, 12).join("\n"));
 			expect(rendered).toContain("After · PNG");
 			expect(rendered).not.toContain("Binary object");
 		});
@@ -153,7 +158,7 @@ describe("git TUI asset previews", () => {
 
 			const pane = new DiffPane();
 			pane.setAsset(file.path, contents.old, contents.new);
-			expect(sanitizeText(pane.render(80, 12).join("\n"))).toContain("After · SVG");
+			expect(sanitizeText(renderPane(pane, 80, 12).join("\n"))).toContain("After · SVG");
 		});
 	});
 
@@ -178,7 +183,7 @@ describe("git TUI asset previews", () => {
 
 			const pane = new DiffPane();
 			pane.setAsset(file.path, contents.old, contents.new);
-			expect(sanitizeText(pane.render(90, 12).join("\n"))).toContain("After · PNG · Git LFS");
+			expect(sanitizeText(renderPane(pane, 90, 12).join("\n"))).toContain("After · PNG · Git LFS");
 		});
 	});
 
@@ -197,7 +202,7 @@ describe("git TUI asset previews", () => {
 			}
 			const pane = new DiffPane();
 			pane.setAsset(file.path, contents.old, contents.new);
-			const rendered = sanitizeText(pane.render(90, 12).join("\n"));
+			const rendered = sanitizeText(renderPane(pane, 90, 12).join("\n"));
 			expect(rendered).toContain("Git LFS object unavailable");
 			expect(rendered).toContain("sha256:000000000000…");
 		});
@@ -214,7 +219,7 @@ describe("git TUI asset previews", () => {
 			}
 			const pane = new DiffPane();
 			pane.setAsset(file.path, contents.old, contents.new);
-			const rendered = sanitizeText(pane.render(80, 12).join("\n"));
+			const rendered = sanitizeText(renderPane(pane, 80, 12).join("\n"));
 			expect(rendered).toContain("Binary object");
 			expect(rendered).not.toContain("�");
 		});

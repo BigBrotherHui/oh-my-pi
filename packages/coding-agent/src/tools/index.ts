@@ -79,12 +79,7 @@ export * from "./ask";
 export * from "./ast-edit";
 export * from "./ast-grep";
 export * from "./bash";
-export type {
-	BashToolDetails,
-	BashRenderArgs,
-	BashRenderContext,
-	ShellRendererConfig,
-} from "@oh-my-pi/pi-tui/tools/bash";
+export type { BashToolDetails, BashRenderArgs, BashRenderContext } from "@oh-my-pi/pi-tui/tools/bash";
 export * from "./browser";
 export * from "./checkpoint";
 export * from "./computer";
@@ -111,7 +106,7 @@ export type {
 	CoordinationDetails,
 	HubDetails,
 	HubRenderArgs,
-} from "@oh-my-pi/pi-tui/tools/hub";
+} from "@oh-my-pi/pi-tui/tools/hub-contract";
 export * from "./image-gen";
 export * from "./learn";
 export * from "./manage-skill";

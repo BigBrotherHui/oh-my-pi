@@ -1,7 +1,11 @@
-import { containsJevify, highlightJevify } from "./jevify";
-import { containsOrchestrate, highlightOrchestrate } from "./orchestrate";
-import { containsUltrathink, highlightUltrathink } from "./ultrathink";
-import { containsWorkflow, highlightWorkflow } from "./workflow";
+import { containsJevify, decorateJevify, highlightJevify } from "./jevify";
+import { containsOrchestrate, decorateOrchestrate, highlightOrchestrate } from "./orchestrate";
+import { containsUltrathink, decorateUltrathink, highlightUltrathink } from "./ultrathink";
+import { containsWorkflow, decorateWorkflow, highlightWorkflow } from "./workflow";
+import { magicKeywordRegex } from "./magic-keyword-boundary";
+import { maskNonProse } from "./markdown-prose";
+import { Style } from "../core/style";
+import type { GradientRun, KeywordDecorator } from "./gradient-highlight";
 
 /**
  * Gradient-highlight every magic keyword ("ultrathink", "orchestrate",
@@ -39,6 +43,38 @@ export function highlightMagicKeywords(text: string, resetTo?: string, phase?: n
  * prose check, so the common "no keyword in buffer" path is just four
  * `String#indexOf`s. Used by the live editor to gate the shimmer timer.
  */
+const MAGIC_DECORATORS: readonly { regex: RegExp; decorate: KeywordDecorator }[] = [
+	{ regex: magicKeywordRegex("ultrathink", "g"), decorate: decorateUltrathink },
+	{ regex: magicKeywordRegex("orchestrate", "g"), decorate: decorateOrchestrate },
+	{ regex: magicKeywordRegex("workflowz", "g"), decorate: decorateWorkflow },
+	{ regex: magicKeywordRegex("jevify", "g"), decorate: decorateJevify },
+];
+
+/** Produce styled prose slices for the editor's run-decoration seam. */
+export function magicKeywordRuns(text: string, base: Style = Style.NONE, phase: number = 0): readonly GradientRun[] {
+	if (!hasMagicKeyword(text)) return [{ text, style: base }];
+	const masked = maskNonProse(text);
+	const matches: Array<{ start: number; end: number; decorate: KeywordDecorator }> = [];
+	for (const entry of MAGIC_DECORATORS) {
+		entry.regex.lastIndex = 0;
+		for (const match of masked.matchAll(entry.regex)) {
+			const start = match.index ?? 0;
+			matches.push({ start, end: start + match[0].length, decorate: entry.decorate });
+		}
+	}
+	matches.sort((a, b) => a.start - b.start);
+	const runs: GradientRun[] = [];
+	let last = 0;
+	for (const match of matches) {
+		if (match.start < last) continue;
+		if (match.start > last) runs.push({ text: text.slice(last, match.start), style: base });
+		runs.push(...match.decorate(text.slice(match.start, match.end), base, phase));
+		last = match.end;
+	}
+	if (last < text.length) runs.push({ text: text.slice(last), style: base });
+	return runs;
+}
+
 export function hasMagicKeyword(text: string): boolean {
 	if (
 		!text.includes("ultrathink") &&

@@ -7,6 +7,7 @@
  */
 import * as url from "node:url";
 import { setTerminalHyperlinks, TERMINAL, type TerminalId } from "../terminal-capabilities";
+import { linkId, Style } from "../core/style";
 
 const OSC = "\x1b]";
 const ST = "\x1b\\";
@@ -131,6 +132,13 @@ function wrapHyperlink(uri: string, displayText: string): string {
 	return wrapHyperlinkCore(uri, displayText, ST);
 }
 
+/** Resolve an arbitrary URI to an OSC 8 run style under the active hyperlink policy. */
+export function uriHyperlinkStyle(uri: string, base: Style = Style.NONE): Style {
+	const safeUri = safeHyperlinkUri(uri);
+	if (!isHyperlinkEnabled() || safeUri === undefined) return base;
+	return base.withLink(linkId(safeUri));
+}
+
 /**
  * Wrap `displayText` in an OSC 8 hyperlink pointing at `uri`.
  *
@@ -156,6 +164,18 @@ export function urlHyperlink(url: string, displayText: string): string {
 	}
 }
 
+/** Resolve an HTTP(S) URL to a linked run style under the active policy. */
+export function urlHyperlinkStyle(value: string, base: Style = Style.NONE): Style {
+	const normalized = value.match(/^www\./i) ? `https:/${value}` : value;
+	try {
+		const parsed = new URL(normalized);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return base;
+		return uriHyperlinkStyle(parsed.href, base);
+	} catch {
+		return base;
+	}
+}
+
 /**
  * Wrap `displayText` in an OSC 8 hyperlink pointing at an HTTP(S) URL,
  * bypassing terminal capability auto-detection. Used for auth prompts where
@@ -175,6 +195,20 @@ export function urlHyperlinkAlways(url: string, displayText: string): string {
 	}
 }
 
+/** Resolve an HTTP(S) URL to a linked run style unless the user explicitly opted out. */
+export function urlHyperlinkAlwaysStyle(value: string, base: Style = Style.NONE): Style {
+	if (hyperlinkMode === "off") return base;
+	const normalized = value.match(/^www\./i) ? `https:/${value}` : value;
+	try {
+		const parsed = new URL(normalized);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return base;
+		const safeUri = safeHyperlinkUri(parsed.href);
+		return safeUri === undefined ? base : base.withLink(linkId(safeUri));
+	} catch {
+		return base;
+	}
+}
+
 /**
  * Wrap `displayText` in an OSC 8 hyperlink pointing at a filesystem path.
  *
@@ -189,4 +223,13 @@ export function urlHyperlinkAlways(url: string, displayText: string): string {
  */
 export function fileHyperlink(filePath: string, displayText: string, opts?: { line?: number; col?: number }): string {
 	return wrapHyperlink(buildFileUri(filePath, opts), displayText);
+}
+
+/** Resolve a filesystem path to a linked run style under the active policy. */
+export function fileHyperlinkStyle(
+	filePath: string,
+	opts?: { line?: number; col?: number },
+	base: Style = Style.NONE,
+): Style {
+	return uriHyperlinkStyle(buildFileUri(filePath, opts), base);
 }

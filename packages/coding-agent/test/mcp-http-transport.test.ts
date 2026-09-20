@@ -19,7 +19,8 @@ afterEach(() => {
 	server = null;
 });
 
-async function connectedTransport(timeout = REQUEST_TIMEOUT_MS): Promise<HttpTransport> {
+// Protocol and diagnostic assertions must not compete with the deliberately short timeout cases.
+async function connectedTransport(timeout = 5_000): Promise<HttpTransport> {
 	if (!server) throw new Error("Test server was not started");
 	const transport = new HttpTransport({
 		type: "http",
@@ -233,7 +234,7 @@ describe("MCP Streamable HTTP transport timeouts", () => {
 				});
 			},
 		});
-		const transport = await connectedTransport();
+		const transport = await connectedTransport(REQUEST_TIMEOUT_MS);
 
 		await expect(withPendingGuard(transport.request("tools/list"), "request")).rejects.toMatchObject({
 			transport: "http",
@@ -366,7 +367,7 @@ describe("MCP Streamable HTTP transport timeouts", () => {
 				});
 			},
 		});
-		const transport = await connectedTransport();
+		const transport = await connectedTransport(REQUEST_TIMEOUT_MS);
 
 		await expect(withPendingGuard(transport.notify("notifications/initialized"), "notify")).rejects.toThrow(
 			`Notify timeout after ${REQUEST_TIMEOUT_MS}ms`,
@@ -537,7 +538,7 @@ describe("MCP Streamable HTTP transport timeouts", () => {
 				);
 			},
 		});
-		const transport = await connectedTransport();
+		const transport = await connectedTransport(REQUEST_TIMEOUT_MS);
 		transport.onNotification = method => {
 			if (method === "notifications/progress") notificationReceived.resolve();
 		};
@@ -597,11 +598,11 @@ describe("MCP Streamable HTTP protocol version header", () => {
 				return Response.json({ jsonrpc: "2.0", id: 1, result: {} });
 			},
 		});
-		const transport = await connectedTransport();
+		const transport = await connectedTransport(5_000);
 
 		// No setProtocolVersion yet: this stands in for the initialize request,
 		// which must not carry the header before negotiation completes.
-		await withPendingGuard(transport.request("initialize"), "request");
+		await transport.request("initialize");
 		expect(seen.present).toBe(false);
 		expect(seen.version).toBeNull();
 	});
@@ -615,10 +616,10 @@ describe("MCP Streamable HTTP protocol version header", () => {
 				return Response.json({ jsonrpc: "2.0", id: 1, result: {} });
 			},
 		});
-		const transport = await connectedTransport();
+		const transport = await connectedTransport(5_000);
 		transport.setProtocolVersion("2025-06-18");
 
-		await withPendingGuard(transport.request("tools/list"), "request");
+		await transport.request("tools/list");
 		expect(seen.version).toBe("2025-06-18");
 	});
 
@@ -635,20 +636,16 @@ describe("MCP Streamable HTTP protocol version header", () => {
 		const transport = new HttpTransport({
 			type: "http",
 			url: `http://127.0.0.1:${server.port}/mcp`,
-			timeout: REQUEST_TIMEOUT_MS,
+			timeout: 5_000,
 			headers: { "MCP-Protocol-Version": "1999-01-01" },
 		});
 		await transport.connect();
 
 		// Pre-negotiation: configured header must be stripped, not leaked.
-		seen.pre = await withPendingGuard(transport.request<{ seen: string | null }>("initialize"), "request").then(
-			r => r.seen,
-		);
+		seen.pre = (await transport.request<{ seen: string | null }>("initialize")).seen;
 		// Post-negotiation: the negotiated version wins over the configured one.
 		transport.setProtocolVersion("2025-11-25");
-		seen.post = await withPendingGuard(transport.request<{ seen: string | null }>("tools/list"), "request").then(
-			r => r.seen,
-		);
+		seen.post = (await transport.request<{ seen: string | null }>("tools/list")).seen;
 
 		expect(seen.pre).toBeNull();
 		expect(seen.post).toBe("2025-11-25");
@@ -670,7 +667,7 @@ describe("MCP Streamable HTTP POST response resumption", () => {
 				return stalledBodyResponse("unavailable", { status: 503 });
 			},
 		});
-		const transport = await connectedTransport();
+		const transport = await connectedTransport(REQUEST_TIMEOUT_MS);
 		try {
 			await expect(
 				withPendingGuard(transport.request("tools/call"), "stalled resume error body"),
@@ -699,7 +696,7 @@ describe("MCP Streamable HTTP POST response resumption", () => {
 				return new Response("expired", { status: 401 });
 			},
 		});
-		const transport = await connectedTransport();
+		const transport = await connectedTransport(REQUEST_TIMEOUT_MS);
 		transport.onAuthError = () => refresh.promise;
 		try {
 			await expect(

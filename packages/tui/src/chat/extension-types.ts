@@ -1,46 +1,38 @@
-import type { Component, TUI } from "../tui";
-import type { Theme } from "../theme/theme";
+import type { JSX } from "../reactive";
 import type { CustomMessage, HookMessage } from "./messages";
 
-export type ExtensionUiComponent = Component & { dispose?(): void };
+/** A declarative extension surface mounted under the current reactive owner. */
+export type ExtensionUiView = () => JSX.Element;
 
-export type ExtensionUiComponentFactory = (tui: TUI, theme: Theme) => ExtensionUiComponent;
+/** Produces a view directly; terminal and theme are inherited through context. */
+export type ExtensionUiViewFactory = () => ExtensionUiView;
 
-export type ExtensionWidgetContent = string[] | ExtensionUiComponentFactory | undefined;
+export type ExtensionWidgetContent = readonly string[] | ExtensionUiView | undefined;
 
 export interface MessageRenderOptions {
-	expanded: boolean;
+	readonly expanded: boolean;
 }
 
+/** Custom-message renderer supplied by an extension. */
 export type MessageRenderer<T = unknown> = (
 	message: CustomMessage<T>,
 	options: MessageRenderOptions,
-	theme: Theme,
-) => Component | undefined;
+) => JSX.Element | undefined;
 
 export interface AssistantThinkingRenderContext {
-	contentIndex: number;
-	thinkingIndex: number;
-	text: string;
-	requestRender(): void;
+	readonly contentIndex: number;
+	readonly thinkingIndex: number;
+	readonly text: string;
 }
 
-export type AssistantThinkingRenderer = (
-	context: AssistantThinkingRenderContext,
-	theme: Theme,
-) => Component | undefined;
+export type AssistantThinkingRenderer = (context: AssistantThinkingRenderContext) => JSX.Element | undefined;
 
 export interface HookMessageRenderOptions {
-	/** Whether the view is expanded */
-	expanded: boolean;
+	readonly expanded: boolean;
 }
 
-/**
- * Renderer for hook messages.
- * Hooks register these to provide custom TUI rendering for their message types.
- */
+/** Declarative renderer for an extension hook message. */
 export type HookMessageRenderer<T = unknown> = (
 	message: HookMessage<T>,
 	options: HookMessageRenderOptions,
-	theme: Theme,
-) => Component | undefined;
+) => JSX.Element | undefined;

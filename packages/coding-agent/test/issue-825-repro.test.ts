@@ -88,8 +88,9 @@ function makeCtx(initialQueue: CompactionQueuedMessage[]) {
 	const isKnownSlashCommand = (text: string) => text.startsWith("/");
 	const ctx = {
 		session: fake.session,
+		viewSession: fake.session,
 		compactionQueuedMessages: [...initialQueue],
-		pendingMessagesContainer: { clear: () => {}, addChild: () => {}, removeChild: () => {} },
+		pendingMessagesContainer: { append: () => {}, clear: () => {} },
 		editor: { addToHistory: () => {}, setText: () => {}, getText: () => "" },
 		keybindings: { getDisplayString: () => "Alt+Up" },
 		fileSlashCommands: new Set<string>(),

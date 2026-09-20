@@ -159,20 +159,141 @@ Tool definitions may also declare `strict`, `hidden`, `loadMode`, `deferrable`, 
 - In unrestricted SDK bootstrap, custom and extension-registered tools are force-included in the initial active set. Restricted sessions exclude SDK-provided custom tools unless `allowRestrictedCustomTools: true`, and expose an opted-in custom tool only when its name appears in `toolNames`.
 - CLI `--tools` currently validates only built-in tool names; custom tool inclusion is handled through discovery/registration paths and SDK options.
 
-## Rendering hooks
+## Tool Presentation (`toolView`)
 
-Optional rendering hooks:
+Custom tools present their in-progress execution and results in the interactive TUI through an optional reactive view definition:
 
-- `renderCall(args, options, theme)`
-- `renderResult(result, options, theme)`
+```ts
+import type { ToolViewDefinition } from "@oh-my-pi/pi-tui/tools/view";
+```
 
-The normal SDK and filesystem-discovery paths wrap custom tools as extensions. On those paths, `renderResult` receives only the three arguments above; the bridge does not forward the original tool arguments. The public `CustomTool` type retains an optional fourth `args` parameter for direct `CustomToolAdapter` consumers.
+Assigning `toolView` on the custom tool object hooks into the unified `@oh-my-pi/pi-tui` reactive transcript pipeline:
 
-Runtime behavior in TUI:
+```ts
+export interface CustomTool<TParams extends TSchema = TSchema, TDetails = any> {
+  // ...
+  readonly toolView?: ToolViewDefinition<Static<TParams>, TDetails>;
+}
+```
 
-- If hooks exist, tool output is rendered inside a `Box` container.
-- `renderResult` receives `{ expanded, isPartial, spinnerFrame? }` as its `options` argument.
-- Renderer errors are caught and logged; UI falls back to default text rendering.
+### The `ToolViewDefinition` Contract
+
+A `ToolViewDefinition` bundles a declarative Solid JSX view component, an optional activity summary for compact transcript views, and a frame opt-out flag:
+
+```ts
+export interface ToolViewDefinition<TArgs, TDetails> {
+  /** The reactive Solid view component. */
+  readonly view: (props: ToolViewProps<TArgs, TDetails>) => JSX.Element;
+  /** Pure semantic summary used when transcript allocation is compact (<3 rows). */
+  readonly summary?: (props: ToolViewProps<TArgs, TDetails>) => ActivitySummary;
+  /** Whether the tool view draws its own outer frame (disables default card border/padding). */
+  readonly framed?: boolean;
+}
+```
+
+### `ToolViewProps` Reference
+
+The view function receives `ToolViewProps<TArgs, TDetails>`. All properties are reactive and update in place during tool execution:
+
+| Property | Type | Description |
+|---|---|---|
+| `id` | `string` | Unique tool-call identifier. |
+| `toolName` | `string` | Name of the tool (e.g. `"repo_stats"`). |
+| `label` | `string` | Display label configured for the tool. |
+| `args` | `DeepReadonly<DeepPartial<TArgs>>` | Reactive store of tool parameters. Streams partial arguments while the model generates. |
+| `phase` | `"receiving" \| "queued" \| "running" \| "settled"` | Current lifecycle phase. |
+| `outcome` | `"success" \| "failed" \| "cancelled" \| "timed_out" \| "skipped"` | Settled outcome, if completed. |
+| `details` | `DeepReadonly<TDetails>` | Structured details returned by `execute` or emitted via `onUpdate`. |
+| `output` | `OutputDocument` | Reactive document containing tool text output. Supports streaming. |
+| `notices` | `readonly OutputNotice[]` | Diagnostic notices, truncation warnings, or execution metadata. |
+| `images` | `readonly ImageBlock[]` | Inline images returned by the tool. |
+| `ui` | `ToolUiState` | Transcript viewport state: `expanded`, `allocation` (available rows), `showImages`, `frozenAt`. |
+
+### Realistic Example with Reactive `toolView`
+
+```tsx
+import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
+import type { ToolViewDefinition, ToolViewProps } from "@oh-my-pi/pi-tui/tools/view";
+import { ToolCard } from "@oh-my-pi/pi-tui/view/tool-card";
+import { ToolHeader } from "@oh-my-pi/pi-tui/view/tool-header";
+import { Show } from "@oh-my-pi/pi-tui/reactive";
+
+interface StatsParams {
+  glob?: string;
+}
+
+interface StatsDetails {
+  count: number;
+  sample: string[];
+}
+
+const statsToolView: ToolViewDefinition<StatsParams, StatsDetails> = {
+  view: (props: ToolViewProps<StatsParams, StatsDetails>) => (
+    <ToolCard phase={props.phase} outcome={props.outcome}>
+      <ToolHeader
+        toolName={props.toolName}
+        label={props.label}
+        phase={props.phase}
+        outcome={props.outcome}
+      />
+      <box paddingX={1}>
+        <stack gap={1}>
+          <row gap={1}>
+            <text color="muted">Pattern:</text>
+            <text color="accent">{props.args.glob ?? "**/*.ts"}</text>
+          </row>
+          <Show when={props.details}>
+            {(details) => (
+              <text color="success">
+                Matched {details().count} files
+              </text>
+            )}
+          </Show>
+          <Show when={props.output.lineCount() > 0}>
+            <preview edge="tail" rows={5}>
+              <text color="dim">{props.output.text()}</text>
+            </preview>
+          </Show>
+        </stack>
+      </box>
+    </ToolCard>
+  ),
+  summary: (props) => ({
+    label: props.label,
+    detail: props.details ? `${props.details.count} files` : props.args.glob,
+    status: props.phase === "running" ? "running" : props.outcome === "success" ? "done" : "error",
+  }),
+};
+
+const factory: CustomToolFactory = (pi) => ({
+  name: "repo_stats",
+  label: "Repo Stats",
+  description: "Counts tracked TypeScript files",
+  parameters: pi.zod.object({
+    glob: pi.zod.string().optional(),
+  }),
+  toolView: statsToolView,
+
+  async execute(toolCallId, params, onUpdate, ctx, signal) {
+    // Execution logic...
+    return {
+      content: [{ type: "text", text: "Found 42 files" }],
+      details: { count: 42, sample: ["src/index.ts"] },
+    };
+  },
+});
+
+export default factory;
+```
+
+### Migration Reference for Custom Tool Renderers
+
+| Legacy API (Removed) | Modern Replacement (`toolView`) | Motivation |
+|---|---|---|
+| `renderCall(args, options, theme): Component` | `toolView: ToolViewDefinition` (`view: (props) => JSX.Element`) | Unifies call and result presentation into a single reactive component driven by lifecycle phase. |
+| `renderResult(result, options, theme, args?): Component` | Consolidated inside `props.details`, `props.output`, and `props.outcome` on `ToolViewProps` | Eliminates disparate call vs result renderers and manual state merging. |
+| Returning imperative `Component` with `paint(out, width)` | Declarative Solid JSX using intrinsic elements (`<ToolCard>`, `<ToolHeader>`, `<box>`, `<text>`) | Full reactivity, automatic cached run replay, and zero manual ANSI formatting. |
+| Imperative spinner frame option (`options.spinnerFrame`) | Automatic spinner animation via `<status>` or `useClock("spinner")` | Coordinated root clock subscriptions without per-component timer polling. |
 
 ## Session/state handling
 

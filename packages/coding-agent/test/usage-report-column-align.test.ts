@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { renderUsageReports } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
+import { renderUsage } from "./helpers/usage-report";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 
 const HOUR = 3_600_000;
@@ -66,7 +66,7 @@ describe("renderUsageReports multi-account column alignment (#6067)", () => {
 		// Account A: weekly exhausted, 5h free. Account B: weekly light, 5h exhausted.
 		// A naive per-window sort by used fraction swaps the columns between rows.
 		const reports: UsageReport[] = [acct("alice@example.test", 1.0, 0.0), acct("bob@example.test", 0.2, 1.0)];
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 160));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, Date.now(), 160));
 		const lines = text.split("\n");
 
 		const columnOrder = (sectionLabel: string): string[] => {
@@ -84,11 +84,11 @@ describe("renderUsageReports multi-account column alignment (#6067)", () => {
 
 	it("keeps all-used-only amount cells within four-column narrow widths", () => {
 		const reports = [spendAcct("first@example.test", 123.45), spendAcct("second@example.test", 67.89)];
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 11));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, Date.now(), 11));
 		const lines = text.split("\n");
-		const headerIdx = lines.findIndex(line => line.includes("Claude Extra Usage"));
-		expect(headerIdx).toBeGreaterThanOrEqual(0);
-		const amountRow = lines[headerIdx + 2]!;
+		expect(lines.map(line => line.trim()).join(" ")).toContain("Claude Extra Usage");
+		const amountRow = lines.find(line => line.includes("$"));
+		if (!amountRow) throw new Error("Missing absolute usage amounts");
 		const cells = amountRow.trim().split(/\s+/);
 
 		expect(cells).toHaveLength(2);
@@ -98,16 +98,19 @@ describe("renderUsageReports multi-account column alignment (#6067)", () => {
 
 	it("keeps mixed capped and used-only amount cells aligned at narrow widths", () => {
 		const reports = [spendAcct("capped@example.test", 50, 100), spendAcct("uncapped@example.test", 123.45)];
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 20));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, Date.now(), 20));
 		const lines = text.split("\n");
-		const headerIdx = lines.findIndex(line => line.includes("Claude Extra Usage"));
-		expect(headerIdx).toBeGreaterThanOrEqual(0);
-		const labelRow = lines[headerIdx + 1]!;
-		const amountRow = lines[headerIdx + 2]!;
-		const summaryStart = amountRow.lastIndexOf(" 2 accts");
-
-		expect(summaryStart).toBeGreaterThanOrEqual(0);
-		expect(Bun.stringWidth(labelRow)).toBe(11);
-		expect(Bun.stringWidth(amountRow.slice(2, summaryStart))).toBe(9);
+		expect(lines.map(line => line.trim()).join(" ")).toContain("Claude Extra Usage");
+		const amountIndex = lines.findIndex(line => line.includes("$"));
+		expect(amountIndex).toBeGreaterThan(0);
+		const labelRow = lines[amountIndex - 1]!;
+		const amountRow = lines[amountIndex]!;
+		const labels = [...labelRow.matchAll(/\S+/g)];
+		const amounts = [...amountRow.matchAll(/\S+/g)];
+		expect(amountRow).toContain("2 accts");
+		expect(labels).toHaveLength(2);
+		expect(amounts[0]?.index).toBe(labels[0]?.index);
+		expect(amounts[1]?.index).toBe(labels[1]?.index);
+		expect(Bun.stringWidth(amountRow)).toBeLessThanOrEqual(20);
 	});
 });

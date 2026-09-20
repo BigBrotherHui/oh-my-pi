@@ -1,111 +1,156 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { LateDiagnosticsMessageComponent } from "@oh-my-pi/pi-tui/chat/late-diagnostics-message";
+import { LateDiagnosticsMessageView, type LateDiagnosticsFile } from "@oh-my-pi/pi-tui/chat/late-diagnostics-message";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
+import { createSignal } from "../src/reactive";
+import { mountForTest, renderToRows } from "../src/testing";
 
 const darkTheme = await getThemeByName("dark");
 
-function plain(component: LateDiagnosticsMessageComponent): string {
-	return stripVTControlCharacters(component.render(120).join("\n"));
+function plain(files: readonly LateDiagnosticsFile[], expanded = false, visible = true, width = 120): string {
+	return stripVTControlCharacters(
+		renderToRows(() => LateDiagnosticsMessageView({ files, expanded, visible }), width).join("\n"),
+	);
 }
 
-describe("LateDiagnosticsMessageComponent", () => {
+describe("LateDiagnosticsMessageView", () => {
 	beforeEach(() => {
 		if (!darkTheme) throw new Error("Failed to load dark theme");
 		setThemeInstance(darkTheme);
 	});
 
-	it("renders late diagnostics through the shared tree renderer", () => {
-		const component = new LateDiagnosticsMessageComponent([
+	it("renders a themed, file-grouped diagnostic tree from parsed messages", () => {
+		const text = plain([
 			{
-				path: "/abs/packages/coding-agent/src/foo.ts",
+				path: "/abs/ignored-by-the-diagnostic-tree.ts",
 				summary: "1 error(s)",
 				errored: true,
 				messages: [
 					"packages/coding-agent/src/foo.ts:7804:14 [error] [typescript] Type 'string' is not assignable to type 'number'. (2322)",
 				],
 			},
+			{
+				summary: "1 warning(s)",
+				messages: ["packages/coding-agent/src/foo.ts:7805:2 [warning] [typescript] This may be undefined. (2532)"],
+			},
 		]);
 
-		const text = plain(component);
 		expect(text).toContain("Late diagnostics");
-		expect(text).toContain("1 error(s)");
-		// File grouped as its own tree node...
+		expect(text).toContain("(1 error(s), 1 warning(s))");
 		expect(text).toContain("packages/coding-agent/src/foo.ts");
-		// ...and the diagnostic on a separate row with parsed location + message.
 		expect(text).toContain(":7804:14");
 		expect(text).toContain("Type 'string' is not assignable to type 'number'.");
-		// The shared renderer folds severity/source into icons, so the raw inline
-		// `[error]`/`[typescript]` markers of the old flat format must be gone.
+		expect(text).toContain("(2322)");
+		expect(text).not.toContain("ignored-by-the-diagnostic-tree.ts");
 		expect(text).not.toContain("[error]");
 		expect(text).not.toContain("[typescript]");
 	});
 
-	it("caps collapsed output and reveals the rest when expanded", () => {
-		const messages = Array.from(
-			{ length: 8 },
-			(_, i) => `src/foo.ts:${i + 1}:1 [error] [typescript] err ${i + 1} (2322)`,
-		);
-		const component = new LateDiagnosticsMessageComponent([
-			{ path: "/abs/src/foo.ts", summary: "8 error(s)", errored: true, messages },
-		]);
-
-		const collapsed = plain(component);
-		expect(collapsed).toContain("err 1");
-		expect(collapsed).not.toContain("err 8");
-		expect(collapsed).toContain("more");
-
-		component.setExpanded(true);
-		const expanded = plain(component);
-		expect(expanded).toContain("err 8");
-		expect(expanded).not.toContain("more");
-	});
-
-	it("groups multiple files under a single header", () => {
-		const component = new LateDiagnosticsMessageComponent([
+	it("sorts each file by severity, location, and message before rendering", () => {
+		const text = plain([
 			{
-				path: "/abs/a.ts",
-				summary: "1 error(s)",
 				errored: true,
-				messages: ["a.ts:1:1 [error] [typescript] bad a (2322)"],
-			},
-			{
-				path: "/abs/b.ts",
-				summary: "1 warning(s)",
-				errored: false,
-				messages: ["b.ts:2:2 [warning] [typescript] bad b (2322)"],
+				messages: [
+					"src/sorted.ts:3:2 [warning] later warning (W2)",
+					"src/sorted.ts:9:1 [error] later error (E9)",
+					"src/sorted.ts:2:8 [error] earlier error (E2)",
+				],
 			},
 		]);
 
-		const text = plain(component);
-		expect(text.match(/Late diagnostics/g)?.length).toBe(1);
-		expect(text).toContain("a.ts");
-		expect(text).toContain("b.ts");
-		expect(text).toContain("bad a");
-		expect(text).toContain("bad b");
+		expect(text.indexOf("earlier error")).toBeLessThan(text.indexOf("later error"));
+		expect(text.indexOf("later error")).toBeLessThan(text.indexOf("later warning"));
 	});
 
-	it("renders nothing when no diagnostics are present", () => {
-		const component = new LateDiagnosticsMessageComponent([
-			{ path: "/abs/empty.ts", summary: "", errored: false, messages: [] },
-		]);
-		expect(plain(component).trim()).toBe("");
-	});
-
-	it("hides and restores diagnostics without discarding the rendered block", () => {
-		const component = new LateDiagnosticsMessageComponent([
+	it("limits collapsed diagnostics globally and provides the keymap-aware expand hint", () => {
+		const files = [
 			{
-				path: "/abs/src/foo.ts",
-				summary: "1 error(s)",
+				summary: "8 error(s)",
+				errored: true,
+				messages: Array.from(
+					{ length: 8 },
+					(_, index) => `src/foo.ts:${index + 1}:1 [error] [typescript] err ${index + 1} (${index + 1})`,
+				),
+			},
+		];
+
+		const collapsed = plain(files);
+		expect(collapsed).toContain("err 5");
+		expect(collapsed).not.toContain("err 6");
+		expect(collapsed).toContain("… 3 more");
+		expect(collapsed).toContain("Expand");
+
+		const expanded = plain(files, true);
+		expect(expanded).toContain("err 8");
+		expect(expanded).not.toContain("… 3 more");
+	});
+
+	it("keeps parsed and fallback diagnostics legible in a narrow tree", () => {
+		const text = plain(
+			[
+				{
+					summary: "1 error(s)\tand 1 warning(s)",
+					errored: true,
+					messages: [
+						"src/narrow.ts:3:7 [error] [typescript] A diagnostic message that needs wrapping at narrow terminal widths. (9999)",
+						"unparsed fallback diagnostic",
+					],
+				},
+			],
+			true,
+			true,
+			24,
+		);
+
+		expect(text).toContain("src/narrow.ts");
+		expect(text).toContain(":3:7");
+		expect(text).toContain("unparsed");
+		expect(text).toContain("fallback");
+		expect(text).not.toContain("\t");
+		expect(text.split("\n").some(line => line.includes("├") || line.includes("└"))).toBe(true);
+	});
+
+	it("reacts to visibility changes without losing diagnostics", () => {
+		const [visible, setVisible] = createSignal(true);
+		const files = [
+			{
 				errored: true,
 				messages: ["src/foo.ts:1:1 [error] [typescript] bad (2322)"],
 			},
+		];
+		const root = mountForTest(() =>
+			LateDiagnosticsMessageView({
+				files,
+				expanded: false,
+				get visible() {
+					return visible();
+				},
+			}),
+		);
+
+		try {
+			expect(root.text().join("\n")).toContain("Late diagnostics");
+			setVisible(false);
+			expect(root.text().join("\n")).toBe("");
+			setVisible(true);
+			expect(root.text().join("\n")).toContain("bad");
+		} finally {
+			root.dispose();
+		}
+	});
+
+	it("renders an unknown parsed severity as informational rather than failing", () => {
+		const text = plain([
+			{
+				messages: ["src/unknown.ts:1:1 [fatal] provider-specific severity (P1)"],
+			},
 		]);
 
-		expect(plain(component)).toContain("Late diagnostics");
-		component.setToolActivityVisible(false);
-		expect(plain(component)).toBe("");
-		component.setToolActivityVisible(true);
-		expect(plain(component)).toContain("Late diagnostics");
+		expect(text).toContain("src/unknown.ts");
+		expect(text).toContain("provider-specific severity");
+	});
+
+	it("renders nothing without diagnostic messages", () => {
+		expect(plain([{ path: "/abs/empty.ts", summary: "", errored: false, messages: [] }]).trim()).toBe("");
 	});
 });

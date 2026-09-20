@@ -102,6 +102,20 @@ describe("macOS spelling feature gates", () => {
 		expect(rendered.replace(/\x1b\[[0-9;:]*m/g, "")).toBe(text);
 	});
 
+	it("notifies the mounted editor when a feature change clears typo state", () => {
+		const provider = new MacOSSpellingProvider(
+			backend({ checkSpelling: async () => [{ start: 0, length: 8 }] }),
+			true,
+		);
+		provider.setFeatures({ typoDetection: true, autocomplete: false, autocorrect: false });
+		const onUpdate = mock(() => {});
+		provider.onUpdate = onUpdate;
+
+		provider.setFeatures({ typoDetection: false, autocomplete: false, autocorrect: false });
+
+		expect(onUpdate).toHaveBeenCalledTimes(1);
+	});
+
 	it("enables typo detection without enabling autocomplete or autocorrect", async () => {
 		const checkSpelling = mock(async () => [{ start: 0, length: 8 }]);
 		const completeWord = mock(async () => ["received"]);
@@ -127,7 +141,7 @@ describe("macOS spelling feature gates", () => {
 		await updated.promise;
 		expect(onUpdate).toHaveBeenCalledTimes(1);
 		expect(provider.decorateTypos("recieved", decorationContext("recieved"))).toBe(
-			"\x1b[4:3m\x1b[58:2::255:95:95mrecieved\x1b[4:0m\x1b[59m",
+			"\x1b[4:3m\x1b[58:2::255:95:95mrecieved\x1b[24m\x1b[59m",
 		);
 		expect(provider.getWordCompletion(["recieved"], 0, 8)).toBeNull();
 		expect(await provider.tryAutocorrect(["recieved "], 0, 9)).toBeNull();
@@ -312,11 +326,14 @@ describe("macOS spelling feature gates", () => {
 		const completeWord = mock(async () => ["received"]);
 		const provider = new MacOSSpellingProvider(backend({ checkSpelling, completeWord }));
 		provider.setFeatures({ typoDetection: true, autocomplete: true, autocorrect: true });
+		const onUpdate = mock(() => {});
+		provider.onUpdate = onUpdate;
 
 		expect(provider.decorateTypos("recieved", decorationContext("recieved"))).toBe("recieved");
 		expect(checkSpelling).toHaveBeenCalledTimes(1);
 		failure.reject(new Error("spell service unavailable"));
 		await failure.promise.catch(() => undefined);
+		expect(onUpdate).toHaveBeenCalledTimes(1);
 
 		expect(provider.decorateTypos("definately", decorationContext("definately"))).toBe("definately");
 		expect(provider.getWordCompletion(["weath"], 0, 5)).toBeNull();
@@ -354,7 +371,7 @@ describe("typo underline capability selection", () => {
 		const rendered = await renderFlaggedWord(true);
 		expect(rendered).toContain("\x1b[4:3m");
 		expect(rendered).toContain("\x1b[58:2::255:95:95m");
-		expect(rendered).toContain("\x1b[4:0m");
+		expect(rendered).toContain("\x1b[24m");
 		expect(rendered).toContain("\x1b[59m");
 	});
 });

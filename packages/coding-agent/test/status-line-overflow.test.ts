@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,10 +12,12 @@ import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { getSessionAccentAnsi, getSessionAccentHex } from "@oh-my-pi/pi-tui/theme/session-color";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
-import { StatusLineTestComponents } from "./helpers/status-line";
+import { renderStatus, StatusLineTestComponents, renderStatusLine } from "./helpers/status-line";
+import { cellGrid } from "../../tui/test/cell-grid";
 
 const originalProjectDir = getProjectDir();
 const statusLines = new StatusLineTestComponents();
+afterEach(() => statusLines.dispose());
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -166,14 +168,14 @@ describe("status line session accent", () => {
 	it("paints the gap with the session accent when enabled", () => {
 		const ansi = accentAnsi();
 		expect(ansi).toBeDefined();
-		const border = buildComponent(true).getTopBorder(80).content;
+		const border = renderStatusLine(buildComponent(true), 80);
 		expect(border).toContain(`${ansi}${theme.boxRound.horizontal}`);
 	});
 
 	it("paints the gap with the border color and omits the session accent when disabled", () => {
 		const ansi = accentAnsi();
 		expect(ansi).toBeDefined();
-		const border = buildComponent(false).getTopBorder(80).content;
+		const border = renderStatusLine(buildComponent(false), 80);
 		// Positive: gap is rendered with the theme border color.
 		expect(border).toContain(`${theme.getFgAnsi("border")}${theme.boxRound.horizontal}`);
 		// Negative: neither the gap nor the session-name segment may emit the
@@ -187,9 +189,9 @@ describe("status line session accent", () => {
 		const disabled = renderSegment("session_name", createCtx({ sessionName: "Named session", sessionAccent: false }));
 		expect(disabled.visible).toBe(true);
 		// Positive: the name uses the theme accent color, not the hash-derived session ANSI.
-		expect(disabled.content).toContain(theme.getFgAnsi("accent"));
+		expect(renderStatus(disabled.content)).toContain(theme.getFgAnsi("accent"));
 		// Negative: the hash-derived session ANSI must not appear for the name text.
-		expect(disabled.content).not.toContain(ansi);
+		expect(renderStatus(disabled.content)).not.toContain(ansi);
 	});
 
 	it("still renders the session name with the hash-derived accent when enabled", () => {
@@ -197,7 +199,7 @@ describe("status line session accent", () => {
 		expect(ansi).toBeDefined();
 		const enabled = renderSegment("session_name", createCtx({ sessionName: "Named session", sessionAccent: true }));
 		expect(enabled.visible).toBe(true);
-		expect(enabled.content).toContain(ansi);
+		expect(renderStatus(enabled.content)).toContain(ansi);
 	});
 });
 
@@ -205,12 +207,12 @@ describe("session_name preview-title fallback", () => {
 	it("renders the stand-in title when the session is unnamed", () => {
 		const seg = renderSegment("session_name", createCtx({ previewTitle: "omp" }));
 		expect(seg.visible).toBe(true);
-		expect(stripAnsi(seg.content)).toBe("omp");
+		expect(stripAnsi(renderStatus(seg.content))).toBe("omp");
 	});
 
 	it("prefers the real session name over the stand-in", () => {
 		const seg = renderSegment("session_name", createCtx({ sessionName: "Named session", previewTitle: "omp" }));
-		expect(stripAnsi(seg.content)).toBe("Named session");
+		expect(stripAnsi(renderStatus(seg.content))).toBe("Named session");
 	});
 
 	it("right-aligns the stand-in title through the box border pipeline", () => {
@@ -222,12 +224,10 @@ describe("session_name preview-title fallback", () => {
 			separator: "powerline-thin",
 			sessionAccent: false,
 		});
-		const withTitle = component.getTopBorder(80, "omp");
-		// The gauge fill pads the group gap, so the title chip lands flush right.
-		expect(withTitle.width).toBe(80);
-		expect(stripAnsi(withTitle.content).trimEnd().endsWith("omp")).toBe(true);
+		const withTitle = renderStatusLine(component, 80, "box", "omp");
+		expect(stripAnsi(withTitle).trimEnd().endsWith("omp")).toBe(true);
 		// Live render path passes no preview title: unnamed sessions show none.
-		expect(stripAnsi(component.getTopBorder(80).content)).not.toContain("omp");
+		expect(stripAnsi(renderStatusLine(component, 80))).not.toContain("omp");
 	});
 });
 
@@ -245,13 +245,15 @@ describe("status line focused-agent dimming", () => {
 		});
 		component.setSession(createStatusLineSession("Focused session"), "agent-1");
 
-		const border = component.getTopBorder(80).content;
+		const border = renderStatusLine(component, 80);
 
-		expect(border).toStartWith("\x1b[2m");
-		expect(border).toContain(`\x1b[22m${theme.sep.powerlineLeft}\x1b[0m\x1b[2m`);
-		expect(border).toContain(`\x1b[22m${theme.sep.powerlineRight}\x1b[0m\x1b[2m`);
-		expect(border).toContain("\x1b[0m\x1b[2m");
-		expect(border).toEndWith("\x1b[22m");
+		const cells = cellGrid([border], 80)[0]!;
+		const leftCap = cells.find(cell => cell.ch === theme.sep.powerlineLeft);
+		const rightCap = cells.find(cell => cell.ch === theme.sep.powerlineRight);
+		expect(leftCap?.attrs.dim).toBe(false);
+		expect(rightCap?.attrs.dim).toBe(false);
+		expect(cells.find(cell => cell.ch === "a")?.attrs.dim).toBe(true);
+		expect(cells.find(cell => cell.ch === "F")?.attrs.dim).toBe(true);
 	});
 });
 
@@ -269,13 +271,13 @@ describe("path segment truncation at varying maxLength", () => {
 
 		expect(full.visible).toBe(true);
 		expect(short.visible).toBe(true);
-		expect(visibleWidth(short.content)).toBeLessThan(visibleWidth(full.content));
+		expect(visibleWidth(renderStatus(short.content))).toBeLessThan(visibleWidth(renderStatus(full.content)));
 	});
 
 	it("reduces visible width monotonically as maxLength decreases", () => {
 		const widths = [40, 20, 10, 4].map(maxLen => {
 			const rendered = renderSegment("path", createCtx({ pathMaxLength: maxLen }));
-			return visibleWidth(rendered.content);
+			return visibleWidth(renderStatus(rendered.content));
 		});
 
 		for (let i = 1; i < widths.length; i++) {
@@ -286,7 +288,7 @@ describe("path segment truncation at varying maxLength", () => {
 	it("still renders a visible segment at maxLength=4", () => {
 		const rendered = renderSegment("path", createCtx({ pathMaxLength: 4 }));
 		expect(rendered.visible).toBe(true);
-		expect(visibleWidth(rendered.content)).toBeGreaterThan(0);
+		expect(visibleWidth(renderStatus(rendered.content))).toBeGreaterThan(0);
 	});
 });
 
@@ -312,8 +314,8 @@ describe("overflow: path shrinks before git is dropped", () => {
 		const leftSegIds: StatusLineSegmentId[] = [];
 		for (const segId of leftSegmentIds) {
 			const rendered = renderSegment(segId, ctx);
-			if (rendered.visible && rendered.content) {
-				left.push(rendered.content);
+			if (rendered.visible) {
+				left.push(renderStatus(rendered.content));
 				leftSegIds.push(segId);
 			}
 		}
@@ -321,7 +323,7 @@ describe("overflow: path shrinks before git is dropped", () => {
 		// Simplified groupWidth: sum of visible widths + padding between segments
 		const groupWidth = () => {
 			if (left.length === 0) return 0;
-			const partsWidth = left.reduce((sum, p) => sum + visibleWidth(p), 0);
+			const partsWidth = left.reduce((sum, p) => sum + visibleWidth(renderStatus(p)), 0);
 			// Each separator gap ~ 3 chars, plus 2 for outer padding
 			return partsWidth + Math.max(0, left.length - 1) * 3 + 2;
 		};
@@ -330,7 +332,7 @@ describe("overflow: path shrinks before git is dropped", () => {
 		const pathIdx = leftSegIds.indexOf("path");
 		if (pathIdx >= 0 && groupWidth() > width) {
 			const overflow = groupWidth() - width;
-			const currentPathVW = visibleWidth(left[pathIdx]);
+			const currentPathVW = visibleWidth(renderStatus(left[pathIdx]));
 			const minPathVW = 8;
 			const shrinkable = currentPathVW - minPathVW;
 			if (shrinkable > 0) {
@@ -342,18 +344,18 @@ describe("overflow: path shrinks before git is dropped", () => {
 					options: { ...ctx.options, path: { ...ctx.options.path, maxLength: maxLen } },
 				});
 				let reRendered = renderSegment("path", pathCtx(newMaxLen));
-				if (reRendered.visible && reRendered.content) {
+				if (reRendered.visible) {
 					for (let i = 0; i < 8; i++) {
-						const saved = currentPathVW - visibleWidth(reRendered.content);
+						const saved = currentPathVW - visibleWidth(renderStatus(reRendered.content));
 						if (saved >= shrinkBy) break;
 						const nextMaxLen = Math.max(4, newMaxLen - (shrinkBy - saved));
 						if (nextMaxLen >= newMaxLen) break;
 						newMaxLen = nextMaxLen;
 						const adjusted = renderSegment("path", pathCtx(newMaxLen));
-						if (!adjusted.visible || !adjusted.content) break;
+						if (!adjusted.visible) break;
 						reRendered = adjusted;
 					}
-					left[pathIdx] = reRendered.content;
+					left[pathIdx] = renderStatus(reRendered.content);
 				}
 			}
 		}
@@ -379,7 +381,7 @@ describe("overflow: path shrinks before git is dropped", () => {
 		// Use a width that's tight but should fit both after path shrinks
 		const fullPath = renderSegment("path", ctx);
 		const fullGit = renderSegment("git", ctx);
-		const bothWidth = visibleWidth(fullPath.content) + visibleWidth(fullGit.content);
+		const bothWidth = visibleWidth(renderStatus(fullPath.content)) + visibleWidth(renderStatus(fullGit.content));
 		// Set width to ~60% of both segments — forces shrink but should keep both
 		const tightWidth = Math.floor(bothWidth * 0.6) + 10;
 
@@ -414,8 +416,8 @@ describe("overflow: path shrinks before git is dropped", () => {
 			const ctx = createCtx({ pathMaxLength: maxLength, branch: "feat/long-branch-name" });
 			const fullPath = renderSegment("path", ctx);
 			const fullGit = renderSegment("git", ctx);
-			const pathVW = visibleWidth(fullPath.content);
-			const gitVW = visibleWidth(fullGit.content);
+			const pathVW = visibleWidth(renderStatus(fullPath.content));
+			const gitVW = visibleWidth(renderStatus(fullGit.content));
 
 			// Sanity: path is shorter than maxLength — this is the bug scenario.
 			// macOS temp paths can exceed 80 columns once the path icon is included.
@@ -440,8 +442,8 @@ describe("overflow: path shrinks before git is dropped", () => {
 			const ctx = createCtx({ pathMaxLength: 80, branch: "main" });
 			const fullPath = renderSegment("path", ctx);
 			const fullGit = renderSegment("git", ctx);
-			const pathVW = visibleWidth(fullPath.content);
-			const gitVW = visibleWidth(fullGit.content);
+			const pathVW = visibleWidth(renderStatus(fullPath.content));
+			const gitVW = visibleWidth(renderStatus(fullGit.content));
 
 			// Compute exact full width using the test's groupWidth formula:
 			// partsWidth + (numParts - 1) * 3 + 2
@@ -454,7 +456,7 @@ describe("overflow: path shrinks before git is dropped", () => {
 			expect(result.surviving).toContain("git");
 
 			// Path must have actually shrunk (proves the loop ran)
-			const shrunkPathVW = visibleWidth(result.contents[result.surviving.indexOf("path")]);
+			const shrunkPathVW = visibleWidth(renderStatus(result.contents[result.surviving.indexOf("path")]));
 			expect(shrunkPathVW).toBeLessThan(pathVW);
 		} finally {
 			setProjectDir(tmpDir);
@@ -498,15 +500,17 @@ describe("overflow: path survives before model", () => {
 				path: pathOptions,
 			},
 		} as SegmentContext;
-		const pi = renderSegment("pi", ctx).content;
-		const model = renderSegment("model", ctx).content;
-		const minPath = renderSegment("path", {
-			...ctx,
-			options: { ...ctx.options, path: { ...pathOptions, maxLength: 4 } },
-		}).content;
-		const separatorWidth = visibleWidth(theme.sep.space);
+		const pi = renderStatus(renderSegment("pi", ctx).content);
+		const model = renderStatus(renderSegment("model", ctx).content);
+		const minPath = renderStatus(
+			renderSegment("path", {
+				...ctx,
+				options: { ...ctx.options, path: { ...pathOptions, maxLength: 4 } },
+			}).content,
+		);
+		const separatorWidth = visibleWidth(renderStatus(theme.sep.space));
 		const groupWidth = (parts: string[]) =>
-			parts.reduce((sum, part) => sum + visibleWidth(part), 0) +
+			parts.reduce((sum, part) => sum + visibleWidth(renderStatus(part)), 0) +
 			Math.max(0, parts.length - 1) * (separatorWidth + 2) +
 			2;
 		const width = groupWidth([pi, model]) + 1;
@@ -514,7 +518,7 @@ describe("overflow: path survives before model", () => {
 		expect(groupWidth([pi, model, minPath])).toBeGreaterThan(width);
 		expect(groupWidth([pi, minPath])).toBeLessThanOrEqual(width);
 
-		const rendered = stripAnsi(component.getTopBorder(width).content);
+		const rendered = stripAnsi(renderStatusLine(component, width));
 		expect(rendered).toContain("xyz");
 		expect(rendered).not.toContain("MODEL_SHOULD_DROP");
 	});

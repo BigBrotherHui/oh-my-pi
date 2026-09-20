@@ -1,6 +1,7 @@
 // Deep import: the pi-utils barrel loads the host native addon, which is
 // absent on cross-compiling release runners.
 import { USER_AGENT } from "@oh-my-pi/pi-utils/dirs";
+import { createSolidJsxEntrypointPlugin, solidJsxPlugin } from "@oh-my-pi/pi-tui/compiler/solid-jsx-plugin";
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createJsonParsePlugin } from "./json-parse-plugin";
 import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
@@ -41,6 +42,8 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 		const output = await Bun.build({
 			entrypoints: [options.entrypoint],
 			root: options.repoRoot,
+			target: "bun",
+			conditions: ["browser"],
 			external: [...COMPILED_EXTERNAL_DEPENDENCIES],
 			define: {
 				"process.env.PI_COMPILED": JSON.stringify("true"),
@@ -55,7 +58,12 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,
 			},
-			plugins: [createJsonParsePlugin(), await createLegacyPiVirtualModulePlugin()],
+			plugins: [
+				createSolidJsxEntrypointPlugin(options.entrypoint),
+				solidJsxPlugin,
+				createJsonParsePlugin(),
+				await createLegacyPiVirtualModulePlugin(),
+			],
 			compile: {
 				// Bun's process-wide fetch User-Agent default. Any explicit
 				// provider fingerprint (Anthropic/Codex OAuth) still wins.

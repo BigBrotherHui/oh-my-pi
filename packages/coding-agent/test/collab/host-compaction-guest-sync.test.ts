@@ -47,7 +47,7 @@ function makeHostContext(manager: SessionManager): InteractiveModeContext {
 		eventBus: undefined,
 		statusLine: {
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
 		},
 		ui: { requestRender: () => {} },
@@ -92,7 +92,7 @@ function makeGuestHarness(model: Model, modelRegistry: ModelRegistry): GuestHarn
 		ensureLoadingAnimation: () => {},
 		statusLine: {
 			setCollabStatus: () => {},
-			invalidate: () => {},
+			ingestSession: () => {},
 			markActivityStart: () => {},
 			markActivityEnd: () => {},
 			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
@@ -106,7 +106,7 @@ function makeGuestHarness(model: Model, modelRegistry: ModelRegistry): GuestHarn
 		reloadTodos: () => Promise.resolve(),
 		showStatus: () => {},
 		showError: () => {},
-		eventController: { handleEvent: () => Promise.resolve(), takeDisplaceableComponents: () => [] },
+		eventController: { handleEvent: () => Promise.resolve() },
 		eventBus: undefined,
 		collabGuest: undefined,
 		handleResumeSession: () => Promise.resolve(),

@@ -1,4 +1,4 @@
-import { runExperimentToolRenderer } from "@oh-my-pi/pi-tui/tools/autoresearch";
+import { runExperimentToolView } from "@oh-my-pi/pi-tui/tools/autoresearch";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -55,7 +55,7 @@ export function createRunExperimentTool(
 	options: AutoresearchToolFactoryOptions,
 ): ToolDefinition<typeof runExperimentSchema, RunDetails | RunExperimentProgressDetails> {
 	return {
-		...runExperimentToolRenderer,
+		toolView: runExperimentToolView,
 		name: "run_experiment",
 		label: "Run Experiment",
 		description:
@@ -117,8 +117,7 @@ export function createRunExperimentTool(
 				runDirectory,
 				runNumber: insertedRun.id,
 			};
-			options.dashboard.updateWidget(ctx, runtime);
-			options.dashboard.requestRender();
+			options.refreshDashboard(ctx);
 
 			const timeoutMs = Math.max(0, Math.floor((params.timeout_seconds ?? 600) * 1000));
 			let execution: ProcessExecutionResult;
@@ -144,8 +143,7 @@ export function createRunExperimentTool(
 				});
 			} finally {
 				runtime.runningExperiment = null;
-				options.dashboard.updateWidget(ctx, runtime);
-				options.dashboard.requestRender();
+				options.refreshDashboard(ctx);
 			}
 
 			const completedAt = Date.now();
@@ -223,8 +221,7 @@ export function createRunExperimentTool(
 			if (refreshedSession) {
 				runtime.state = buildExperimentState(refreshedSession, storage.listLoggedRuns(session.id));
 			}
-			options.dashboard.updateWidget(ctx, runtime);
-			options.dashboard.requestRender();
+			options.refreshDashboard(ctx);
 
 			const headerLines: string[] = [];
 			if (abandonedPriorRun !== null) {

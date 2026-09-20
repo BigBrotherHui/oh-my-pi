@@ -111,7 +111,7 @@ function makeHostContext(): { ctx: InteractiveModeContext; state: HostContextSta
 			setCollabStatus: (status: unknown) => {
 				if (status === null) state.tornDown.resolve();
 			},
-			invalidate: () => {},
+			ingestSession: () => {},
 			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
 		},
 		ui: { requestRender: () => {} },

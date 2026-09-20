@@ -14,14 +14,13 @@ function createContext(options?: { focused?: { pasteText(text: string): void } }
 	const pasteText = vi.fn();
 	const insertText = vi.fn();
 	const insertAtom = vi.fn();
-	const requestRender = vi.fn();
 	const showStatus = vi.fn();
 	const ctx = {
 		editor: { pasteText, insertText, insertAtom } as unknown as InteractiveModeContext["editor"],
-		ui: { requestRender, getFocused: () => options?.focused ?? null } as unknown as InteractiveModeContext["ui"],
+		ui: { getFocused: () => options?.focused ?? null } as unknown as InteractiveModeContext["ui"],
 		showStatus,
 	} as unknown as InteractiveModeContext;
-	return { ctx, spies: { pasteText, insertText, insertAtom, requestRender, showStatus } };
+	return { ctx, spies: { pasteText, insertText, insertAtom, showStatus } };
 }
 
 describe("InputController.handleImagePaste smart-paste fallback", () => {
@@ -82,7 +81,6 @@ describe("InputController.handleImagePaste smart-paste fallback", () => {
 
 		expect(result).toBe(true);
 		expect(spies.pasteText).toHaveBeenCalledWith("copied text\nsecond line");
-		expect(spies.requestRender).toHaveBeenCalled();
 		expect(spies.showStatus).not.toHaveBeenCalled();
 	});
 

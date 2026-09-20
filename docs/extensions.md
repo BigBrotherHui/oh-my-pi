@@ -114,7 +114,7 @@ Core methods:
 
 - `on(event, handler)`
 - `registerTool`, `registerCommand`, `registerShortcut`, `registerFlag`
-- `registerMessageRenderer`, `registerAssistantThinkingRenderer`
+- `registerMessageView`, `registerAssistantThinkingRenderer`
 - `registerComposerShape`
 - `setLabel`, `getFlag`
 - `sendMessage`, `sendUserMessage`, `appendEntry`, `exec`
@@ -440,16 +440,17 @@ pi.registerTool({
   onSession(event, ctx) {
     // reason: start|switch|branch|tree|shutdown
   },
-  renderCall(args, options, theme) {
-    // optional TUI render
-  },
-  renderResult(result, options, theme, args) {
-    // optional TUI render
+  toolView: {
+    view: (props) => (
+      <box paddingX={1}>
+        <text color="accent">{props.label}</text>
+      </box>
+    ),
   },
 });
 ```
 
-`tool_call`/`tool_result` intercept all tools once the registry is wrapped in `sdk.ts`, including built-ins and extension/custom tools. `ToolDefinition` also supports optional `hidden`, `defaultInactive`, `loadMode` (`"discoverable"` by default, or `"essential"`), `deferrable`, `approval` (`"exec"` by default), `strict`, `mcpServerName`, `mcpToolName`, `renderCall`, and `renderResult` fields.
+`tool_call`/`tool_result` intercept all tools once the registry is wrapped in `sdk.ts`, including built-ins and extension/custom tools. `ToolDefinition` also supports optional `hidden`, `defaultInactive`, `loadMode` (`"discoverable"` by default, or `"essential"`), `deferrable`, `approval` (`"exec"` by default), `strict`, `mcpServerName`, `mcpToolName`, and `toolView` fields.
 
 ### File write fallback (`registerFileWriteFallback`)
 
@@ -794,35 +795,83 @@ All render methods receive `width`, `paddingX`, the theme's `box` glyphs, and th
 
 The built-in implementations in `packages/tui/src/components/composer/` are the reference for framed, rule, filled-surface, and IME-safe layouts.
 
-## Custom message renderer
+## Custom message view (`registerMessageView`)
 
-```ts
-pi.registerMessageRenderer("my-type", (message, { expanded }, theme) => {
-  // return pi-tui Component
+Extensions register custom message views using declarative Solid JSX components:
+
+```tsx
+import type { MessageViewProps } from "@oh-my-pi/pi-coding-agent";
+
+pi.registerMessageView("my-type", (props: MessageViewProps<MyPayload>) => {
+  return (
+    <box padding={1} background="surface">
+      <row gap={1}>
+        <text color="accent" bold>Custom Notification:</text>
+        <text color="text">{props.message.content}</text>
+      </row>
+    </box>
+  );
 });
 ```
 
-Used by interactive rendering when custom messages are displayed.
+`MessageViewProps<T>` provides reactive access to `message: CustomMessage<T>`, `expanded: boolean`, and `theme`. Used by interactive rendering when custom messages are displayed.
 
 ## Assistant thinking renderer
 
-```ts
-import { Container, Text } from "@oh-my-pi/pi-tui";
-
-pi.registerAssistantThinkingRenderer((context, theme) => {
-  const container = new Container();
-  container.addChild(
-    new Text(theme.fg("dim", `thinking chars: ${context.text.length}`), 1, 0),
+```tsx
+pi.registerAssistantThinkingRenderer((context) => {
+  return (
+    <box paddingX={1}>
+      <text color="dim">thinking chars: {context.text.length}</text>
+    </box>
   );
-  return container;
 });
 ```
 
-Used by interactive rendering to add display-only supplemental UI below each visible assistant thinking block. The renderer receives the already-visible thinking text, content/thinking indexes, theme, and a `requestRender()` callback for async renderers. All registered renderers that return a component are appended in registration order. Renderers must not mutate messages; the original thinking block remains the provider/session source of truth.
+Used by interactive rendering to add display-only supplemental UI below each visible assistant thinking block. The renderer receives the already-visible thinking text, content/thinking indexes, and theme context. Renderers must not mutate messages; the original thinking block remains the provider/session source of truth.
 
-## Tool call/result renderer
+## Tool view (`toolView`)
 
-Provide `renderCall` / `renderResult` on `registerTool` definitions for custom tool visualization in TUI.
+Custom and extension tools supply a `toolView?: ToolViewDefinition` on their tool definition for reactive visualization in the TUI:
+
+```tsx
+import type { ToolViewDefinition } from "@oh-my-pi/pi-tui/tools/view";
+import { ToolCard } from "@oh-my-pi/pi-tui/view/tool-card";
+import { ToolHeader } from "@oh-my-pi/pi-tui/view/tool-header";
+
+const myToolView: ToolViewDefinition = {
+  view: (props) => (
+    <ToolCard phase={props.phase} outcome={props.outcome}>
+      <ToolHeader toolName={props.toolName} label={props.label} phase={props.phase} outcome={props.outcome} />
+      <box paddingX={1}>
+        <text color="muted">Status: {props.phase}</text>
+      </box>
+    </ToolCard>
+  ),
+  summary: (props) => ({
+    label: props.label,
+    status: props.phase === "running" ? "running" : props.outcome === "success" ? "done" : "error",
+  }),
+};
+
+pi.registerTool({
+  name: "my_tool",
+  description: "Does work",
+  parameters: pi.zod.object({}),
+  toolView: myToolView,
+  async execute() {
+    return { content: [{ type: "text", text: "Done" }] };
+  },
+});
+```
+
+## Migration Reference for Extension Renderers
+
+| Legacy API (Removed) | Modern Replacement | Motivation |
+|---|---|---|
+| `ToolDefinition.renderCall` / `renderResult` | `ToolDefinition.toolView?: ToolViewDefinition` | Replaces dual-pass imperative paint functions with a single reactive Solid view. |
+| `registerMessageRenderer(type, renderer)` | `registerMessageView(type, view)` | Views return declarative JSX elements rather than imperative `Component` instances. |
+| Imperative `Component.paint(out, width)` | Retained Solid JSX components (`<box>`, `<text>`, `<row>`) | Fine-grained dependency tracking, automatic run caching, and token-based styling. |
 
 ## Constraints and pitfalls
 

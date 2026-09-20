@@ -1,5 +1,7 @@
-import type { Component, OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
-import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
+import type { TUI } from "@oh-my-pi/pi-tui";
+import { createSignal } from "@oh-my-pi/pi-tui/reactive";
+import { mountOverlay, Portal, type OverlayDisposer } from "@oh-my-pi/pi-tui/host/overlay";
+import type { ExtensionUiView } from "@oh-my-pi/pi-tui/chat/extension-types";
 import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import type { CollabHost } from "../../collab/host";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
@@ -12,25 +14,34 @@ import type {
 	ExtensionCommandContextActions,
 	ExtensionContextActions,
 	ExtensionCustomOptions,
+	ExtensionCustomSurface,
 	ExtensionError,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
-	ExtensionUiComponent,
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
 	SendUserMessageHandler,
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
-import { AskDialogComponent, boundPromptTitle, normalizeDialogQuestions } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
+import {
+	boundPromptTitle,
+	normalizeDialogQuestions,
+	openAskDialogOverlay,
+	type AskDialogHandle,
+} from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { installExtensionComposerShape } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
-import { EditorTopGap } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
-import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
-import { HookInputComponent } from "@oh-my-pi/pi-tui/overlays/hook-input";
-import { HookSelectorComponent, type HookSelectorSlider } from "@oh-my-pi/pi-tui/overlays/hook-selector";
+import { openHookEditorOverlay, type HookEditorHandle } from "@oh-my-pi/pi-tui/overlays/hook-editor";
+import { openHookInput } from "@oh-my-pi/pi-tui/overlays/hook-input";
+import {
+	openHookSelectorOverlay,
+	type HookSelectorHandle,
+	type HookSelectorSlider,
+} from "@oh-my-pi/pi-tui/overlays/hook-selector";
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
+import { CommandNoticeView, ExtensionWidgetTextView } from "../components/reactive-controller-views";
 import { normalizeCustomMessagePayload, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { disambiguateDisplayLabels, sanitizeCarriageReturns } from "@oh-my-pi/pi-tui/render/render-utils";
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
@@ -75,8 +86,10 @@ function toWireSelectOptions(options: ExtensionUISelectItem[]): CollabUiSelectIt
 export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#composerShapeDisposers: Array<() => void> = [];
-	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
-	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
+	#hookWidgetsAbove = new Map<string, ExtensionUiView>();
+	#hookWidgetsBelow = new Map<string, ExtensionUiView>();
+	#hookSelector: HookSelectorHandle | undefined;
+	#hookEditor: HookEditorHandle | undefined;
 	// Single-file dialog surface (`editorContainer` + focus) is shared by the
 	// selector / input / editor modals, so only one may be presented at a time;
 	// the rest queue. See `#presentDialog`.
@@ -123,11 +136,9 @@ export class ExtensionUiController {
 			custom: (factory, options) => this.showHookCustom(factory, options),
 			setEditorText: text => {
 				this.ctx.editor.setText(text);
-				this.ctx.ui.requestRender();
 			},
 			pasteToEditor: text => {
 				this.ctx.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
-				this.ctx.ui.requestRender();
 			},
 			getEditorText: () => this.ctx.editor.getText(),
 			editor: (title, prefill, dialogOptions, editorOptions) =>
@@ -145,8 +156,8 @@ export class ExtensionUiController {
 				// Theme object passed directly - not supported in current implementation
 				return Promise.resolve({ success: false, error: "Direct theme object not supported" });
 			},
-			setFooter: () => {},
-			setHeader: () => {},
+			setFooter: factory => this.ctx.setExtensionFooter(factory),
+			setHeader: factory => this.ctx.setExtensionHeader(factory),
 			setEditorComponent: factory => this.ctx.setEditorComponent(factory),
 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
 			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
@@ -246,17 +257,14 @@ export class ExtensionUiController {
 				}
 
 				// Reset and update status line
-				this.ctx.statusLine.invalidate();
+				this.ctx.statusLine.ingestSession();
 				this.ctx.statusLine.resetActiveTime();
 				this.ctx.clearTransientSessionUi();
 				this.ctx.resetTranscript();
 
-				this.ctx.present([
-					new Spacer(1),
-					new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
-				]);
+				this.ctx.present(CommandNoticeView({ text: `${theme.status.success} New session started` }));
 				await this.ctx.reloadTodos();
-				this.ctx.ui.requestRender(true, { clearScrollback: true });
+				this.ctx.ui.resetDisplay();
 
 				return { cancelled: false };
 			},
@@ -345,56 +353,30 @@ export class ExtensionUiController {
 		this.#rebuildHookWidgets();
 	}
 
-	#removeHookWidget(widgets: Map<string, ExtensionUiComponent>, key: string): void {
-		const existing = widgets.get(key);
-		existing?.dispose?.();
+	#removeHookWidget(widgets: Map<string, ExtensionUiView>, key: string): void {
 		widgets.delete(key);
 	}
 
-	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
+	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiView {
 		if (Array.isArray(content)) {
-			const container = new Container();
-			for (const line of content.slice(0, MAX_WIDGET_LINES)) {
-				container.addChild(new Text(line, 1, 0));
-			}
-			if (content.length > MAX_WIDGET_LINES) {
-				container.addChild(new Text(theme.fg("muted", "... (widget truncated)"), 1, 0));
-			}
-			return container;
+			const lines = content.slice(0, MAX_WIDGET_LINES);
+			return () => ExtensionWidgetTextView({ lines, truncated: content.length > MAX_WIDGET_LINES });
 		}
-		if (content === undefined) {
-			throw new Error("Widget content missing");
-		}
-		return content(this.ctx.ui, theme);
+		if (content === undefined) throw new Error("Widget content missing");
+		return content as ExtensionUiView;
 	}
 
 	#rebuildHookWidgets(): void {
-		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerAbove, this.#hookWidgetsAbove, true, true);
-		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerBelow, this.#hookWidgetsBelow, false, false);
-		this.ctx.ui.requestRender();
+		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerAbove, this.#hookWidgetsAbove);
+		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerBelow, this.#hookWidgetsBelow);
 	}
 
 	#renderHookWidgetContainer(
-		container: Container,
-		widgets: Map<string, ExtensionUiComponent>,
-		spacerWhenEmpty: boolean,
-		leadingSpacer: boolean,
+		container: InteractiveModeContext["hookWidgetContainerAbove"],
+		widgets: Map<string, ExtensionUiView>,
 	): void {
 		container.clear();
-
-		if (widgets.size === 0) {
-			if (spacerWhenEmpty) {
-				container.addChild(new EditorTopGap(() => this.ctx.statusRowOccupied));
-			}
-			return;
-		}
-
-		if (leadingSpacer) {
-			container.addChild(new Spacer(1));
-		}
-		for (const widget of widgets.values()) {
-			container.addChild(widget);
-		}
+		for (const widget of widgets.values()) container.append(widget);
 	}
 
 	initializeHookRunner(uiContext: ExtensionUIContext, _hasUI: boolean): void {
@@ -479,12 +461,9 @@ export class ExtensionUiController {
 				this.ctx.clearTransientSessionUi();
 				this.ctx.resetTranscript();
 
-				this.ctx.present([
-					new Spacer(1),
-					new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
-				]);
+				this.ctx.present(CommandNoticeView({ text: `${theme.status.success} New session started` }));
 				await this.ctx.reloadTodos();
-				this.ctx.ui.requestRender(true, { clearScrollback: true });
+				this.ctx.ui.resetDisplay();
 
 				return { cancelled: false };
 			},
@@ -570,8 +549,7 @@ export class ExtensionUiController {
 	 * Show a tool error in the chat.
 	 */
 	showToolError(toolName: string, error: string): void {
-		const errorText = new Text(`Tool "${toolName}" error: ${error}`, 1, 0).setStyleFn(t => theme.fg("error", t));
-		this.ctx.present(errorText);
+		this.ctx.present(CommandNoticeView({ text: `Tool "${toolName}" error: ${error}`, color: "error" }));
 	}
 
 	/**
@@ -579,7 +557,6 @@ export class ExtensionUiController {
 	 */
 	setHookStatus(key: string, text: string | undefined): void {
 		this.ctx.statusLine.setHookStatus(key, text);
-		this.ctx.ui.requestRender();
 	}
 
 	async showCollabAwareSelector(
@@ -647,104 +624,73 @@ export class ExtensionUiController {
 		questions: ExtensionAskDialogQuestion[],
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<ExtensionAskDialogResult | undefined> {
-		return this.#presentDialog<ExtensionAskDialogResult>(dialogOptions?.signal, settle => {
-			let promptEditor: HookEditorComponent | undefined;
-			let promptResolve: ((value: string | undefined) => void) | undefined;
+		return this.#presentDialog(dialogOptions?.signal, settle => {
+			let askDialog: AskDialogHandle | undefined;
+			let promptEditor: HookEditorHandle | undefined;
 			let closed = false;
+			let promptResolve: ((value: string | undefined) => void) | undefined;
 			const draftEditor = this.ctx.editor;
-			const inputGuard =
-				draftEditor.getText().length > 0
-					? {
-							isBlocked: () => draftEditor.getText().length > 0,
-							handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
-							hint: "Finish or clear the current prompt to answer",
-							// Show the draft's insertion cursor while it owns input; drop it
-							// once the draft clears and the ask controls take over.
-							syncPresentation: () => {
-								draftEditor.focused = draftEditor.getText().length > 0;
-							},
-						}
-					: undefined;
-
-			const restoreAskDialog = (): void => {
-				if (closed || !askDialog) return;
-				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(askDialog);
-				// Keep the draft editor mounted beneath the restored ask, matching the
-				// initial presentation: the guard re-blocks whenever the draft is
-				// non-empty (e.g. a failed submit restored its text while a nested
-				// prompt was open), and routed input must land on a visible surface.
-				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
-				this.ctx.ui.setFocus(askDialog);
-				this.ctx.ui.requestRender();
-			};
-
-			const finishPrompt = (value: string | undefined): void => {
-				const resolvePrompt = promptResolve;
-				promptResolve = undefined;
-				promptEditor?.dispose();
-				promptEditor = undefined;
-				resolvePrompt?.(value);
-				// Let AskDialog apply the answer and clear its prompt guard before
-				// making the dialog visible and interactive again. This single-hop
-				// deferral relies on #promptForCustomInput/#promptForNote clearing
-				// #promptActive in the synchronous resume after their lone
-				// `await onPrompt(...)` (no await before the `finally`); adding one
-				// there reopens the drop-Enter race, so revisit this deferral then.
-				queueMicrotask(restoreAskDialog);
-			};
-
-			const promptForText = (title: string, prefill?: string): Promise<string | undefined> => {
-				if (closed) return Promise.resolve(undefined);
-				const { promise, resolve } = Promise.withResolvers<string | undefined>();
-				promptResolve = resolve;
-				promptEditor = new HookEditorComponent(
-					this.ctx.ui,
-					title,
-					prefill,
-					value => finishPrompt(value),
-					() => finishPrompt(undefined),
-					{ promptStyle: true, externalEditor: editDialogExternally },
-				);
-				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(promptEditor);
-				this.ctx.ui.setFocus(promptEditor);
-				this.ctx.ui.requestRender();
-				return promise;
-			};
-
-			const askDialog = new AskDialogComponent(
-				questions,
-				{
-					onSubmit: result => settle(result),
-					onCancel: () => settle(undefined),
-					onPrompt: promptForText,
-				},
-				{
-					timeout: dialogOptions?.timeout,
-					onTimeout: dialogOptions?.onTimeout,
-					tui: this.ctx.ui,
-					inputGuard,
-				},
-			);
-			this.ctx.editorContainer.clear();
-			this.ctx.editorContainer.addChild(askDialog);
-			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
-			this.ctx.ui.setFocus(askDialog);
-			this.ctx.ui.requestRender();
-
-			return () => {
+			const [blocked, setBlocked] = createSignal(draftEditor.getText().length > 0);
+			const unsubscribeDraft = blocked()
+				? draftEditor.subscribeInvalidation(() => setBlocked(draftEditor.getText().length > 0))
+				: undefined;
+			const inputGuard = unsubscribeDraft
+				? {
+						editor: draftEditor,
+						isBlocked: blocked,
+						handleInput: (data: string) => draftEditor.handleDraftEdit(data),
+						hint: "Finish or clear the current prompt to answer",
+					}
+				: undefined;
+			const dispose = (): void => {
 				closed = true;
-				askDialog?.dispose();
+				unsubscribeDraft?.();
 				promptEditor?.dispose();
+				askDialog?.dispose();
 				promptResolve?.(undefined);
 				promptResolve = undefined;
 				promptEditor = undefined;
-				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(this.ctx.editor);
-				this.ctx.ui.setFocus(this.ctx.editor);
-				this.ctx.ui.requestRender();
+				askDialog = undefined;
 			};
+			askDialog = openAskDialogOverlay(this.ctx.ui, {
+				questions,
+				callbacks: {
+					onSubmit: result => settle(result),
+					onCancel: () => settle(undefined),
+					onPrompt: (title, prefill) => {
+						const { promise, resolve } = Promise.withResolvers<string | undefined>();
+						if (closed) {
+							resolve(undefined);
+							return promise;
+						}
+						promptResolve = resolve;
+						promptEditor = openHookEditorOverlay(this.ctx.ui, {
+							title,
+							prefill,
+							onSubmit: value => {
+								promptEditor?.dispose();
+								promptEditor = undefined;
+								promptResolve = undefined;
+								resolve(value);
+							},
+							onCancel: () => {
+								promptEditor?.dispose();
+								promptEditor = undefined;
+								promptResolve = undefined;
+								resolve(undefined);
+							},
+							options: { promptStyle: true, externalEditor: editDialogExternally },
+						});
+						return promise;
+					},
+				},
+				options: {
+					timeout: dialogOptions?.timeout,
+					onTimeout: dialogOptions?.onTimeout,
+					inputGuard,
+				},
+			});
+			return dispose;
 		});
 	}
 
@@ -813,7 +759,7 @@ export class ExtensionUiController {
 		);
 		const originalByDisplay = new Map<string, string>();
 		question.options.forEach((option, index) => {
-			originalByDisplay.set(displayLabels[index]!, option.label);
+			originalByDisplay.set(displayLabels[index]!, option.value ?? option.label);
 		});
 		// Map a guest answer (a display label, suffix included) back to the
 		// original correlation value; unknown values pass through and are
@@ -828,7 +774,7 @@ export class ExtensionUiController {
 		if (question.multi) {
 			while (true) {
 				const checkedIndices = question.options
-					.map((option, index) => (selected.has(option.label) ? index : -1))
+					.map((option, index) => (selected.has(option.value ?? option.label) ? index : -1))
 					.filter(index => index >= 0);
 				// Mirror the local dialog's Next gating: omit the Next option until
 				// at least one option is checked or a custom answer exists, so a
@@ -918,9 +864,11 @@ export class ExtensionUiController {
 		return {
 			id: question.id,
 			question: question.question,
-			options: question.options.map(option => option.label),
+			options: question.options.map(option => option.value ?? option.label),
 			multi: question.multi ?? false,
-			selectedOptions: question.options.map(option => option.label).filter(label => selected.has(label)),
+			selectedOptions: question.options
+				.map(option => option.value ?? option.label)
+				.filter(label => selected.has(label)),
 			customInput,
 		};
 	}
@@ -948,12 +896,12 @@ export class ExtensionUiController {
 	): Promise<string | undefined> {
 		return this.#presentDialog(dialogOptions?.signal, settle => {
 			const maxVisible = Math.max(4, Math.min(15, this.ctx.ui.terminal.rows - 12));
-			this.ctx.hookSelector = new HookSelectorComponent(
+			this.#hookSelector = openHookSelectorOverlay(this.ctx.ui, {
 				title,
 				options,
-				option => settle(option),
-				() => settle(undefined),
-				{
+				onSelect: option => settle(option),
+				onCancel: () => settle(undefined),
+				settings: {
 					onLeft: dialogOptions?.onLeft
 						? () => {
 								dialogOptions.onLeft?.();
@@ -973,7 +921,6 @@ export class ExtensionUiController {
 					onTimeout: dialogOptions?.onTimeout,
 					onTimeoutStart: dialogOptions?.onTimeoutStart,
 					onTimeoutReset: dialogOptions?.onTimeoutReset,
-					tui: this.ctx.ui,
 					outline: dialogOptions?.outline,
 					disabledIndices: dialogOptions?.disabledIndices,
 					selectionMarker: dialogOptions?.selectionMarker,
@@ -982,11 +929,7 @@ export class ExtensionUiController {
 					maxVisible,
 					slider: extra?.slider,
 				},
-			);
-			this.ctx.editorContainer.clear();
-			this.ctx.editorContainer.addChild(this.ctx.hookSelector);
-			this.ctx.ui.setFocus(this.ctx.hookSelector);
-			this.ctx.ui.requestRender();
+			});
 			return () => this.hideHookSelector();
 		});
 	}
@@ -994,12 +937,8 @@ export class ExtensionUiController {
 	 * Hide the hook selector.
 	 */
 	hideHookSelector(): void {
-		this.ctx.hookSelector?.dispose();
-		this.ctx.editorContainer.clear();
-		this.ctx.editorContainer.addChild(this.ctx.editor);
-		this.ctx.hookSelector = undefined;
-		this.ctx.ui.setFocus(this.ctx.editor);
-		this.ctx.ui.requestRender();
+		this.#hookSelector?.dispose();
+		this.#hookSelector = undefined;
 	}
 
 	/**
@@ -1019,21 +958,16 @@ export class ExtensionUiController {
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
 		return this.#presentDialog(dialogOptions?.signal, settle => {
-			this.ctx.hookInput = new HookInputComponent(
+			this.ctx.hookInput = openHookInput(this.ctx.ui, {
 				title,
 				placeholder,
-				value => settle(value),
-				() => settle(undefined),
-				{
+				onSubmit: value => settle(value),
+				onCancel: () => settle(undefined),
+				options: {
 					timeout: dialogOptions?.timeout,
 					onTimeout: dialogOptions?.onTimeout,
-					tui: this.ctx.ui,
 				},
-			);
-			this.ctx.editorContainer.clear();
-			this.ctx.editorContainer.addChild(this.ctx.hookInput);
-			this.ctx.ui.setFocus(this.ctx.hookInput);
-			this.ctx.ui.requestRender();
+			});
 			return () => this.hideHookInput();
 		});
 	}
@@ -1043,11 +977,8 @@ export class ExtensionUiController {
 	 */
 	hideHookInput(): void {
 		this.ctx.hookInput?.dispose();
-		this.ctx.editorContainer.clear();
-		this.ctx.editorContainer.addChild(this.ctx.editor);
 		this.ctx.hookInput = undefined;
-		this.ctx.ui.setFocus(this.ctx.editor);
-		this.ctx.ui.requestRender();
+		this.ctx.ui.setFocus(null);
 	}
 
 	/**
@@ -1060,18 +991,13 @@ export class ExtensionUiController {
 		editorOptions?: { promptStyle?: boolean },
 	): Promise<string | undefined> {
 		return this.#presentDialog(dialogOptions?.signal, settle => {
-			this.ctx.hookEditor = new HookEditorComponent(
-				this.ctx.ui,
+			this.#hookEditor = openHookEditorOverlay(this.ctx.ui, {
 				title,
 				prefill,
-				value => settle(value),
-				() => settle(undefined),
-				{ ...editorOptions, externalEditor: editDialogExternally },
-			);
-			this.ctx.editorContainer.clear();
-			this.ctx.editorContainer.addChild(this.ctx.hookEditor);
-			this.ctx.ui.setFocus(this.ctx.hookEditor);
-			this.ctx.ui.requestRender();
+				onSubmit: value => settle(value),
+				onCancel: () => settle(undefined),
+				options: { ...editorOptions, externalEditor: editDialogExternally },
+			});
 			return () => this.hideHookEditor();
 		});
 	}
@@ -1080,12 +1006,8 @@ export class ExtensionUiController {
 	 * Hide the hook editor.
 	 */
 	hideHookEditor(): void {
-		this.ctx.hookEditor?.dispose();
-		this.ctx.editorContainer.clear();
-		this.ctx.editorContainer.addChild(this.ctx.editor);
-		this.ctx.hookEditor = undefined;
-		this.ctx.ui.setFocus(this.ctx.editor);
-		this.ctx.ui.requestRender();
+		this.#hookEditor?.dispose();
+		this.#hookEditor = undefined;
 	}
 
 	/**
@@ -1110,29 +1032,25 @@ export class ExtensionUiController {
 			theme: Theme,
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
-		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
+		) => ExtensionCustomSurface | Promise<ExtensionCustomSurface>,
 		options?: ExtensionCustomOptions,
 	): Promise<T> {
 		const savedText = this.ctx.editor.getText();
+		const savedEditorEntries = this.ctx.editorContainer.entries();
 		const keybindings = KeybindingsManager.inMemory();
 
 		const { promise, resolve, reject } = Promise.withResolvers<T>();
-		let component: (Component & { dispose?(): void }) | undefined;
-		let overlayHandle: OverlayHandle | undefined;
+		let editorEntry: string | undefined;
+		let overlayDisposer: OverlayDisposer | undefined;
 		let closed = false;
 		let editorReplaced = false;
 
 		const cleanup = () => {
-			component?.dispose?.();
-			overlayHandle?.hide();
-			overlayHandle = undefined;
-			if (editorReplaced) {
-				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(this.ctx.editor);
+			overlayDisposer?.dispose();
+			if (editorReplaced && editorEntry && this.ctx.editorContainer.remove(editorEntry)) {
+				for (const entry of savedEditorEntries) this.ctx.editorContainer.append(entry.content);
 				this.ctx.editor.setText(savedText);
 			}
-			this.ctx.ui.setFocus(this.ctx.editor);
-			this.ctx.ui.requestRender();
 		};
 		const finish = (settle: () => void) => {
 			if (closed) return;
@@ -1155,32 +1073,26 @@ export class ExtensionUiController {
 		options?.signal?.addEventListener("abort", onAbort, { once: true });
 
 		Promise.try(() => factory(this.ctx.ui, theme, keybindings, close))
-			.then(c => {
+			.then(surface => {
 				if (closed) {
-					c.dispose?.();
+					if ("dispose" in surface) surface.dispose();
 					return;
 				}
-				component = c;
+				if ("dispose" in surface) {
+					overlayDisposer = surface;
+					return;
+				}
 				if (options?.overlay) {
-					const overlayOptions =
-						typeof options.overlayOptions === "function" ? options.overlayOptions() : options.overlayOptions;
-					overlayHandle = this.ctx.ui.showOverlay(
-						component,
-						overlayOptions ?? {
-							anchor: "bottom-center",
-							width: "100%",
-							maxHeight: "100%",
-							margin: 0,
-						},
+					overlayDisposer = mountOverlay(this.ctx.ui, () =>
+						Portal({ to: "overlay", anchor: "bottom-center", width: "100%", children: surface() }),
 					);
-					options.onHandle?.(overlayHandle);
+					if (closed) cleanup();
 					return;
 				}
 				editorReplaced = true;
 				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(component);
-				this.ctx.ui.setFocus(component);
-				this.ctx.ui.requestRender();
+				editorEntry = this.ctx.editorContainer.append(surface);
+				if (closed) cleanup();
 			})
 			.catch(fail);
 		return promise;
@@ -1199,12 +1111,6 @@ export class ExtensionUiController {
 	}
 
 	clearHookWidgets(): void {
-		for (const widget of this.#hookWidgetsAbove.values()) {
-			widget.dispose?.();
-		}
-		for (const widget of this.#hookWidgetsBelow.values()) {
-			widget.dispose?.();
-		}
 		this.#hookWidgetsAbove.clear();
 		this.#hookWidgetsBelow.clear();
 		this.#rebuildHookWidgets();
@@ -1218,10 +1124,7 @@ export class ExtensionUiController {
 	}
 
 	showExtensionError(extensionPath: string, error: string): void {
-		const errorText = new Text(`Extension "${extensionPath}" error: ${error}`, 1, 0).setStyleFn(t =>
-			theme.fg("error", t),
-		);
-		this.ctx.present(errorText);
+		this.ctx.present(CommandNoticeView({ text: `Extension "${extensionPath}" error: ${error}`, color: "error" }));
 	}
 	async #handleInteractiveCompact(instructionsOrOptions: string | CompactOptions | undefined): Promise<void> {
 		await this.ctx.executeCompaction(instructionsOrOptions, false);

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-core";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
@@ -25,7 +25,6 @@ import {
 	type ExecutedWorkspaceChange,
 	sortAndValidateTextEdits,
 } from "@oh-my-pi/pi-coding-agent/lsp/edits";
-import { renderCall, renderResult } from "@oh-my-pi/pi-tui/tools/lsp";
 import {
 	type CodeAction,
 	type CreateFile,
@@ -60,7 +59,6 @@ import * as piUtils from "@oh-my-pi/pi-utils";
 import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import DEFAULTS from "../../src/lsp/defaults.json" with { type: "json" };
-import { renderResult as renderLocalResult } from "@oh-my-pi/pi-tui/tools/lsp";
 import { getLanguageFromPath } from "@oh-my-pi/pi-tui/lang-from-path";
 
 const lspTestSettings = Settings.isolated();
@@ -1608,81 +1606,6 @@ describe("lsp regressions", () => {
 			edits: ["example.ts: 1 edit"],
 			executedCommands: [],
 		});
-	});
-
-	it("sanitizes symbol metadata in renderer output", async () => {
-		const theme = await getThemeByName("dark");
-		const uiTheme = theme!;
-		const renderOptions: RenderResultOptions = { expanded: false, isPartial: false };
-
-		const call = renderCall(
-			{ action: "definition", file: "src/example.ts", line: 10, symbol: "foo\tbar\nbaz" },
-			renderOptions,
-			uiTheme,
-		);
-		const callText = sanitizeText(call.render(120).join("\n"));
-		const normalizedCallText = callText.replace(/\s+/g, " ");
-		expect(normalizedCallText).toContain("foo bar baz");
-		expect(callText).not.toContain("\t");
-		const result = renderResult(
-			{
-				content: [{ type: "text", text: "No definition found" }],
-				details: {
-					action: "definition",
-					success: true,
-					request: {
-						action: "definition",
-						file: "src/example.ts",
-						line: 10,
-						symbol: "foo\tbar\nbaz",
-					},
-				},
-			},
-			renderOptions,
-			uiTheme,
-		);
-		const resultText = sanitizeText(result.render(120).join("\n"));
-		const normalizedResultText = resultText.replace(/\s+/g, " ");
-		expect(normalizedResultText).toContain("symbol: foo bar baz");
-		expect(resultText).not.toContain("\t");
-	});
-
-	it("sanitizes tabs in rendered diagnostic output", async () => {
-		const theme = await getThemeByName("dark");
-		const uiTheme = theme!;
-		const renderOptions: RenderResultOptions = { expanded: false, isPartial: false };
-
-		const result = renderResult(
-			{
-				content: [
-					{
-						type: "text",
-						text: "Diagnostics: 1 error(s)\nsrc/example.go:183:41 [error] [compiler] too many\targuments in call (WrongArgCount)",
-					},
-				],
-			},
-			renderOptions,
-			uiTheme,
-		);
-
-		const resultText = sanitizeText(result.render(120).join("\n"));
-		expect(resultText).not.toContain("\t");
-		expect(resultText.replace(/\s+/g, " ")).toContain("too many arguments in call");
-	});
-
-	it("sanitizes expanded generic error output (#7041)", async () => {
-		const theme = await getThemeByName("dark");
-		const result = renderLocalResult(
-			{
-				content: [{ type: "text", text: `Error:\nserver\tstderr ${"x".repeat(200)}` }],
-			},
-			{ expanded: true, isPartial: false },
-			theme!,
-		);
-
-		const lines = sanitizeText(result.render(300).join("\n")).split("\n");
-		expect(lines.join("\n")).not.toContain("\t");
-		expect(lines.join("\n")).not.toContain("x".repeat(100));
 	});
 
 	for (const dynamicRegistration of [false, true]) {

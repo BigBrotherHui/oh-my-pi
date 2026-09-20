@@ -643,7 +643,7 @@ function toAcpLocationPath(value: string, cwd?: string): string {
 /**
  * Scheme-qualified subjects (`xd://`, `skill://`, `agent://`, `https://`, …)
  * are not local files: resolving them against cwd fabricates paths like
- * `/repo/xd:/github` and makes editors focus nonexistent files.
+ * `/repo/xd://github` and makes editors focus nonexistent files.
  */
 const INTERNAL_URL_SUBJECT = /^[a-z][a-z0-9+.-]*:\/\//i;
 

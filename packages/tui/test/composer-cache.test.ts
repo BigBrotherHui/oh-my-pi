@@ -12,6 +12,7 @@ import {
 	writeComposerWelcomeCache,
 } from "@oh-my-pi/pi-tui/prompt/composer-cache";
 import { getComposerCacheDir } from "@oh-my-pi/pi-utils/dirs";
+import { RichText, Style } from "@oh-my-pi/pi-tui";
 
 describe("composer startup cache", () => {
 	it("round-trips per-project UI, status, recent-session JSONL, and LSP speculation", async () => {
@@ -23,10 +24,17 @@ describe("composer startup cache", () => {
 			const preferences = { ...COMPOSER_DEFAULTS, composerShape: "rail", autocompleteMaxVisible: 7 };
 			const recentSessions = [{ name: "cached work", timeAgo: "3m ago" }];
 			const lspServers = [{ name: "rust-analyzer", status: "connecting" as const, fileTypes: [".rs"] }];
+			const topBorder = new RichText();
+			topBorder.push(Style.NONE, "placeholder");
+			topBorder.br();
+			const bottomRows = new RichText();
+			bottomRows.br();
+			bottomRows.push(Style.NONE, "placeholder");
+			bottomRows.br();
 			const status: ComposerStatusSnapshot = {
 				shape: "rail",
-				topBorder: { content: "placeholder", width: 11 },
-				bottomLines: ["", "placeholder"],
+				topBorder: { content: topBorder, width: 11 },
+				bottomRows,
 			};
 			await Promise.all([
 				writeComposerUiCache(cwd, preferences, {

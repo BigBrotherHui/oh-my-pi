@@ -10,7 +10,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getSettingsListTheme } from "@oh-my-pi/pi-coding-agent";
-import { Container, type SettingItem, SettingsList } from "@oh-my-pi/pi-tui";
+import { Container, type Out, type SettingItem, SettingsList, Text } from "@oh-my-pi/pi-tui";
 
 // State persisted to session
 interface ToolsState {
@@ -78,15 +78,7 @@ export default function toolsExtension(pi: ExtensionAPI) {
 				}));
 
 				const container = new Container();
-				const header: readonly string[] = [theme.fg("accent", theme.bold("Tool Configuration")), ""];
-				container.addChild(
-					new (class {
-						render(_width: number): readonly string[] {
-							return header;
-						}
-						invalidate() {}
-					})(),
-				);
+				container.addChild(new Text(`${theme.fg("accent", theme.bold("Tool Configuration"))}\n`, 0, 0));
 
 				const settingsList = new SettingsList(
 					items,
@@ -111,8 +103,8 @@ export default function toolsExtension(pi: ExtensionAPI) {
 				container.addChild(settingsList);
 
 				const component = {
-					render(width: number): readonly string[] {
-						return container.render(width);
+					paint(out: Out, width: number): void {
+						container.paint(out, width);
 					},
 					invalidate() {
 						container.invalidate();

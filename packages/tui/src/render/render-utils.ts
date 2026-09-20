@@ -13,9 +13,7 @@ import { pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../app-keybindings";
 import { getKeybindings } from "../keybindings";
 import type { Theme } from "../theme/theme";
-import type { Component } from "../tui";
-import { replaceTabs, sliceByColumn, truncateToWidth, visibleWidth } from "../utils";
-import { Hasher } from "./utils";
+import { replaceTabs, truncateToWidth } from "../utils";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 export { replaceTabs, truncateToWidth, wrapTextWithAnsi } from "../utils";
@@ -148,38 +146,6 @@ export function thinkingLevelGlyph(level: ConfiguredThinkingLevel, uiTheme: Them
 	return space < 0 ? symbol : symbol.slice(0, space);
 }
 
-/**
- * Compact feed-row prefix: explicit thinking glyph, sanitized model identity,
- * then advisor eye. Keep fitting icons if no model fits; preserve literal identity suffixes.
- */
-export function formatFeedModelBadge(
-	modelIdentity: string | undefined,
-	thinkingLevel: ConfiguredThinkingLevel | undefined,
-	advisor: boolean | undefined,
-	uiTheme: Theme,
-	maxWidth = FEED_MODEL_BADGE_WIDTH,
-): string {
-	if (!modelIdentity) return "";
-	const width = Math.max(0, Math.floor(maxWidth));
-	const clean = sanitizeText(modelIdentity).replace(/\s+/g, " ").trim();
-	if (!clean || !(width > 0)) return "";
-	const glyph = thinkingLevel !== undefined ? thinkingLevelGlyph(thinkingLevel, uiTheme) : "";
-	const advisorIcon = advisor === true ? uiTheme.icon.advisor : "";
-	const prefix = glyph ? `${glyph} ` : "";
-	const suffix = advisorIcon ? ` ${advisorIcon}` : "";
-	const modelWidth = width - visibleWidth(prefix) - visibleWidth(suffix);
-	if (modelWidth < 1) {
-		const advisorWidth = visibleWidth(advisorIcon);
-		if (advisorIcon && advisorWidth <= width) {
-			const thinkingPrefix = glyph && visibleWidth(prefix) + advisorWidth <= width ? prefix : "";
-			return uiTheme.fg("accent", thinkingPrefix) + uiTheme.fg("dim", advisorIcon);
-		}
-		return glyph && visibleWidth(glyph) <= width ? uiTheme.fg("accent", glyph) : "";
-	}
-	const model = truncateMiddleToWidth(clean, modelWidth);
-	return uiTheme.fg("accent", prefix) + uiTheme.fg("dim", `${model}${suffix}`);
-}
-
 /** Truncation lengths for different content types */
 export const TRUNCATE_LENGTHS = {
 	/** Short titles, labels */
@@ -210,15 +176,6 @@ export function expandKeyHint(): string {
 // =============================================================================
 // Text Truncation Utilities
 // =============================================================================
-/** Keep both ends of a single-line label without splitting wide characters. */
-function truncateMiddleToWidth(text: string, maxWidth: number): string {
-	const width = visibleWidth(text);
-	if (width <= maxWidth) return text;
-	if (maxWidth <= 1) return maxWidth === 1 ? "…" : "";
-	const tailWidth = Math.ceil((maxWidth - 1) / 2);
-	const headWidth = maxWidth - 1 - tailWidth;
-	return `${sliceByColumn(text, 0, headWidth, true)}…${sliceByColumn(text, width - tailWidth, tailWidth, true)}`;
-}
 
 /** Select a leading line window and count the lines hidden after it. */
 export function cappedHeadLines(lines: readonly string[], max: number): { lines: readonly string[]; hidden: number } {
@@ -270,60 +227,16 @@ export { formatAge, formatBytes, formatCount, formatDuration, formatNumber, plur
 // =============================================================================
 
 /**
- * Get the appropriate status icon with color for a given state.
- * Standardizes status icon usage across all renderers.
- */
-export function formatStatusIcon(status: ToolUIStatus, theme: Theme, spinnerFrame?: number): string {
-	switch (status) {
-		case "success":
-			return theme.styledSymbol("status.success", "success");
-		case "done":
-			return theme.styledSymbol("status.done", "success");
-		case "error":
-			return theme.styledSymbol("status.error", "error");
-		case "warning":
-			return theme.styledSymbol("status.warning", "warning");
-		case "info":
-			return theme.styledSymbol("status.info", "accent");
-		case "pending":
-			return theme.styledSymbol("status.pending", "muted");
-		case "running":
-			if (spinnerFrame !== undefined) {
-				const frames = theme.spinnerFrames;
-				return frames[spinnerFrame % frames.length];
-			}
-			return theme.styledSymbol("status.running", "accent");
-		case "aborted":
-			return theme.styledSymbol("status.aborted", "error");
-	}
-}
-
-/**
  * Format the expand hint with proper theming.
  * Returns empty string if already expanded or there is nothing more to show.
  */
 export function formatExpandHint(theme: Theme, expanded?: boolean, hasMore?: boolean): string {
-	if (expanded) return "";
-	if (hasMore === false) return "";
-	return theme.fg("dim", wrapBrackets(`${expandKeyHint()}: Expand`, theme));
+	return expanded || hasMore === false ? "" : wrapBrackets(`${expandKeyHint()}: Expand`, theme);
 }
 
-/**
- * Format a badge like [done] or [failed] with brackets and color.
- */
-export function formatBadge(label: string, color: ToolUIColor, theme: Theme): string {
-	const left = theme.format.bracketLeft;
-	const right = theme.format.bracketRight;
-	return theme.fg(color, `${left}${label}${right}`);
-}
-
-/**
- * Build a "more items" suffix line for truncated lists.
- * Uses consistent wording pattern.
- */
+/** Build a conventional "more items" suffix for truncated lists. */
 export function formatMoreItems(remaining: number, itemType: string): string {
-	const safeRemaining = Number.isFinite(remaining) ? remaining : 0;
-	return `… ${safeRemaining} more ${pluralize(itemType, safeRemaining)}`;
+	return `… ${remaining} more ${pluralize(itemType, remaining)}`;
 }
 
 /**
@@ -340,46 +253,8 @@ const PREVIEW_WINDOW_MIN_LINES = 6;
 const PREVIEW_WINDOW_FALLBACK_ROWS = 30;
 
 /** Tail-window height for collapsed command/code previews. */
-export function previewWindowRows(): number {
-	const rows = process.stdout.rows || PREVIEW_WINDOW_FALLBACK_ROWS;
+export function previewWindowRows(rows = process.stdout.rows || PREVIEW_WINDOW_FALLBACK_ROWS): number {
 	return Math.max(PREVIEW_WINDOW_MIN_LINES, rows - PREVIEW_WINDOW_RESERVED_ROWS);
-}
-
-/**
- * Cap a pre-rendered command preview to a viewport-sized tail window: the end
- * of the command stays visible (it is the live edge while args stream) behind
- * an "… N earlier lines" marker on top. The same window applies while
- * streaming and after completion so the block never jumps; only `expanded`
- * (ctrl+o) uncaps it.
- *
- * `prefix` (raw, e.g. a dim tree gutter) is prepended to the marker line so
- * nested previews stay aligned. `expandHint: false` drops the "ctrl+o: Expand"
- * suffix for callers that cap even inside the expanded view (task recent
- * output), where the hint would point the wrong way.
- */
-export function capPreviewLines(
-	lines: string[],
-	theme: Theme,
-	options: { max?: number; expanded?: boolean; prefix?: string; expandHint?: boolean } = {},
-): string[] {
-	if (options.expanded) return lines;
-	const max = options.max ?? previewWindowRows();
-	if (lines.length <= max) return lines;
-	const visible = max <= 1 ? [] : lines.slice(lines.length - (max - 1));
-	const hidden = lines.length - visible.length;
-	const hint = options.expandHint === false ? "" : formatExpandHint(theme, false, true);
-	const marker = `… ${hidden} earlier ${pluralize("line", hidden)}${hint ? ` ${hint}` : ""}`;
-	return [`${options.prefix ?? ""}${theme.fg("dim", marker)}`, ...visible];
-}
-
-/** Join metadata with the theme separator and muted styling. */
-export function formatMeta(meta: string[], theme: Theme): string {
-	return meta.length > 0 ? ` ${theme.fg("muted", meta.join(theme.sep.dot))}` : "";
-}
-
-function sanitizeErrorText(message: string | undefined): string {
-	const clean = (message ?? "").replace(/^Error:\s*/, "").trim();
-	return clean ? replaceTabs(truncateToWidth(clean, TRUNCATE_LENGTHS.LINE)) : "Unknown error";
 }
 
 /**
@@ -395,27 +270,6 @@ export function sanitizeDisplayLines(text: string): string[] {
 		const idx = line.lastIndexOf("\r");
 		return replaceTabs(sanitizeText(idx < 0 ? line : line.slice(idx + 1)));
 	});
-}
-
-/** Render a sanitized error message with its status icon. */
-export function formatErrorMessage(message: string | undefined, theme: Theme): string {
-	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", `Error: ${sanitizeErrorText(message)}`)}`;
-}
-
-/**
- * Error message rendered as a subordinate detail line beneath a status header
- * that already carries the error icon (e.g. `✘ Write: <path>`). The header's
- * icon already signals failure, so this omits the redundant error symbol and
- * "Error:" prefix that `formatErrorMessage` adds for standalone single-line
- * errors, indenting two columns to sit under the header title instead.
- */
-export function formatErrorDetail(message: string | undefined, theme: Theme): string {
-	return `  ${theme.fg("error", sanitizeErrorText(message))}`;
-}
-
-/** Render a muted empty-state message with a warning icon. */
-export function formatEmptyMessage(message: string, theme: Theme): string {
-	return `${theme.styledSymbol("status.warning", "warning")} ${theme.fg("muted", message)}`;
 }
 
 // =============================================================================
@@ -439,26 +293,6 @@ export function formatCodeFrameLine(
 }
 
 // =============================================================================
-// Tool UI Helpers
-// =============================================================================
-
-/** Status states supported by shared tool renderer icons. */
-export type ToolUIStatus = "success" | "done" | "error" | "warning" | "info" | "pending" | "running" | "aborted";
-/** Semantic foreground colors used by tool renderer labels. */
-export type ToolUIColor = "success" | "error" | "warning" | "accent" | "muted";
-
-/** Presentation options for a tool title. */
-export interface ToolUITitleOptions {
-	bold?: boolean;
-}
-
-/** Render a themed tool title with optional bold emphasis. */
-export function formatTitle(label: string, theme: Theme, options?: ToolUITitleOptions): string {
-	const content = options?.bold === false ? label : theme.bold(label);
-	return theme.fg("toolTitle", content);
-}
-
-// =============================================================================
 // Diagnostic Formatting
 // =============================================================================
 
@@ -473,27 +307,14 @@ export interface ParsedDiagnostic {
 	code?: string;
 }
 
-/** Expand tabs in diagnostic text for terminal display. */
+/** Normalize diagnostic tabs and carriage returns while preserving message line breaks. */
 export function sanitizeDiagnosticDisplayText(text: string): string {
-	return replaceTabs(text);
-}
-
-function getSeverityRank(severity: ParsedDiagnostic["severity"]): number {
-	switch (severity) {
-		case "error":
-			return 0;
-		case "warning":
-			return 1;
-		case "info":
-			return 2;
-		case "hint":
-			return 3;
-	}
+	return replaceTabs(text.replace(/\r/g, ""));
 }
 
 /** Parse a diagnostic location and message, including optional source and code. */
 export function parseDiagnosticMessage(msg: string): ParsedDiagnostic | null {
-	const match = msg.match(/^(.+?):(\d+):(\d+)\s+\[(\w+)\]\s+(?:\[([^\]]+)\]\s+)?(.+?)(?:\s+\(([^)]+)\))?$/);
+	const match = msg.match(/^(.+?):(\d+):(\d+)\s+\[(\w+)\]\s+(?:\[([^\]]+)\]\s+)?([\s\S]+?)(?:\s+\(([^)]+)\))?$/);
 	if (!match) return null;
 	return {
 		filePath: sanitizeDiagnosticDisplayText(match[1]),
@@ -504,136 +325,6 @@ export function parseDiagnosticMessage(msg: string): ParsedDiagnostic | null {
 		message: sanitizeDiagnosticDisplayText(match[6]),
 		code: match[7] ? sanitizeDiagnosticDisplayText(match[7]) : undefined,
 	};
-}
-
-/** Render diagnostic summaries and optionally expanded messages. */
-export function formatDiagnostics(
-	diag: { errored: boolean; summary: string; messages: string[] },
-	expanded: boolean,
-	theme: Theme,
-	getLangIcon: (filePath: string) => string,
-	options?: { title?: string },
-): string {
-	if (diag.messages.length === 0) return "";
-
-	const byFile = new Map<string, ParsedDiagnostic[]>();
-	const unparsed: string[] = [];
-
-	for (const msg of diag.messages) {
-		const parsed = parseDiagnosticMessage(msg);
-		if (parsed) {
-			const existing = byFile.get(parsed.filePath) ?? [];
-			existing.push(parsed);
-			byFile.set(parsed.filePath, existing);
-		} else {
-			unparsed.push(sanitizeDiagnosticDisplayText(msg));
-		}
-	}
-
-	for (const diagnostics of byFile.values()) {
-		diagnostics.sort((a, b) => {
-			const severityCompare = getSeverityRank(a.severity) - getSeverityRank(b.severity);
-			if (severityCompare !== 0) return severityCompare;
-			if (a.line !== b.line) return a.line - b.line;
-			if (a.col !== b.col) return a.col - b.col;
-			return a.message.localeCompare(b.message);
-		});
-	}
-
-	const headerIcon = diag.errored
-		? theme.styledSymbol("status.error", "error")
-		: theme.styledSymbol("status.warning", "warning");
-	const summary = sanitizeDiagnosticDisplayText(diag.summary);
-	const summaryTag = summary ? ` ${theme.fg("dim", `(${summary})`)}` : "";
-	let output = `\n\n${headerIcon} ${theme.fg("toolTitle", options?.title ?? "Diagnostics")}${summaryTag}`;
-
-	const maxDiags = expanded ? diag.messages.length : 5;
-	let diagsShown = 0;
-
-	const files = Array.from(byFile.entries());
-
-	// Count total diagnostics for "... X more" calculation
-	const totalParsedDiags = files.reduce((sum, [, diags]) => sum + diags.length, 0);
-	const totalDiags = totalParsedDiags + unparsed.length;
-
-	// Helper to check if this is the very last item in the tree
-	const isTreeEnd = (fileIdx: number, diagIdx: number | null, unparsedIdx: number | null): boolean => {
-		const willShowMore = totalDiags > diagsShown + 1;
-		if (willShowMore) return false;
-
-		if (unparsedIdx !== null) {
-			return unparsedIdx === unparsed.length - 1;
-		}
-		if (diagIdx !== null) {
-			const isLastDiagInFile = diagIdx === files[fileIdx][1].length - 1;
-			const isLastFile = fileIdx === files.length - 1;
-			return isLastDiagInFile && isLastFile && unparsed.length === 0;
-		}
-		// File node - never the tree end if it has diagnostics
-		return false;
-	};
-
-	for (let fi = 0; fi < files.length && diagsShown < maxDiags; fi++) {
-		const [filePath, diagnostics] = files[fi];
-		// File is "last" only if no more files AND no unparsed AND we'll show all diags AND no "... X more"
-		const remainingDiagsInFile = diagnostics.length;
-		const remainingDiagsAfter = files.slice(fi + 1).reduce((sum, [, d]) => sum + d.length, 0) + unparsed.length;
-		const willShowAllRemaining = diagsShown + remainingDiagsInFile + remainingDiagsAfter <= maxDiags;
-		const isLastFileNode = fi === files.length - 1 && unparsed.length === 0 && willShowAllRemaining;
-		const fileBranch = isLastFileNode ? theme.tree.last : theme.tree.branch;
-
-		const fileIcon = theme.fg("muted", getLangIcon(filePath));
-		output += `\n ${theme.fg("dim", fileBranch)} ${fileIcon} ${theme.fg("accent", filePath)}`;
-
-		for (let di = 0; di < diagnostics.length && diagsShown < maxDiags; di++) {
-			const d = diagnostics[di];
-			const isLastDiagInFile = di === diagnostics.length - 1;
-			// This is the last visible diag in file if it's actually last OR we're about to hit the limit
-			const atDisplayLimit = diagsShown + 1 >= maxDiags;
-			const isLastVisibleInFile = isLastDiagInFile || atDisplayLimit;
-			// Check if this is the last visible item in the entire tree
-			const isVeryLast = isTreeEnd(fi, di, null);
-			const diagBranch = isLastFileNode
-				? isLastVisibleInFile || isVeryLast
-					? `  ${theme.tree.last}`
-					: `  ${theme.tree.branch}`
-				: isLastVisibleInFile || isVeryLast
-					? `${theme.tree.vertical} ${theme.tree.last}`
-					: `${theme.tree.vertical} ${theme.tree.branch}`;
-
-			const sevIcon =
-				d.severity === "error"
-					? theme.styledSymbol("status.error", "error")
-					: d.severity === "warning"
-						? theme.styledSymbol("status.warning", "warning")
-						: theme.styledSymbol("status.info", "muted");
-			const location = theme.fg("dim", `:${d.line}:${d.col}`);
-			const codeTag = d.code ? theme.fg("dim", ` (${d.code})`) : "";
-			const msgColor = d.severity === "error" ? "error" : d.severity === "warning" ? "warning" : "toolOutput";
-
-			output += `\n ${theme.fg("dim", diagBranch)} ${sevIcon}${location} ${theme.fg(msgColor, d.message)}${codeTag}`;
-			diagsShown++;
-		}
-	}
-
-	for (let ui = 0; ui < unparsed.length && diagsShown < maxDiags; ui++) {
-		const msg = unparsed[ui];
-		const isVeryLast = isTreeEnd(-1, null, ui);
-		const branch = isVeryLast ? theme.tree.last : theme.tree.branch;
-		const color = msg.includes("[error]") ? "error" : msg.includes("[warning]") ? "warning" : "dim";
-		output += `\n ${theme.fg("dim", branch)} ${theme.fg(color, msg)}`;
-		diagsShown++;
-	}
-
-	if (totalDiags > diagsShown) {
-		const remaining = totalDiags - diagsShown;
-		output += `\n ${theme.fg("dim", theme.tree.last)} ${theme.fg(
-			"muted",
-			`… ${remaining} more`,
-		)} ${formatExpandHint(theme)}`;
-	}
-
-	return output;
 }
 
 // =============================================================================
@@ -673,15 +364,6 @@ export function getDiffStats(diffText: string): DiffStats {
 	}
 
 	return { added, removed, hunks, lines: lines.length };
-}
-
-/** Render a compact themed summary of diff counts. */
-export function formatDiffStats(added: number, removed: number, hunks: number, theme: Theme): string {
-	const parts: string[] = [];
-	if (added > 0) parts.push(theme.fg("toolDiffAdded", `+${added}`));
-	if (removed > 0) parts.push(theme.fg("toolDiffRemoved", `-${removed}`));
-	if (hunks > 0) parts.push(theme.fg("dim", `${hunks} hunk${hunks !== 1 ? "s" : ""}`));
-	return parts.join(theme.fg("dim", " / "));
 }
 
 interface DiffSegment {
@@ -1027,116 +709,6 @@ export function capParseErrors(
 // =============================================================================
 // Renderer helpers shared by search / find / ast tools
 // =============================================================================
-
-/**
- * Standard width+expand keyed render cache used by every search-style tool
- * renderer. `compute` re-runs only when the cache key changes; the returned
- * Component is the canonical `{ render, invalidate }` pair.
- */
-export function createCachedComponent(
-	getExpanded: () => boolean,
-	compute: (width: number, expanded: boolean) => string[],
-	options: { paddingX?: number } = {},
-): Component {
-	let cached: { key: bigint; lines: string[] } | undefined;
-	return {
-		render(width: number): readonly string[] {
-			const expanded = getExpanded();
-			const key = new Hasher().bool(expanded).u32(width).digest();
-			if (cached?.key === key) return cached.lines;
-			const paddingX = Math.max(0, options.paddingX ?? 0);
-			const innerWidth = Math.max(1, width - paddingX * 2);
-			const lines = compute(innerWidth, expanded);
-			const pad = paddingX === 0 ? "" : " ".repeat(paddingX);
-			const paddedLines = paddingX === 0 ? lines : lines.map(line => `${pad}${line}${pad}`);
-			cached = { key, lines: paddedLines };
-			return paddedLines;
-		},
-		invalidate() {
-			cached = undefined;
-		},
-	};
-}
-
-/**
- * Single-slot memo for an expensive rendered string (syntax highlighting, diff
- * coloring) keyed by the exact inputs that shape the bytes: theme instance,
- * expanded state, a caller-chosen salt (path/language), and the source content.
- * Field-wise comparison instead of a concatenated key string: a cache hit costs
- * one string value-compare (engines short-circuit on length) and a miss never
- * allocates a key. Comparing the {@link Theme} by reference is sound because
- * theme switches replace the instance wholesale (`setTheme`/`previewTheme`/
- * `setSymbolPreset` in pi-tui theme/theme.ts) — themes are never mutated in
- * place.
- */
-export interface RenderedStringCache {
-	theme: Theme | null;
-	expanded: boolean;
-	salt: string;
-	content: string;
-	value: string;
-}
-
-/** Create an empty memo for rendered tool strings. */
-export function createRenderedStringCache(): RenderedStringCache {
-	return { theme: null, expanded: false, salt: "", content: "", value: "" };
-}
-
-/** Drop the memo so the next lookup re-renders (e.g. the render function identity changed). */
-export function invalidateRenderedStringCache(cache: RenderedStringCache): void {
-	cache.theme = null;
-}
-
-/** Reuse a rendered string while its theme, expansion, content, and salt match. */
-export function cachedRenderedString(
-	cache: RenderedStringCache | undefined,
-	theme: Theme,
-	expanded: boolean,
-	salt: string,
-	content: string,
-	render: () => string,
-): string {
-	if (
-		cache !== undefined &&
-		cache.theme === theme &&
-		cache.expanded === expanded &&
-		cache.salt === salt &&
-		cache.content === content
-	) {
-		return cache.value;
-	}
-	const value = render();
-	if (cache !== undefined) {
-		cache.theme = theme;
-		cache.expanded = expanded;
-		cache.salt = salt;
-		cache.content = content;
-		cache.value = value;
-	}
-	return value;
-}
-
-/**
- * Append the indented bullet list of parse errors (capped at
- * {@link PARSE_ERRORS_LIMIT}) to `lines`, with an overflow summary line if the
- * total exceeds the cap. No-op when `parseErrors` is empty.
- */
-export function appendParseErrorsBulletList(
-	lines: string[],
-	parseErrors: readonly string[] | undefined,
-	theme: Theme,
-	total?: number,
-): void {
-	if (!parseErrors || parseErrors.length === 0) return;
-	const fullCount = total ?? parseErrors.length;
-	const capped = parseErrors.slice(0, PARSE_ERRORS_LIMIT);
-	for (const err of capped) {
-		lines.push(theme.fg("warning", `  - ${err}`));
-	}
-	if (fullCount > capped.length) {
-		lines.push(theme.fg("dim", `  … ${fullCount - capped.length} more`));
-	}
-}
 
 /**
  * Human-readable summary string for the parse-issues count, capped by

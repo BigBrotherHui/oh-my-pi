@@ -919,12 +919,15 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		});
 		expect(switched).toBe(true);
 
+		// Second key is selected
 		const secondKey = await authStorage.getApiKey("anthropic", sessionId);
 		expect(secondKey).toBe("token-org-2");
 
+		// Stored credentials are NOT deleted (soft-blocked, not removed)
 		const storedRows = store.listAuthCredentials("anthropic");
 		expect(storedRows).toHaveLength(2);
 
+		// Rotating the last sibling returns switched: false
 		const secondSwitched = await authStorage.rotateSessionCredential("anthropic", sessionId, {
 			error: anthropicError,
 			apiKey: secondKey,

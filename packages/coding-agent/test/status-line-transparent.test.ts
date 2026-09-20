@@ -1,13 +1,15 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
-import { StatusLineTestComponents } from "./helpers/status-line";
+import { renderStatus, StatusLineTestComponents, renderStatusLine } from "./helpers/status-line";
+import { cellGrid } from "../../tui/test/cell-grid";
 
 const originalProjectDir = getProjectDir();
 const statusLines = new StatusLineTestComponents();
+afterEach(() => statusLines.dispose());
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -75,19 +77,18 @@ describe("status line transparent background", () => {
 		// otherwise the negative case below would be vacuous.
 		expect(themeBg).toMatch(/\x1b\[48;/);
 
-		const border = buildComponent(false).getTopBorder(80).content;
+		const border = renderStatusLine(buildComponent(false), 80);
 		expect(border).toContain(themeBg);
 	});
 
 	it("drops the theme bg fill and powerline caps when enabled", () => {
-		const border = buildComponent(true).getTopBorder(80).content;
+		const border = renderStatusLine(buildComponent(true), 80);
 		const themeBg = theme.getBgAnsi("statusLineBg");
 
-		// No 48; (background) ANSI escape anywhere in the rendered bar — every bg is
-		// the terminal default (`\x1b[49m`).
+		// Every painted cell inherits the terminal-default background.
 		expect(border).not.toContain(themeBg);
-		expect(border).not.toMatch(/\x1b\[48;/);
-		expect(border).toContain("\x1b[49m");
+		const cells = cellGrid([border], 80)[0]!;
+		expect(cells.every(cell => cell.bg === null)).toBe(true);
 
 		// Powerline-thin endcap glyphs are sourced from theme.sep.powerlineLeft/Right and
 		// rely on the bg color as fg to visually bridge the bar; skipped under transparency.

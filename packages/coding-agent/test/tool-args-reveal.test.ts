@@ -16,9 +16,7 @@ class RecordingArgsComponent {
 
 	// Component protocol stub — the reveal controller hands the component
 	// straight to `requestComponentRender`, which only exercises identity.
-	render(): readonly string[] {
-		return [];
-	}
+	paint(): void {}
 }
 
 function makeController(options: { smooth?: boolean; requestRender?: () => void } = {}) {

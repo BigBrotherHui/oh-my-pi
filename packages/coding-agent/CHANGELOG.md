@@ -5,31 +5,31 @@
 ### Breaking Changes
 
 - Image generation overrides now use `model` selectors, and web search CLI overrides use `--model` instead of `--provider`.
+- Migrated custom tools (`CustomTool`) and extension tools (`ToolDefinition`) from the legacy `renderCall` / `renderResult` hooks returning imperative `Component` instances to the unified reactive `toolView?: ToolViewDefinition<Static<TParams>, TDetails>` contract from `@oh-my-pi/pi-tui/tools/view`. The old `renderCall` and `renderResult` fields have been removed completely (no shims).
+- Migrated extension custom message rendering from `registerMessageRenderer` returning an imperative `Component` to `registerMessageView` / `messageView?: MessageView` returning declarative Solid JSX elements (`JSX.Element`). Removed `getMessageRenderer`.
+- Removed legacy imperative tool rendering and device preview adapters (`renderMCPCall`, `renderMCPResult`, `renderXdevCall`, `renderXdevResult`, `setXdevRendererLookup`) in favor of reactive `ToolViewDefinition` views and `resolveToolView`.
+- Sloppy edits now use `*** SM:EDIT path`, `*** SM:FIND`, `*** SM:PUT`, and `*** SM:AFTER` headers instead of XML tags, with no closing delimiters and an optional leading `*** Begin Patch`.
 - Removed support for the env parameter in the bash tool
-- Eval `judge(state, questions)` is now awaited and returns the answers directly; `JudgmentHandle` and judgment support in `wait()` are gone.
 
 ### Added
 
-- Added eval `judge_batch(states, questions)` / `judgeBatch(...)`: the host judges every state under one bounded run that outlives the cell, and cells pull settled items across turns with `await b.drain(timeout)` / `drain_iter`, `b.status()`, `b.results()`, `b.failed()`; per-item failures are recorded, never raised, and the batch id is a background job (`hub wait`, auto-delivered summary, `judge_batch.attach(id)` after a reset).
 - Added the `jevify` magic keyword (`magicKeywords.jevify`): a hidden notice that makes the agent freeze its rubric up front, classify bulk items with the eval kernel's `judge()`, and read only what the judge flags.
 - Added `omp web-search` as an alias of `omp search`.
 - Added `tui.titleSpinner` (`braille` | `dots` | `line`, default `braille`) to pick the terminal-title working-state spinner glyphs alongside the existing `tui.titleState` on/off toggle.
 - Customize the system prompt with Handlebars using live settings and tool data via `SYSTEM_TEMPLATE.md`, `--system-prompt-template`, or the SDK ([#12194](https://github.com/can1357/oh-my-pi/pull/12194) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
-
-### Fixed
-
-- Fixed contradictory `systemPromptTemplate` and `customSystemPrompt` options being accepted with a fixed full `systemPrompt` replacement, including empty values ([#12194](https://github.com/can1357/oh-my-pi/pull/12194) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
-- Added `Target.getTargets` to the browser relay's CDP surface so clients can enumerate eligible pages without attaching to or claiming them.
 - Added image, web, speech, dictation, judge, and memory model roles with ordered fallbacks, automatic migration of legacy backend settings, and `omp models --kind` filtering.
 - Added native OpenRouter image generation and model-selected web-plugin search, plus live TypeSafe judge-model discovery.
-- Fixed Codex rejecting the sloppy edit tool's grammar.
+- Added support for reactive `ToolViewDefinition` and `MessageView` across custom tools, extensions, and the MCP tool bridge.
+- Added reactive tool view forwarding in `customToolToDefinition(tool)` (`packages/coding-agent/src/sdk.ts`).
+- Added `Target.getTargets` to the browser relay's CDP surface so clients can enumerate eligible pages without attaching to or claiming them.
 
 ### Changed
 
 - Startup no longer composes the entire bundled model catalog to validate kind-role fallback chains; provider-qualified selectors are checked against their providers' slices.
-### Changed
-
 - npm and compiled builds embed `models.json` as JSON text instead of an object literal, cutting ~100 ms from bundle launch.
+- Tool presentation in the interactive chat transcript now mounts declarative Solid views receiving streaming `ToolViewProps` instead of multi-phase imperative `Component.paint` instances.
+- Web search providers load on first use instead of at startup.
+- Session startup now overlaps filesystem discovery with credential-cache hydration.
 
 ### Fixed
 
@@ -38,11 +38,27 @@
 - Fixed contradictory `systemPromptTemplate` and `customSystemPrompt` options being accepted with a fixed full `systemPrompt` replacement, including empty values ([#12194](https://github.com/can1357/oh-my-pi/pull/12194) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Fixed resume clutter: elide 0-turn sessions from the /resume menu; -c similarly skips empty sessions.
 - Fixed image and speech fallback models disappearing after discovery and false incompatibility warnings for providers without credentials.
-
+- Working messages now truncate to one line, and the editor keeps a blank spacer after the working row disappears.
+- Fixed the npm `dist/cli.js` bundle exiting silently without running the CLI.
+- Fixed background jobs and completed read groups trapping later output in the viewport instead of letting it scroll into history.
+- Fixed internal continuation and background-result instructions leaking into live and resumed chats.
+- Preserved paused assistant text and pending tool previews when settings rebuild the transcript.
+- Fixed gallery tool registration and made rendering failures produce a failing exit status.
+- Restored the gallery’s historical scenarios, grouped-read preview, custom-tool styling, and expansion key hints.
+- Removed unintended backgrounds from hub wait, inbox, and peer-list gallery previews.
+- Restored status-line spinner and elapsed-time updates while tools run without producing output.
+- Restored compact read groups with status dots and paths instead of showing file contents by default.
+- Restored streamed edit previews before execution.
+- Fixed Codex rejecting the sloppy edit tool's grammar.
 - Fixed Edit calls getting stuck generating repeated closing tags after an empty `SM:AFTER` insertion.
 - Fixed Edit previews and application panicking on Unicode no-op edits and overlapping duplicate matches.
 - Fixed live subagent messages getting stuck behind persisted-agent discovery, and roster discovery looping on dot-named transcripts.
 - Fixed llama.cpp discovery of PrismML Bonsai 2 27B GGUFs: built-in and custom-named providers now share catalog rules for chat-completions routing and the Qwen 3.8 thinking ladder (`low`/`medium`/`xhigh`), including cached models.
+
+### Removed
+
+- Removed `renderCall` and `renderResult` from `CustomTool` (`packages/coding-agent/src/extensibility/custom-tools/types.ts`) and `ToolDefinition` (`packages/coding-agent/src/extensibility/extensions/types.ts`).
+- Removed `MessageRenderer` and `registerMessageRenderer` in favor of `MessageView` and `registerMessageView`.
 
 ## [18.2.6] - 2026-09-18
 

@@ -352,12 +352,30 @@ export class VirtualTerminal implements Terminal {
 	}
 
 	/**
+	 * Raw viewport-row cell snapshot. Each cell is eight u32 words:
+	 * ch, combining1, combining2, fg, bg, decoration fg, flags, hyperlink id.
+	 */
+	getViewportRowCells(row: number): Uint32Array | null {
+		return this.#presentedRowCells(row);
+	}
+
+	/** Resolve an OSC 8 hyperlink id from a cell snapshot to its target URL. */
+	getHyperlinkTarget(id: number): string | undefined {
+		return this.#term.hyperlink(id)?.url;
+	}
+
+	/**
 	 * Get the hardware cursor position within the visible viewport.
 	 * Both coordinates are 0-indexed; row is relative to the top of the active grid.
 	 */
 	getCursor(): { row: number; col: number } {
 		const cursor = this.#term.cursor;
 		return { row: cursor.y, col: cursor.x };
+	}
+
+	/** Whether the terminal currently displays its hardware cursor. */
+	isCursorVisible(): boolean {
+		return this.#term.cursor.visible;
 	}
 
 	/**
@@ -403,14 +421,17 @@ export class VirtualTerminal implements Terminal {
 	}
 
 	/**
-	 * Strip synchronized-output markers and OSC strings before the engine sees
-	 * them. Mode 2026 would buffer a frame until its end marker, but the tests
-	 * assert on readback between writes of a frame; OSC payloads (titles,
-	 * notifications, clipboard) have no grid effect the oracles read.
+	 * Strip synchronized-output markers and non-cell OSC strings before the
+	 * engine sees them. OSC 8 is retained because hyperlinks are cell state.
+	 * Mode 2026 would otherwise buffer a frame until its end marker; other OSC
+	 * payloads (titles, notifications, clipboard) have no grid effect.
 	 */
 	#stripSynchronizedOutput(data: string): string {
 		if (!data.includes(SYNC_OUTPUT_BEGIN) && !data.includes(SYNC_OUTPUT_END) && !data.includes("\x1b]")) return data;
-		return data.replaceAll(SYNC_OUTPUT_BEGIN, "").replaceAll(SYNC_OUTPUT_END, "").replace(OSC_SEQUENCE, "");
+		return data
+			.replaceAll(SYNC_OUTPUT_BEGIN, "")
+			.replaceAll(SYNC_OUTPUT_END, "")
+			.replace(OSC_SEQUENCE, sequence => (sequence.startsWith("\x1b]8;") ? sequence : ""));
 	}
 
 	#atBottom(): boolean {

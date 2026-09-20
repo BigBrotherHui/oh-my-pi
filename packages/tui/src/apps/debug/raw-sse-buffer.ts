@@ -11,6 +11,9 @@ const TRIM_MARKER_RESERVE = 200;
 // inside an oversized `data:` payload.
 const MAX_TOOL_SCHEMA_CHARS = 200;
 const MAX_TOOL_DESCRIPTION_CHARS = 200;
+function currentTimeMs(): number {
+	return performance.timeOrigin + performance.now();
+}
 
 /** A captured provider response or raw server-sent event. */
 export type RawSseDebugRecord =
@@ -149,10 +152,10 @@ function headTailTrim(lines: string[], budget: number, elidedTotal: number): str
 
 	let i = 0;
 	let headRemaining = headBudget;
-	const out: string[] = [];
+	const result: string[] = [];
 	while (i < lines.length && lines[i].length + 1 <= headRemaining) {
 		headRemaining -= lines[i].length + 1;
-		out.push(lines[i]);
+		result.push(lines[i]);
 		i++;
 	}
 
@@ -166,7 +169,7 @@ function headTailTrim(lines: string[], budget: number, elidedTotal: number): str
 	}
 	tail.reverse();
 
-	let elided = elidedTotal - countChars(out) - countChars(tail);
+	let elided = elidedTotal - countChars(result) - countChars(tail);
 	if (i <= j) {
 		// lines[i..j] straddle the cut: keep a head slice of the first and a
 		// tail slice of the last (the same line when i === j).
@@ -177,14 +180,14 @@ function headTailTrim(lines: string[], budget: number, elidedTotal: number): str
 				: Math.max(0, lines[j].length - tailRemaining + 2);
 		const tailSlice = lines[j].slice(tailStart);
 		elided -= headSlice.length + tailSlice.length;
-		if (headSlice.length > 0) out.push(`${headSlice}…`);
-		out.push(`: omp-debug-elided chars=${Math.max(0, elided)}`);
-		if (tailSlice.length > 0) out.push(`…${tailSlice}`);
+		if (headSlice.length > 0) result.push(`${headSlice}…`);
+		result.push(`: omp-debug-elided chars=${Math.max(0, elided)}`);
+		if (tailSlice.length > 0) result.push(`…${tailSlice}`);
 	} else if (elided > 0) {
-		out.push(`: omp-debug-elided chars=${elided}`);
+		result.push(`: omp-debug-elided chars=${elided}`);
 	}
-	out.push(...tail);
-	return out;
+	result.push(...tail);
+	return result;
 }
 
 // Trim pipeline for one SSE event:
@@ -283,7 +286,7 @@ export class RawSseDebugBuffer {
 		const record: RawSseDebugRecord = {
 			kind: "response",
 			sequence: this.#nextSequence++,
-			timestamp: Date.now(),
+			timestamp: currentTimeMs(),
 			provider: model?.provider,
 			model: model?.id,
 			api: model?.api,
@@ -309,7 +312,7 @@ export class RawSseDebugBuffer {
 			{
 				kind: "event",
 				sequence: this.#nextSequence++,
-				timestamp: Date.now(),
+				timestamp: currentTimeMs(),
 				provider: model?.provider,
 				model: model?.id,
 				api: model?.api,

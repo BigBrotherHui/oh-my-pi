@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "bun:test";
-import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import { RichText, type TerminalFramePlan, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
+import { parseAnsiRows } from "../src/core/ansi";
 import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -15,18 +16,16 @@ const OSC66 = "\x1b]66;";
 const ST = "\x1b\\";
 const ERASE_LINE = "\x1b[2K";
 
-class RawLines implements Component {
-	#lines: string[];
-	constructor(lines: string[]) {
-		this.#lines = lines;
+class RawLinesProvider implements TerminalFrameProvider {
+	constructor(private readonly lines: readonly string[]) {}
+
+	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
+		const frame = new RichText();
+		parseAnsiRows(this.lines, frame);
+		return { viewport: frame };
 	}
-	setLines(lines: string[]): void {
-		this.#lines = lines;
-	}
-	invalidate(): void {}
-	render(): string[] {
-		return this.#lines;
-	}
+
+	acknowledgeHistory(_id: number): void {}
 }
 
 // Flush the real render scheduler. Its throttle and post-paint settle windows
@@ -91,7 +90,7 @@ describe("issue #8318: scaled OSC 66 headings survive repaint and resize", () =>
 	it("re-emits the heading and preserves its reserved row on a full repaint", async () => {
 		const term = new VirtualTerminal(80, 6);
 		const tui = new TUI(term);
-		tui.addChild(new RawLines([`${OSC66}s=2;Heading${ST}`, "", "Body"]));
+		tui.setFrameProvider(new RawLinesProvider([`${OSC66}s=2;Heading${ST}`, "", "Body"]));
 		const writes = captureWrites(term);
 		try {
 			tui.start();
@@ -115,7 +114,7 @@ describe("issue #8318: scaled OSC 66 headings survive repaint and resize", () =>
 	it("preserves the reserved row across a resize repaint", async () => {
 		const term = new VirtualTerminal(80, 6);
 		const tui = new TUI(term);
-		tui.addChild(new RawLines([`${OSC66}s=2;Heading${ST}`, "", "Body"]));
+		tui.setFrameProvider(new RawLinesProvider([`${OSC66}s=2;Heading${ST}`, "", "Body"]));
 		const writes = captureWrites(term);
 		try {
 			tui.start();
@@ -136,7 +135,7 @@ describe("issue #8318: scaled OSC 66 headings survive repaint and resize", () =>
 	it("protects every reserved row of a scale-3 heading (the /debug probe case)", async () => {
 		const term = new VirtualTerminal(80, 6);
 		const tui = new TUI(term);
-		tui.addChild(new RawLines([`${OSC66}s=3;Big${ST}`, "", "", "Body"]));
+		tui.setFrameProvider(new RawLinesProvider([`${OSC66}s=3;Big${ST}`, "", "", "Body"]));
 		const writes = captureWrites(term);
 		try {
 			tui.start();
@@ -157,7 +156,7 @@ describe("issue #8318: scaled OSC 66 headings survive repaint and resize", () =>
 	it("protects all six reserved rows at the maximum legal scale", async () => {
 		const term = new VirtualTerminal(80, 8);
 		const tui = new TUI(term);
-		tui.addChild(new RawLines([`${OSC66}s=7;Max${ST}`, "", "", "", "", "", "", "Body"]));
+		tui.setFrameProvider(new RawLinesProvider([`${OSC66}s=7;Max${ST}`, "", "", "", "", "", "", "Body"]));
 		const writes = captureWrites(term);
 		try {
 			tui.start();

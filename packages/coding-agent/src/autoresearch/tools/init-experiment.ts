@@ -2,8 +2,8 @@ import {
 	HARNESS_FILENAME,
 	DEFAULT_HARNESS_COMMAND,
 	type InitExperimentDetails,
+	initExperimentToolView,
 } from "@oh-my-pi/pi-tui/tools/autoresearch";
-import { initExperimentToolRenderer } from "@oh-my-pi/pi-tui/tools/autoresearch";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -36,7 +36,7 @@ export function createInitExperimentTool(
 	options: AutoresearchToolFactoryOptions,
 ): ToolDefinition<typeof initExperimentSchema, InitExperimentDetails> {
 	return {
-		...initExperimentToolRenderer,
+		toolView: initExperimentToolView,
 		name: "init_experiment",
 		label: "Init Experiment",
 		description:
@@ -157,8 +157,7 @@ export function createInitExperimentTool(
 			runtime.lastRunArtifactDir = null;
 			runtime.lastRunNumber = null;
 			runtime.lastRunSummary = null;
-			options.dashboard.updateWidget(ctx, runtime);
-			options.dashboard.requestRender();
+			options.refreshDashboard(ctx);
 
 			const lines: string[] = [];
 			if (abandonedRuns > 0) {

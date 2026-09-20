@@ -61,8 +61,9 @@ function makeCtx(initialQueue: CompactionQueuedMessage[] = []) {
 
 	const ctx = {
 		session,
+		viewSession: session,
 		compactionQueuedMessages: [...initialQueue],
-		pendingMessagesContainer: { clear: () => {}, addChild: () => {}, removeChild: () => {} },
+		pendingMessagesContainer: { append: () => {}, clear: () => {} },
 		editor: {
 			addToHistory: () => {},
 			clearDraft: (_historyText?: string) => {

@@ -9,15 +9,9 @@ import { type SSHHost, sshCapability } from "../../capability/ssh";
 import { loadCapability } from "../../discovery";
 import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHHostConfig } from "../../ssh/config-writer";
 import { parseCommandArgs } from "../../utils/command-args";
-import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../types";
-import {
-	groupBySource,
-	parseRemoveArgs,
-	readScopeFlag,
-	type ScopeValue,
-	showCommandMessage,
-} from "./command-controller-shared";
+import { SshAddedView, SshHelpView, SshHostListView, SshRemovedView } from "../components/ssh-command-views";
+import { groupBySource, parseRemoveArgs, readScopeFlag, type ScopeValue } from "./command-controller-shared";
 
 export class SSHCommandController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -54,21 +48,7 @@ export class SSHCommandController {
 	 * Show help text
 	 */
 	#showHelp(): void {
-		const helpText = [
-			"",
-			theme.bold("SSH Host Management"),
-			"",
-			"Manage SSH host configurations for remote command execution.",
-			"",
-			theme.fg("accent", "Commands:"),
-			"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--compat] [--scope project|user]",
-			"  /ssh list             List all configured SSH hosts",
-			"  /ssh remove <name> [--scope project|user]    Remove an SSH host (default: project)",
-			"  /ssh help             Show this help message",
-			"",
-		].join("\n");
-
-		this.#showMessage(helpText);
+		this.ctx.presentCommandOutput(SshHelpView());
 	}
 
 	/**
@@ -207,31 +187,15 @@ export class SSHCommandController {
 			await addSSHHost(filePath, name, hostConfig);
 			resetCapabilities();
 
-			const scopeLabel = scope === "user" ? "user" : "project";
-			const lines = [
-				"",
-				theme.fg("success", `+ Added SSH host "${name}" to ${scopeLabel} config`),
-				"",
-				`  Host: ${host}`,
-			];
-			if (username) lines.push(`  User: ${username}`);
-			if (port) lines.push(`  Port: ${port}`);
-			if (keyPath) lines.push(`  Key:  ${keyPath}`);
-			if (description) lines.push(`  Desc: ${description}`);
-			if (compat) lines.push(`  Compat: true`);
-			lines.push("");
-			lines.push(theme.fg("muted", `Run ${theme.fg("accent", "/ssh list")} to see all configured hosts.`));
-			lines.push("");
-
-			this.#showMessage(lines.join("\n"));
+			this.ctx.presentCommandOutput(
+				SshAddedView({ name, scope, host, username, port, keyPath, description, compat }),
+			);
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 
-			let helpText = "";
-			if (errorMsg.includes("already exists")) {
-				helpText = `\n\nTip: Use ${theme.fg("accent", "/ssh remove")} first, or choose a different name.`;
-			}
-
+			const helpText = errorMsg.includes("already exists")
+				? " Tip: Use /ssh remove first, or choose a different name."
+				: "";
 			this.ctx.showError(`Failed to add host: ${errorMsg}${helpText}`);
 		}
 	}
@@ -266,77 +230,48 @@ export class SSHCommandController {
 			}
 
 			if (userHosts.length === 0 && projectHosts.length === 0 && discoveredHosts.length === 0) {
-				this.#showMessage(
-					[
-						"",
-						theme.fg("muted", "No SSH hosts configured."),
-						"",
-						`Use ${theme.fg("accent", "/ssh add")} to add a host.`,
-						"",
-					].join("\n"),
-				);
+				this.ctx.presentCommandOutput(SshHostListView({ groups: [] }));
 				return;
 			}
 
-			const lines: string[] = ["", theme.bold("Configured SSH Hosts"), ""];
-
-			// Show user-level hosts
-			if (userHosts.length > 0) {
-				lines.push(theme.fg("accent", "User level") + theme.fg("muted", ` (~/.omp/agent/ssh.json):`));
-				for (const name of userHosts) {
-					const config = userConfig.hosts![name];
-					const details = this.#formatHostDetails(config);
-					lines.push(`  ${theme.fg("accent", name)} ${details}`);
-				}
-				lines.push("");
-			}
-
-			// Show project-level hosts
-			if (projectHosts.length > 0) {
-				lines.push(theme.fg("accent", "Project level") + theme.fg("muted", ` (.omp/ssh.json):`));
-				for (const name of projectHosts) {
-					const config = projectConfig.hosts![name];
-					const details = this.#formatHostDetails(config);
-					lines.push(`  ${theme.fg("accent", name)} ${details}`);
-				}
-				lines.push("");
-			}
-
-			// Show discovered hosts (from ssh.json, .ssh.json in project root, etc.)
-			if (discoveredHosts.length > 0) {
-				for (const { providerName, shortPath, items: hosts } of groupBySource(discoveredHosts, h => h._source)) {
-					lines.push(
-						theme.fg("accent", "Discovered") +
-							theme.fg("muted", ` (${providerName}: ${shortPath}):`) +
-							theme.fg("dim", " read-only"),
-					);
-					for (const host of hosts) {
-						const details = this.#formatHostDetails({
+			const groups = [
+				...(userHosts.length > 0
+					? [
+							{
+								label: "User level",
+								path: userPath,
+								hosts: userHosts.map(name => ({ name, ...userConfig.hosts![name] })),
+							},
+						]
+					: []),
+				...(projectHosts.length > 0
+					? [
+							{
+								label: "Project level",
+								path: projectPath,
+								hosts: projectHosts.map(name => ({ name, ...projectConfig.hosts![name] })),
+							},
+						]
+					: []),
+				...Array.from(
+					groupBySource(discoveredHosts, host => host._source),
+					({ providerName, shortPath, items: hosts }) => ({
+						label: `Discovered · ${providerName}`,
+						path: shortPath,
+						readOnly: true,
+						hosts: hosts.map(host => ({
+							name: host.name,
 							host: host.host,
 							username: host.username,
 							port: host.port,
-						});
-						lines.push(`  ${theme.fg("accent", host.name)} ${details}`);
-					}
-					lines.push("");
-				}
-			}
-
-			this.#showMessage(lines.join("\n"));
+						})),
+					}),
+				),
+			];
+			this.ctx.presentCommandOutput(SshHostListView({ groups }));
 		} catch (error) {
 			this.ctx.showError(`Failed to list hosts: ${error instanceof Error ? error.message : String(error)}`);
 		}
-	}
-
-	/**
-	 * Format host details (host, user, port) for display
-	 */
-	#formatHostDetails(config: { host?: string; username?: string; port?: number }): string {
-		const parts: string[] = [];
-		if (config.host) parts.push(config.host);
-		if (config.username) parts.push(`user=${config.username}`);
-		if (config.port && config.port !== 22) parts.push(`port=${config.port}`);
-		return theme.fg("dim", parts.length > 0 ? `[${parts.join(", ")}]` : "");
 	}
 
 	/**
@@ -368,18 +303,9 @@ export class SSHCommandController {
 			await removeSSHHost(filePath, name);
 			resetCapabilities();
 
-			this.#showMessage(
-				["", theme.fg("success", `- Removed SSH host "${name}" from ${scope} config`), ""].join("\n"),
-			);
+			this.ctx.presentCommandOutput(SshRemovedView({ name, scope }));
 		} catch (error) {
 			this.ctx.showError(`Failed to remove host: ${error instanceof Error ? error.message : String(error)}`);
 		}
-	}
-
-	/**
-	 * Show a message in the chat
-	 */
-	#showMessage(text: string): void {
-		showCommandMessage(this.ctx, text);
 	}
 }

@@ -21,6 +21,7 @@ import type { VcsGitRepo, VcsGitRepoInfo, VcsHeadState, VcsRepo } from "@oh-my-p
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { github } from "@oh-my-pi/pi-coding-agent/utils/github";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import { renderStatus, renderStatusLine } from "./helpers/status-line";
 
 type GitStatus = { staged: number; unstaged: number; untracked: number };
 
@@ -162,17 +163,14 @@ describe("StatusLineComponent display detector", () => {
 			return () => {};
 		}) as unknown as typeof vcs.watch);
 
-		const onBranchChange = vi.fn();
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
 		component.updateSettings(gitSegment);
-		component.watchBranch(onBranchChange);
 
-		component.getTopBorder(80);
+		renderStatusLine(component, 80);
 		await flush();
 
 		expect(vcs.repoForDisplay).toHaveBeenCalled();
-		expect(onBranchChange).toHaveBeenCalled();
-		const content = component.getTopBorder(80).content;
+		const content = renderStatusLine(component, 80);
 		expect(content).toContain("my-bookmark");
 		expect((watched as VcsRepo | null)?.watchTarget()).toBe(`${root}/.jj/repo/op_heads/heads`);
 		component.dispose();
@@ -185,11 +183,10 @@ describe("StatusLineComponent display detector", () => {
 
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
 		component.updateSettings(gitSegment);
-		component.watchBranch(() => {});
 
-		component.getTopBorder(80);
+		renderStatusLine(component, 80);
 		await flush();
-		expect(component.getTopBorder(80).content).toContain("git-branch-name");
+		expect(renderStatusLine(component, 80)).toContain("git-branch-name");
 		component.dispose();
 	});
 
@@ -200,11 +197,10 @@ describe("StatusLineComponent display detector", () => {
 
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
 		component.updateSettings(gitSegment);
-		component.watchBranch(() => {});
 
-		component.getTopBorder(80);
+		renderStatusLine(component, 80);
 		await flush();
-		expect(component.getTopBorder(80).content).toContain("detached");
+		expect(renderStatusLine(component, 80)).toContain("detached");
 		component.dispose();
 	});
 
@@ -218,12 +214,11 @@ describe("StatusLineComponent display detector", () => {
 
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
 		component.updateSettings(gitPrSegments);
-		component.watchBranch(() => {});
 
-		component.getTopBorder(80);
+		renderStatusLine(component, 80);
 		await flush();
 
-		expect(component.getTopBorder(80).content).toContain("feature-x");
+		expect(renderStatusLine(component, 80)).toContain("feature-x");
 		expect(run).not.toHaveBeenCalled();
 		component.dispose();
 	});
@@ -240,15 +235,14 @@ describe("StatusLineComponent display detector", () => {
 
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
 		component.updateSettings(gitPrSegments);
-		component.watchBranch(() => {});
 
-		component.getTopBorder(80);
+		renderStatusLine(component, 80);
 		await flush();
 
 		expect(run).toHaveBeenCalledTimes(1);
 		expect(run.mock.calls[0]?.[1]).toEqual(["pr", "view", "--json", "number,url"]);
-		expect(component.getTopBorder(80).content).toContain("feature-x");
-		expect(component.getTopBorder(80).content).toContain("#7");
+		expect(renderStatusLine(component, 80)).toContain("feature-x");
+		expect(renderStatusLine(component, 80)).toContain("#7");
 		component.dispose();
 	});
 	it("sanitizes control characters from the jj label", async () => {
@@ -263,11 +257,10 @@ describe("StatusLineComponent display detector", () => {
 
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
 		component.updateSettings(gitSegment);
-		component.watchBranch(() => {});
 
-		component.getTopBorder(80);
+		renderStatusLine(component, 80);
 		await flush();
-		const content = component.getTopBorder(80).content;
+		const content = renderStatusLine(component, 80);
 		expect(content).toContain("evil-");
 		expect(content).toContain("bookmark");
 		// The raw erase-display payload is gone (theme ANSI aside, which is

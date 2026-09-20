@@ -6,6 +6,7 @@ import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { renderStatus, renderStatusLine } from "./helpers/status-line";
 
 async function flushMicrotasks(): Promise<void> {
 	await Promise.resolve();
@@ -137,7 +138,7 @@ async function refreshUsage(component: StatusLineComponent, advanceMs = 0): Prom
 }
 
 function plain(text: string): string {
-	return stripVTControlCharacters(text);
+	return stripVTControlCharacters(renderStatus(text));
 }
 
 describe("StatusLineComponent usage refresh", () => {
@@ -236,12 +237,12 @@ describe("StatusLineComponent usage refresh", () => {
 		vi.advanceTimersByTime(2_000);
 		await flushMicrotasks();
 
-		expect(plain(component.getTopBorder(80).content)).not.toContain("5h");
+		expect(plain(renderStatusLine(component, 80))).not.toContain("5h");
 
 		late.resolve(usageReport(42));
 		await flushMicrotasks();
 
-		expect(plain(component.getTopBorder(80).content)).toContain("5h 42%");
+		expect(plain(renderStatusLine(component, 80))).toContain("5h 42%");
 	});
 
 	it("re-fetches usage immediately when the session rotates to another org under the same email", async () => {

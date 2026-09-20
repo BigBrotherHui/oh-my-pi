@@ -1,7 +1,13 @@
 // oxlint-disable no-template-curly-in-string -- sample source-code strings intentionally contain literal placeholders.
 // Gallery fixtures for the filesystem tools (read, write, glob).
 import type { Usage } from "@oh-my-pi/pi-ai";
-import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import {
+	ReadToolGroupView,
+	createReadToolGroupState,
+	type ReadToolGroupState,
+} from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { renderSnapshot } from "@oh-my-pi/pi-tui/snapshot";
+import { createToolCallModel } from "@oh-my-pi/pi-tui/tools/model";
 import type { GalleryFixture, GalleryFixtureState, GalleryResult } from "./types";
 
 const readSnippet = [
@@ -61,63 +67,72 @@ function textResult(text: string, details?: unknown, isError?: boolean): Gallery
 	return { content: [{ type: "text", text }], details, isError };
 }
 
-function addGroupedReadArgs(component: ReadToolGroupComponent): void {
-	component.updateArgs({ path: groupedReadDelimitedPath }, "read-delimited");
-	component.updateArgs({ path: groupedReadRepeatedRanges }, "read-ranges");
+function groupedReadModel(id: string, args: { path: string }, expanded: boolean) {
+	const model = createToolCallModel({ id, toolName: "read", label: "Read" });
+	model.setUi({ expanded, allocation: process.stdout.rows ?? 24, showImages: false });
+	model.applyArgsChunk(args);
+	return model;
+}
+
+function snapshotReadGroup(group: ReadToolGroupState, width: number, expanded: boolean): readonly string[] {
+	return renderSnapshot(
+		() => ReadToolGroupView({ items: group.items, expanded: () => expanded, showContentPreview: false })!,
+		{ columns: width, rows: process.stdout.rows ?? 24 },
+	).map(line => line + " ".repeat(Math.max(0, width - Bun.stringWidth(line))));
 }
 
 function renderReadGroupFixtureState(state: GalleryFixtureState, width: number, expanded: boolean): readonly string[] {
-	const component = new ReadToolGroupComponent();
-	component.setExpanded(expanded);
-
-	if (state === "streaming") {
-		component.updateArgs(
-			{
-				path: [
-					"packages/coding-agent/test/streaming-preview-height.test.ts:301-409",
-					"packages/coding-agent/test/tool-live-region-scrollback.test.ts:143-",
-				].join(","),
-			},
-			"read-delimited",
-		);
-		return component.render(width);
-	}
-
-	addGroupedReadArgs(component);
-	if (state === "progress") return component.render(width);
-
-	component.updateResult(
-		textResult("Read three focused test ranges.", { displayReadTargets: groupedReadTargets }),
-		false,
+	const group = createReadToolGroupState();
+	const first = groupedReadModel(
 		"read-delimited",
+		{
+			path:
+				state === "streaming"
+					? [
+							"packages/coding-agent/test/streaming-preview-height.test.ts:301-409",
+							"packages/coding-agent/test/tool-live-region-scrollback.test.ts:143-",
+						].join(",")
+					: groupedReadDelimitedPath,
+		},
+		expanded,
 	);
-	component.attachUsage(
-		["read-delimited"],
-		GROUPED_READ_USAGE,
-		5300,
-		2200,
-		new Date(2026, 6, 28, 21, 5, 47).getTime(),
-	);
+	group.add(first.id, first, true);
 
-	if (state === "error") {
-		component.updateResult(
-			textResult("Error: selector 1270-1274 is outside the file", undefined, true),
-			false,
-			"read-ranges",
-		);
-		component.attachUsage(
-			["read-ranges"],
-			GROUPED_READ_USAGE,
-			4700,
-			1900,
-			new Date(2026, 6, 28, 21, 5, 52).getTime(),
-		);
-		return component.render(width);
+	if (state === "streaming") return snapshotReadGroup(group, width, expanded);
+
+	if (state === "progress") {
+		const second = groupedReadModel("read-ranges", { path: groupedReadRepeatedRanges }, expanded);
+		group.add(second.id, second, true);
+		return snapshotReadGroup(group, width, expanded);
 	}
 
-	component.updateResult(textResult("Read four render.ts ranges."), false, "read-ranges");
-	component.attachUsage(["read-ranges"], GROUPED_READ_USAGE, 4700, 1900, new Date(2026, 6, 28, 21, 5, 52).getTime());
-	return component.render(width);
+	first.applyResult(textResult("Read three focused test ranges.", { displayReadTargets: groupedReadTargets }));
+	group.settle(first.id);
+	group.addUsage({
+		kind: "usage",
+		usage: GROUPED_READ_USAGE,
+		durationMs: 5300,
+		ttftMs: 2200,
+		timestamp: new Date(2026, 6, 28, 21, 5, 47).getTime(),
+	});
+
+	const second = groupedReadModel("read-ranges", { path: groupedReadRepeatedRanges }, expanded);
+	group.add(second.id, second, true);
+	if (state === "error") {
+		second.applyResult(textResult("Error: selector 1270-1274 is outside the file", undefined, true));
+	} else {
+		second.applyResult(textResult("Read four render.ts ranges."));
+	}
+	group.settle(second.id);
+	group.addUsage({
+		kind: "usage",
+		usage: GROUPED_READ_USAGE,
+		durationMs: 4700,
+		ttftMs: 1900,
+		timestamp: new Date(2026, 6, 28, 21, 5, 52).getTime(),
+	});
+
+	return snapshotReadGroup(group, width, expanded);
 }
 
 export const fsFixtures: Record<string, GalleryFixture> = {

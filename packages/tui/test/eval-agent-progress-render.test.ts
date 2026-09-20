@@ -1,8 +1,14 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { renderToRows } from "../src/testing";
+import { createToolCallModel } from "../src/tools/model";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { EvalStatusEvent, EvalToolDetails } from "@oh-my-pi/pi-tui/tools/eval";
+import {
+	evalToolView,
+	type EvalRenderArgs,
+	type EvalStatusEvent,
+	type EvalToolDetails,
+} from "@oh-my-pi/pi-tui/tools/eval";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
-import { evalToolRenderer } from "@oh-my-pi/pi-tui/tools/eval";
 import {
 	isFeedModelBadgeEnabled,
 	setFeedModelBadgeEnabled,
@@ -46,12 +52,17 @@ describe("eval renderer: agent() progress below the cell box", () => {
 				},
 			],
 		};
-		const component = evalToolRenderer.renderResult(
-			{ content: [{ type: "text", text: "" }], details },
-			{ expanded: false, isPartial: status === "running", spinnerFrame: 0 },
-			theme,
-		);
-		return Bun.stripANSI(component.render(120).join("\n")).split("\n");
+		const model = createToolCallModel<EvalRenderArgs, EvalToolDetails>({
+			id: "eval-agent",
+			toolName: "eval",
+			label: "eval",
+		});
+		model.applyArgsChunk({
+			language: "python",
+			cells: [{ title: "Investigate", code: "results = parallel([...])", language: "python" }],
+		});
+		model.applyResult({ content: [{ type: "text", text: "" }], details }, { partial: status === "running" });
+		return Bun.stripANSI(renderToRows(() => evalToolView.view(model), 120).join("\n")).split("\n");
 	}
 
 	/** Index of the box's closing border (bottom-right corner glyph). */
@@ -270,14 +281,16 @@ describe("eval renderer: agent() progress below the cell box", () => {
 				},
 			],
 		};
-		const component = evalToolRenderer.renderResult(
-			{ content: [{ type: "text", text: "" }], details },
-			{ expanded: false, isPartial: true, spinnerFrame: 0 },
-			theme,
-		);
+		const call = createToolCallModel<EvalRenderArgs, EvalToolDetails>({
+			id: "eval-resize",
+			toolName: "eval",
+			label: "eval",
+		});
+		call.applyArgsChunk({ language: "python", cells: [{ code: "results = parallel([...])", language: "python" }] });
+		call.applyResult({ content: [{ type: "text", text: "" }], details }, { partial: true });
 
 		for (const width of [40, 120, 40]) {
-			const lines = component.render(width);
+			const lines = renderToRows(() => evalToolView.view(call), width);
 			const bottom = boxBottomIndex(lines);
 			expect(bottom).toBeGreaterThanOrEqual(0);
 			const below = lines.slice(bottom + 1);

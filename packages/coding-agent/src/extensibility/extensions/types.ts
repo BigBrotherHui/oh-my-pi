@@ -9,21 +9,32 @@
  */
 
 import {
-	type ExtensionUiComponent,
-	type ExtensionUiComponentFactory,
+	type ExtensionUiView,
+	type ExtensionUiViewFactory,
 	type ExtensionWidgetContent,
 	type MessageRenderer,
 	type AssistantThinkingRenderer,
 } from "@oh-my-pi/pi-tui/chat/extension-types";
 export {
-	type ExtensionUiComponent,
-	type ExtensionUiComponentFactory,
+	type ExtensionUiView,
+	type ExtensionUiViewFactory,
 	type ExtensionWidgetContent,
 	type MessageRenderOptions,
 	type MessageRenderer,
 	type AssistantThinkingRenderContext,
 	type AssistantThinkingRenderer,
 } from "@oh-my-pi/pi-tui/chat/extension-types";
+import type { OverlayDisposer } from "@oh-my-pi/pi-tui/host/overlay";
+import type { ToolViewDefinition } from "@oh-my-pi/pi-tui/tools/view";
+import type { JSX } from "@oh-my-pi/pi-tui/reactive";
+import type { CustomMessage } from "@oh-my-pi/pi-tui/chat/messages";
+
+export interface MessageViewProps<T = unknown> {
+	readonly message: CustomMessage<T>;
+	readonly expanded: boolean;
+}
+
+export type MessageView<T = unknown> = (props: MessageViewProps<T>) => JSX.Element;
 import type { type as ArkType } from "@oh-my-pi/omptype";
 import type * as TypeBox from "@oh-my-pi/omptype/typebox";
 import type * as zod from "@oh-my-pi/omptype/zod";
@@ -56,16 +67,11 @@ import type {
 	UsageProvider,
 } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
-import type {
-	AutocompleteItem,
-	AutocompleteProvider,
-	Component,
-	EditorTheme,
-	KeyId,
-	OverlayHandle,
-	OverlayOptions,
-	TUI,
-} from "@oh-my-pi/pi-tui";
+import type { AutocompleteProvider } from "@oh-my-pi/pi-tui";
+import type { AutocompleteItem } from "@oh-my-pi/pi-tui/autocomplete";
+import type { EditorTheme } from "@oh-my-pi/pi-tui/components/editor";
+import type { KeyId } from "@oh-my-pi/pi-tui/keys";
+import type { OverlayHandle, OverlayOptions, TUI } from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
@@ -207,6 +213,9 @@ export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
 }
 
+/** A custom UI surface placed by the host or directly mounted as an overlay. */
+export type ExtensionCustomSurface = ExtensionUiView | OverlayDisposer;
+
 /** Options for `ExtensionUIContext.custom()` (overlay rendering of a custom component). */
 export interface ExtensionCustomOptions {
 	/** Render the component as an overlay over the transcript instead of replacing the editor area. */
@@ -269,10 +278,10 @@ export interface ExtensionUIContext {
 	setWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void;
 
 	/** Set a custom footer component, or undefined to restore the built-in footer. */
-	setFooter(factory: ExtensionUiComponentFactory | undefined): void;
+	setFooter(factory: ExtensionUiViewFactory | undefined): void;
 
 	/** Set a custom header component, or undefined to restore the built-in header. */
-	setHeader(factory: ExtensionUiComponentFactory | undefined): void;
+	setHeader(factory: ExtensionUiViewFactory | undefined): void;
 
 	/** Set the terminal window/tab title. */
 	setTitle(title: string): void;
@@ -284,7 +293,7 @@ export interface ExtensionUIContext {
 			theme: Theme,
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
-		) => ExtensionUiComponent | Promise<ExtensionUiComponent>,
+		) => ExtensionCustomSurface | Promise<ExtensionCustomSurface>,
 		options?: ExtensionCustomOptions,
 	): Promise<T>;
 
@@ -641,16 +650,11 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	/** Called on session lifecycle events - use to reconstruct state or cleanup resources */
 	onSession?: (event: ToolSessionEvent, ctx: ExtensionContext) => void | Promise<void>;
 
-	/** Custom rendering for tool call display */
-	renderCall?: (args: Static<TParams>, options: ToolRenderResultOptions, theme: Theme) => Component;
+	/** Custom reactive tool presentation */
+	toolView?: ToolViewDefinition<Static<TParams>, TDetails>;
 
-	/** Custom rendering for tool result display */
-	renderResult?: (
-		result: AgentToolResult<TDetails>,
-		options: ToolRenderResultOptions,
-		theme: Theme,
-		args?: Static<TParams>,
-	) => Component;
+	/** Custom reactive message view */
+	messageView?: MessageView<unknown>;
 }
 
 /** Whether a tool's source is scoped to the user, the project, or a transient runtime session. */
@@ -1365,6 +1369,9 @@ export interface ExtensionAPI {
 	// Message Rendering
 	// =========================================================================
 
+	/** Register a custom reactive view for CustomMessageEntry. */
+	registerMessageView<T = unknown>(customType: string, view: MessageView<T>): void;
+
 	/** Register a custom renderer for CustomMessageEntry. */
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
 
@@ -1727,6 +1734,7 @@ export interface Extension {
 	assistantThinkingRenderers: AssistantThinkingRenderer[];
 	fileWriteFallbackHandlers: FileWriteFallbackHandler[];
 	fileDeleteFallbackHandlers: FileDeleteFallbackHandler[];
+	messageViews: Map<string, MessageView>;
 	messageRenderers: Map<string, MessageRenderer>;
 	composerShapes: Map<string, ComposerShapeDefinition>;
 	commands: Map<string, RegisteredCommand>;

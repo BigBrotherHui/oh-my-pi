@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { formatDebugLogExpandedLines, parseDebugLogTimestampMs } from "@oh-my-pi/pi-tui/apps/debug/log-formatting";
+import { parseDebugLogTimestampMs } from "@oh-my-pi/pi-tui/apps/debug/log-formatting";
 import { sanitizeDisplayText } from "@oh-my-pi/pi-tui/overlays/extensions/display-text";
 import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
 
@@ -27,15 +27,6 @@ describe("log display text", () => {
 		const result = truncateToWidth(sanitizeDisplayText(input), 10);
 		expect(Bun.stringWidth(result)).toBeLessThanOrEqual(10);
 		expect(result.startsWith("012345")).toBe(true);
-	});
-
-	it("wraps expanded log lines without dropping content", () => {
-		const input = "0123456789ABCDEFGHIJ";
-		const lines = formatDebugLogExpandedLines(input, 6);
-		expect(lines.length).toBeGreaterThan(1);
-		for (const line of lines) {
-			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(6);
-		}
 	});
 
 	it("parses timestamp from JSON log lines", () => {

@@ -438,7 +438,6 @@ export class TodoCommandController {
 			);
 		} finally {
 			this.ctx.ui.start();
-			this.ctx.ui.requestRender();
 		}
 	}
 

@@ -1,4 +1,5 @@
 export * from "./component";
+export * from "./footer";
 export * from "./metrics";
 export * from "./presets";
 export * from "./segments";

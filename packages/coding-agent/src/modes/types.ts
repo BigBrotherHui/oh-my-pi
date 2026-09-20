@@ -1,7 +1,12 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Model, Usage, UsageReport } from "@oh-my-pi/pi-ai";
-import type { Component, Container, EditorTheme, Loader, Spacer, Text, TUI } from "@oh-my-pi/pi-tui";
+import type { EditorTheme, TUI } from "@oh-my-pi/pi-tui";
+import type { TranscriptStore } from "@oh-my-pi/pi-tui/chat/transcript-store";
+import type { ReactionTarget } from "@oh-my-pi/pi-tui/chat/reaction";
+import type { ToolCallModel } from "@oh-my-pi/pi-tui/tools/model";
+import type { ToolPresentationRegistry } from "./tool-presentation";
+import type { JSX } from "@oh-my-pi/pi-tui/reactive";
 import type { CollabController } from "../collab/controller";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
@@ -17,6 +22,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
+import type { ExtensionUiViewFactory } from "@oh-my-pi/pi-tui/chat/extension-types";
 import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
@@ -31,23 +37,19 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { LspStartupServerInfo } from "../tools";
 import type { EventBus } from "../utils/event-bus";
 import type { TokenRateMeter } from "../utils/token-rate";
-import type { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
-import type { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import type { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
-import type { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
-import type { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
-import type { HookInputComponent } from "@oh-my-pi/pi-tui/overlays/hook-input";
-import type { HookSelectorComponent, HookSelectorOptions } from "@oh-my-pi/pi-tui/overlays/hook-selector";
+import type { HookEditorHandle } from "@oh-my-pi/pi-tui/overlays/hook-editor";
+import type { OverlayDisposer } from "@oh-my-pi/pi-tui/host/overlay";
+import type { HookSelectorHandle, HookSelectorOptions } from "@oh-my-pi/pi-tui/overlays/hook-selector";
 import type { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import type { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
-import type { ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
-import type { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import type { RecentSession } from "@oh-my-pi/pi-tui/prompt/welcome";
 import type { EventController } from "./controllers/event-controller";
 import type { LoopConditionConfig, LoopLimitRuntime } from "@oh-my-pi/pi-tui/status-line/loop";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { ReactiveStack } from "./reactive-slots";
 
 export type CompactionQueuedMessage = {
 	text: string;
@@ -79,6 +81,14 @@ export type SubmittedUserInput = {
 	started: boolean;
 };
 
+export interface PendingExecution {
+	readonly id: string;
+	pendingId: string;
+	sessionId: string;
+	view: () => JSX.Element;
+	state: "active" | "settled";
+}
+
 export interface InteractiveModeInitOptions {
 	suppressWelcomeIntro?: boolean;
 	clearInitialTerminalHistory?: boolean;
@@ -90,13 +100,6 @@ export interface InteractiveModeInitOptions {
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
-export interface RenderSessionContextOptions {
-	updateFooter?: boolean;
-	reuseSettledComponents?: boolean;
-	/** Tool calls whose existing live component remains the sole render owner across a rebuild. */
-	preservedLiveToolCallIds?: ReadonlySet<string>;
-}
-
 export interface AgentHubOpenOptions {
 	requireContent?: boolean;
 	armCloseTap?: boolean;
@@ -106,23 +109,23 @@ export interface AgentHubOpenOptions {
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
-	chatContainer: TranscriptContainer;
-	pendingMessagesContainer: Container;
-	statusContainer: Container;
+	chatContainer: TranscriptStore;
+	pendingMessagesContainer: ReactiveStack;
+	statusContainer: ReactiveStack;
 	/** Whether the status/working row rendered lines in the latest frame; the band composer's editor top gap collapses only then. */
 	readonly statusRowOccupied: boolean;
-	todoContainer: Container;
-	subagentContainer: Container;
-	btwContainer: Container;
-	omfgContainer: Container;
-	cleanseContainer: Container;
-	errorBannerContainer: Container;
-	modelCycleContainer: Container;
-	deferredCommandContainer: Container;
+	todoContainer: ReactiveStack;
+	subagentContainer: ReactiveStack;
+	btwContainer: ReactiveStack;
+	omfgContainer: ReactiveStack;
+	cleanseContainer: ReactiveStack;
+	errorBannerContainer: ReactiveStack;
+	modelCycleContainer: ReactiveStack;
+	deferredCommandContainer: ReactiveStack;
 	editor: CustomEditor;
-	editorContainer: Container;
-	hookWidgetContainerAbove: Container;
-	hookWidgetContainerBelow: Container;
+	editorContainer: ReactiveStack;
+	hookWidgetContainerAbove: ReactiveStack;
+	hookWidgetContainerBelow: ReactiveStack;
 	statusLine: StatusLineComponent;
 	syncComposerShape(): void;
 	syncEditorSpelling(): void;
@@ -213,14 +216,13 @@ export interface InteractiveModeContext {
 	proseOnlyThinking: boolean;
 	compactionQueuedMessages: CompactionQueuedMessage[];
 	/** Settled user/assistant components reusable across post-compaction transcript rebuilds. */
-	transcriptMessageComponents: WeakMap<AgentMessage, Component>;
-	pendingTools: Map<string, ToolExecutionHandle>;
-	pendingBashComponents: BashExecutionComponent[];
-	bashComponent: BashExecutionComponent | undefined;
-	pendingPythonComponents: EvalExecutionComponent[];
-	pythonComponent: EvalExecutionComponent | undefined;
+	transcriptMessageComponents: WeakMap<AgentMessage, string>;
+	pendingTools: Map<string, ToolCallModel>;
+	/** Retained tool UI state, independent of whether execution is still pending. */
+	readonly toolPresentation: ToolPresentationRegistry;
+	pendingExecutions: PendingExecution[];
 	isPythonMode: boolean;
-	streamingComponent: AssistantMessageComponent | undefined;
+	streamingComponent: string | undefined;
 	streamingMessage: AssistantMessage | undefined;
 	/**
 	 * Usage of the most recently rendered assistant turn, used to detect a
@@ -236,9 +238,9 @@ export interface InteractiveModeContext {
 	servedModelTracker: ServedModelTracker;
 	/** Live gen tok/s for the working row; fed by streamed deltas, reset per run. */
 	tokenRate: TokenRateMeter;
-	loadingAnimation: Loader | undefined;
-	autoCompactionLoader: Loader | undefined;
-	retryLoader: Loader | undefined;
+	loadingAnimation: string | undefined;
+	autoCompactionLoader: string | undefined;
+	retryLoader: string | undefined;
 	unsubscribe?: () => void;
 	onInputCallback?: (input: SubmittedUserInput) => void;
 	optimisticUserMessageSignature: string | undefined;
@@ -256,11 +258,11 @@ export interface InteractiveModeContext {
 	 *  so the next single Ctrl+C must escape (force-quit) rather than re-run the
 	 *  doomed teardown or merely clear the editor (#12238). */
 	readonly teardownFailed: boolean;
-	hookSelector: HookSelectorComponent | undefined;
-	hookInput: HookInputComponent | undefined;
-	hookEditor: HookEditorComponent | undefined;
-	lastStatusSpacer: Spacer | undefined;
-	lastStatusText: Text | undefined;
+	hookSelector: HookSelectorHandle | undefined;
+	hookInput: OverlayDisposer | undefined;
+	hookEditor: HookEditorHandle | undefined;
+	lastStatusSpacer: string | undefined;
+	lastStatusText: string | undefined;
 	fileSlashCommands: Set<string>;
 	skillCommands: Map<string, Skill>;
 	oauthManualInput: OAuthManualInputManager;
@@ -286,20 +288,14 @@ export interface InteractiveModeContext {
 	): void;
 
 	// UI helpers
-	/**
-	 * Mount transcript content and repaint once. The single sink for "show this in
-	 * chat": producers build and return a `Component` (or a `ChatBlock` carrying
-	 * its own lifecycle) and hand it here instead of touching `chatContainer` /
-	 * `ui.requestRender()` directly. `ChatBlock`s are mounted (their `onMount`
-	 * runs) so their timers/subscriptions start.
-	 */
-	present(content: Component | readonly Component[]): void;
+	/** Mount retained transcript content under the current session owner. */
+	present(content: JSX.Element | readonly JSX.Element[]): void;
 	/**
 	 * Mount command output immediately while idle, or defer it until the active
 	 * agent turn ends so a growing live block cannot push duplicate rows into
 	 * native scrollback.
 	 */
-	presentCommandOutput(content: Component | readonly Component[]): void;
+	presentCommandOutput(content: JSX.Element | readonly JSX.Element[]): void;
 	/** Show session information in a focused transient overlay. */
 	showSessionInfo(info: string): void;
 	/** Mount command output deferred by {@link presentCommandOutput}. */
@@ -311,7 +307,7 @@ export interface InteractiveModeContext {
 	 */
 	resetTranscript(): void;
 	showStatus(message: string, options?: { dim?: boolean }): void;
-	showModelCycleTrack(track: string): void;
+	showModelCycleTrack(segments: readonly { label: string }[], activeIndex: number): void;
 	showError(message: string): void;
 	showPinnedError(message: string): void;
 	clearPinnedError(): void;
@@ -321,7 +317,7 @@ export interface InteractiveModeContext {
 	updatePendingMessagesDisplay(): void;
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
-	flushPendingBashComponents(): void;
+	flushPendingExecutions(): void;
 	flushPendingModelSwitch(): Promise<void>;
 	setWorkingMessage(message?: string): void;
 	applyPendingWorkingMessage(): void;
@@ -371,20 +367,17 @@ export interface InteractiveModeContext {
 	/** Drops the optimistic `/skill:` row when dispatch fails or bails before reaching the agent. */
 	clearOptimisticSkillMessage(): void;
 	isKnownSlashCommand(text: string): boolean;
+	/** Claim the preceding transcript bubble for the next assistant's reaction. */
+	takeReactionTargetForAssistant(): ReactionTarget | undefined;
 	addMessageToChat(
 		message: AgentMessage,
 		options?: {
 			imageLinks?: readonly (string | undefined)[];
-			reuseSettledComponent?: boolean;
 		},
-	): Component[];
-	renderSessionContext(sessionContext: SessionContext, options?: RenderSessionContextOptions): void;
+	): string[];
+	renderSessionContext(sessionContext: SessionContext): void;
 	/** Render a session context in bounded chunks so terminal input runs between transcript paints. */
-	renderSessionContextIncrementally(
-		sessionContext: SessionContext,
-		options: RenderSessionContextOptions,
-		renderChunk?: () => void,
-	): Promise<void>;
+	renderSessionContextIncrementally(sessionContext: SessionContext): Promise<void>;
 	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): Promise<void>;
 	/**
 	 * In-place transcript rewind: drop the rendered components at/after
@@ -403,7 +396,7 @@ export interface InteractiveModeContext {
 	 * segment, cursor shape). Lets the setting take effect without restarting the session.
 	 */
 	applyVimModeSetting(): void;
-	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
+	rebuildChatFromMessages(): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(source?: AgentSession): Promise<void>;
 	toggleTodoExpansion(): void;
@@ -562,6 +555,10 @@ export interface InteractiveModeContext {
 		previousSessionFile?: string,
 	): Promise<void>;
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void;
+	/** Mount extension header content without replacing host-owned warnings. */
+	setExtensionHeader(factory: ExtensionUiViewFactory | undefined): void;
+	/** Mount extension footer content alongside below-editor widgets. */
+	setExtensionFooter(factory: ExtensionUiViewFactory | undefined): void;
 	setHookStatus(key: string, text: string | undefined): void;
 	showHookSelector(
 		title: string,
@@ -585,7 +582,7 @@ export interface InteractiveModeContext {
 			theme: Theme,
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
-		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
+		) => JSX.Element | Promise<JSX.Element>,
 		options?: ExtensionCustomOptions,
 	): Promise<T>;
 	showExtensionError(extensionPath: string, error: string): void;

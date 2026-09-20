@@ -1,26 +1,48 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Image, ImageBudget } from "@oh-my-pi/pi-tui/components/image";
+import { renderToRows } from "../src/testing";
+import { Style } from "../src/core/style";
+import { createImagePaintState, ImageBudget, ImageView } from "@oh-my-pi/pi-tui/components/image";
+import { visibleWidth } from "../src/utils";
+import type { ImagePaintState } from "@oh-my-pi/pi-tui/components/image";
 import { getKittyGraphics, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
+import type { CellDimensions } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
-	type CellDimensions,
 	getCellDimensions,
 	ImageProtocol,
 	isWindowsTerminalPreviewSixelSupported,
 	renderImage,
 	setCellDimensions,
+	setTerminalImageProtocol,
 	TERMINAL,
 } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 
-type MutableTerminalInfo = {
-	imageProtocol: ImageProtocol | null;
-};
+withoutTerminalMultiplexer();
 
-const terminal = TERMINAL as unknown as MutableTerminalInfo;
+function setTerminalProtocol(protocol: ImageProtocol | null): void {
+	setTerminalImageProtocol(protocol);
+}
+
 const BASE64_DUMMY = "AA==";
 const SQUARE_DIMENSIONS = { widthPx: 100, heightPx: 100 };
 const BASE64_ONE_PIXEL_PNG =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
-const ORIGINAL_TMUX = Bun.env.TMUX;
+function imageState(
+	options: Parameters<typeof createImagePaintState>[0]["options"],
+	dimensions = SQUARE_DIMENSIONS,
+): ImagePaintState {
+	return createImagePaintState({
+		base64Data: BASE64_ONE_PIXEL_PNG,
+		mimeType: "image/png",
+		theme: { fallbackStyle: Style.NONE },
+		options,
+		dimensions,
+	});
+}
+
+function imageRows(state: ImagePaintState, width: number): string[] {
+	return renderToRows(() => ImageView({ state }), width);
+}
 
 function parseKittyParam(sequence: string, key: "c" | "r" | "C"): number | null {
 	const match = sequence.match(new RegExp(`${key}=(\\d+)`));
@@ -39,23 +61,20 @@ describe("terminal image rendering", () => {
 	const originalGraphics = { ...getKittyGraphics() };
 
 	beforeEach(() => {
-		delete Bun.env.TMUX;
 		originalCellDims = { ...getCellDimensions() };
 		setCellDimensions({ widthPx: 10, heightPx: 10 });
-		terminal.imageProtocol = null;
+		setTerminalProtocol(null);
 		setKittyGraphics({ unicodePlaceholders: false });
 	});
 
 	afterEach(() => {
 		setCellDimensions(originalCellDims);
-		terminal.imageProtocol = originalProtocol;
+		setTerminalProtocol(originalProtocol);
 		setKittyGraphics(originalGraphics);
-		if (ORIGINAL_TMUX === undefined) delete Bun.env.TMUX;
-		else Bun.env.TMUX = ORIGINAL_TMUX;
 	});
 
 	it("fits Kitty images within max width and max height while preserving aspect ratio", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
+		setTerminalProtocol(ImageProtocol.Kitty);
 		const result = renderImage(BASE64_DUMMY, SQUARE_DIMENSIONS, {
 			maxWidthCells: 10,
 			maxHeightCells: 2,
@@ -68,7 +87,7 @@ describe("terminal image rendering", () => {
 	});
 
 	it("anchors Kitty display commands before renderer-managed cursor movement", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
+		setTerminalProtocol(ImageProtocol.Kitty);
 		const result = renderImage(BASE64_DUMMY, SQUARE_DIMENSIONS, {
 			maxWidthCells: 10,
 			maxHeightCells: 2,
@@ -79,66 +98,67 @@ describe("terminal image rendering", () => {
 	});
 
 	it("re-renders a cached fallback once an image protocol becomes available", () => {
-		const image = new Image(
-			BASE64_ONE_PIXEL_PNG,
-			"image/png",
-			{ fallbackColor: text => text },
-			{ maxWidthCells: 10, maxHeightCells: 2 },
-			SQUARE_DIMENSIONS,
-		);
+		const image = imageState({ maxWidthCells: 10, maxHeightCells: 2 });
 
-		expect(image.render(20).join("")).toContain("[Image:");
+		expect(imageRows(image, 20).join("")).toContain("[Image:");
 
-		terminal.imageProtocol = ImageProtocol.Kitty;
-		const rerendered = image.render(20).join("");
+		setTerminalProtocol(ImageProtocol.Kitty);
+		const rerendered = imageRows(image, 20).join("");
 
 		expect(rerendered).toContain("\x1b_Ga=T");
 		expect(rerendered).toContain("C=1");
 	});
 
 	it("re-renders a cached image when cell dimensions change", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
-		const image = new Image(
-			BASE64_ONE_PIXEL_PNG,
-			"image/png",
-			{ fallbackColor: text => text },
-			{ maxWidthCells: 10, maxHeightCells: 10 },
-			SQUARE_DIMENSIONS,
-		);
+		setTerminalProtocol(ImageProtocol.Kitty);
+		const image = imageState({ maxWidthCells: 10, maxHeightCells: 10 });
 
-		const first = image.render(20).join("");
+		const first = imageRows(image, 20).join("");
 		expect(parseKittyParam(first, "c")).toBe(10);
 
 		setCellDimensions({ widthPx: 20, heightPx: 10 });
-		const second = image.render(20).join("");
+		const second = imageRows(image, 20).join("");
 
 		expect(parseKittyParam(second, "c")).toBe(5);
 	});
 
+	it("centers protocol images in a fixed cell box and clips the box to its parent", () => {
+		setTerminalProtocol(ImageProtocol.Kitty);
+		setKittyGraphics({ unicodePlaceholders: true });
+		const image = imageState({
+			budget: new ImageBudget(),
+			imageKey: "fixed-cell-box",
+			cellBox: { width: 12, height: 4, align: "center" },
+		});
+
+		const full = imageRows(image, 12);
+		expect(full).toHaveLength(4);
+		expect(full.every(row => visibleWidth(row) === 12)).toBe(true);
+		expect(full.join("")).toContain("U=1");
+
+		const clipped = imageRows(image, 7);
+		expect(clipped).toHaveLength(4);
+		expect(clipped.every(row => visibleWidth(row) === 7)).toBe(true);
+	});
+
 	it("re-renders a cached Kitty image when Unicode placeholder support changes", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
+		setTerminalProtocol(ImageProtocol.Kitty);
 		setKittyGraphics({ unicodePlaceholders: false });
 		const budget = new ImageBudget(1, () => {});
-		const image = new Image(
-			BASE64_ONE_PIXEL_PNG,
-			"image/png",
-			{ fallbackColor: text => text },
-			{ budget, imageKey: "placeholder-cache", maxWidthCells: 10, maxHeightCells: 2 },
-			SQUARE_DIMENSIONS,
-		);
+		const image = imageState({ budget, imageKey: "placeholder-cache", maxWidthCells: 10, maxHeightCells: 2 });
 
-		const direct = image.render(20).join("");
+		const direct = imageRows(image, 20).join("");
 		expect(direct).toContain("\x1b_Ga=p");
 
 		setKittyGraphics({ unicodePlaceholders: true });
-		const placeholder = image.render(20).join("");
+		const placeholder = imageRows(image, 20).join("");
 
 		expect(placeholder).toContain("U=1");
 		expect(placeholder).not.toBe(direct);
 	});
 
 	it("uses intrinsic image size when no bounds are provided", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
+		setTerminalProtocol(ImageProtocol.Kitty);
 		const result = renderImage(BASE64_DUMMY, SQUARE_DIMENSIONS);
 
 		expect(result).not.toBeNull();
@@ -148,7 +168,7 @@ describe("terminal image rendering", () => {
 	});
 
 	it("transmits stable Kitty images in-band before placement", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
+		setTerminalProtocol(ImageProtocol.Kitty);
 		const result = renderImage(BASE64_ONE_PIXEL_PNG, SQUARE_DIMENSIONS, {
 			imageId: 42,
 			includeTransmit: true,
@@ -160,7 +180,7 @@ describe("terminal image rendering", () => {
 	});
 
 	it("reduces iTerm2 width when max height is the limiting bound", () => {
-		terminal.imageProtocol = ImageProtocol.Iterm2;
+		setTerminalProtocol(ImageProtocol.Iterm2);
 		const result = renderImage(BASE64_DUMMY, SQUARE_DIMENSIONS, {
 			maxWidthCells: 10,
 			maxHeightCells: 2,
@@ -173,7 +193,7 @@ describe("terminal image rendering", () => {
 	});
 
 	it("encodes SIXEL output when protocol is SIXEL", () => {
-		terminal.imageProtocol = ImageProtocol.Sixel;
+		setTerminalProtocol(ImageProtocol.Sixel);
 		const result = renderImage(BASE64_ONE_PIXEL_PNG, SQUARE_DIMENSIONS, {
 			maxWidthCells: 10,
 			maxHeightCells: 2,
@@ -188,16 +208,10 @@ describe("terminal image rendering", () => {
 	});
 
 	it("moves back up before multi-row direct Kitty output and restores the cursor below it", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
-		const image = new Image(
-			BASE64_DUMMY,
-			"image/png",
-			{ fallbackColor: text => text },
-			{ maxWidthCells: 10, maxHeightCells: 3 },
-			SQUARE_DIMENSIONS,
-		);
+		setTerminalProtocol(ImageProtocol.Kitty);
+		const image = imageState({ maxWidthCells: 10, maxHeightCells: 3 });
 
-		const lines = image.render(20);
+		const lines = imageRows(image, 20);
 		const imageLine = lines.at(-1) ?? "";
 
 		expect(lines).toHaveLength(3);
@@ -211,16 +225,10 @@ describe("terminal image rendering", () => {
 	});
 
 	it("does not emit cursor movement around single-row direct Kitty output", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
-		const image = new Image(
-			BASE64_DUMMY,
-			"image/png",
-			{ fallbackColor: text => text },
-			{ maxWidthCells: 10, maxHeightCells: 1 },
-			SQUARE_DIMENSIONS,
-		);
+		setTerminalProtocol(ImageProtocol.Kitty);
+		const image = imageState({ maxWidthCells: 10, maxHeightCells: 1 });
 
-		const lines = image.render(20);
+		const lines = imageRows(image, 20);
 		const imageLine = lines.at(-1) ?? "";
 
 		expect(lines).toHaveLength(1);
@@ -264,11 +272,11 @@ describe("Windows Terminal Preview SIXEL detection", () => {
 describe("isImageLine — composed placeholder rows", () => {
 	const originalProtocol = TERMINAL.imageProtocol;
 	afterEach(() => {
-		terminal.imageProtocol = originalProtocol;
+		setTerminalProtocol(originalProtocol);
 	});
 
 	it("keeps deeply prefixed Kitty placeholder rows on the verbatim image-line path", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
+		setTerminalProtocol(ImageProtocol.Kitty);
 		// Composer attachment chip interior row: border SGR + │ + reset + pad +
 		// image-id fg + placement-id underline put the first placeholder cell at
 		// code unit 63 — past the old 64-unit needle window, which silently sent
@@ -283,7 +291,7 @@ describe("isImageLine — composed placeholder rows", () => {
 	});
 
 	it("still rejects plain styled text rows", () => {
-		terminal.imageProtocol = ImageProtocol.Kitty;
+		setTerminalProtocol(ImageProtocol.Kitty);
 		expect(TERMINAL.isImageLine("\x1b[38;2;255;179;102m│\x1b[39m plain text row")).toBe(false);
 	});
 });

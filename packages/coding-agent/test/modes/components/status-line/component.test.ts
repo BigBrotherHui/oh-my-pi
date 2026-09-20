@@ -1,13 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { createGallerySegmentContext } from "../../../../src/cli/gallery-fixtures/segments";
 import { Settings } from "../../../../src/config/settings";
-import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line/component";
+import { StatusLine, StatusLineComponent, StatusLineView } from "@oh-my-pi/pi-tui/status-line/component";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
 import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
 import { loadTheme } from "@oh-my-pi/pi-tui/theme/loader";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "../../../../src/session/agent-session";
-import { StatusLineTestComponents } from "../../../helpers/status-line";
+import { mountForTest } from "@oh-my-pi/pi-tui/testing";
+import { renderStatus, StatusLineTestComponents } from "../../../helpers/status-line";
 
 // The cost assertions below care about how the two costs are rendered, not about
 // terminal width. The status line also shows the cwd and git branch, so a long
@@ -17,6 +19,15 @@ import { StatusLineTestComponents } from "../../../helpers/status-line";
 // truncation tests that target it directly.
 const WIDE_ENOUGH_FOR_COST_SEGMENT = 400;
 const statusLines = new StatusLineTestComponents();
+
+function renderStatusLine(status: StatusLineComponent, width: number, placeholders = false): string {
+	const root = mountForTest(() => StatusLine({ source: status, layout: "box", placeholders }), { width });
+	try {
+		return root.rows(width).join("\n");
+	} finally {
+		root.dispose();
+	}
+}
 
 function makeSessionWithLastMessage(
 	lastMessage: unknown,
@@ -121,10 +132,7 @@ describe("StatusLineComponent", () => {
 		);
 
 		// By default preset, 'mode' segment is included in left/right segments.
-		// Let's get the border and see if Prewalk is rendered.
-		const border = statusLine.getTopBorder(100);
-		// SGR codes might be included, so we check if the stripped content contains "Prewalk"
-		const stripped = border.content.replace(/\x1b\[[0-9;]*m/g, "");
+		const stripped = renderStatusLine(statusLine, 100).replace(/\x1b\[[0-9;]*m/g, "");
 		expect(stripped).toContain("Prewalk");
 	});
 
@@ -140,12 +148,12 @@ describe("StatusLineComponent", () => {
 			),
 		);
 
-		const live = Bun.stripANSI(statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content);
+		const live = Bun.stripANSI(renderStatusLine(statusLine, WIDE_ENOUGH_FOR_COST_SEGMENT));
 		expect(live).toContain("Stale Model");
 		expect(live).toContain("stale-session");
 		expect(live).toContain("2.67");
 
-		const placeholder = Bun.stripANSI(statusLine.renderStartupPlaceholder(WIDE_ENOUGH_FOR_COST_SEGMENT, "box"));
+		const placeholder = Bun.stripANSI(renderStatusLine(statusLine, WIDE_ENOUGH_FOR_COST_SEGMENT, true));
 		expect(placeholder.match(/…/g)?.length).toBeGreaterThanOrEqual(3);
 		expect(placeholder).toContain(`${theme.icon.model} …`);
 		expect([theme.icon.folder, theme.icon.worktree].some(icon => placeholder.includes(`${icon} …`))).toBe(true);
@@ -164,7 +172,9 @@ describe("StatusLineComponent", () => {
 		const model = renderSegment("model", ctx);
 		const path = renderSegment("path", ctx);
 		const git = renderSegment("git", ctx);
-		const text = Bun.stripANSI([model.content, path.content, git.content].join(" "));
+		const text = Bun.stripANSI(
+			[model.content, path.content, git.content].map(content => renderStatus(content)).join(" "),
+		);
 
 		expect(text).toContain(`${theme.icon.model} …`);
 		expect(text).toContain(`${theme.icon.folder} …`);
@@ -175,9 +185,9 @@ describe("StatusLineComponent", () => {
 		expect(text).not.toContain("Sonnet 4.5");
 		expect(text).not.toContain("/workspace/oh-my-pi");
 		expect(text).not.toContain("gallery/reference");
-		expect(model.content).toContain(theme.getFgAnsi("statusLineModel"));
-		expect(path.content).toContain(theme.getFgAnsi("statusLinePath"));
-		expect(git.content).toContain(theme.getFgAnsi("statusLineGitDirty"));
+		expect(renderStatus(model.content)).toContain(theme.getFgAnsi("statusLineModel"));
+		expect(renderStatus(path.content)).toContain(theme.getFgAnsi("statusLinePath"));
+		expect(renderStatus(git.content)).toContain(theme.getFgAnsi("statusLineGitDirty"));
 	});
 
 	it("renders primary and advisor costs separately with subscription indicator in Unicode preset", () => {
@@ -192,7 +202,7 @@ describe("StatusLineComponent", () => {
 			),
 		);
 
-		const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
+		const stripped = renderStatusLine(statusLine, WIDE_ENOUGH_FOR_COST_SEGMENT).replace(/\x1b\[[0-9;]*m/g, "");
 		expect(stripped).toContain("S2.67 + 👁 $0.41");
 	});
 
@@ -209,7 +219,7 @@ describe("StatusLineComponent", () => {
 			),
 		);
 
-		const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
+		const stripped = renderStatusLine(statusLine, WIDE_ENOUGH_FOR_COST_SEGMENT).replace(/\x1b\[[0-9;]*m/g, "");
 		expect(stripped).toContain("S2.67 + 👁 S0.41");
 	});
 
@@ -230,7 +240,7 @@ describe("StatusLineComponent", () => {
 					statusLineHost,
 				),
 			);
-			const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
+			const stripped = renderStatusLine(statusLine, WIDE_ENOUGH_FOR_COST_SEGMENT).replace(/\x1b\[[0-9;]*m/g, "");
 			expect(stripped).toContain("S2.67 + S0.41 (adv)");
 		} finally {
 			setThemeInstance(baseTheme);
@@ -248,7 +258,7 @@ describe("StatusLineComponent", () => {
 			),
 		);
 
-		const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
+		const stripped = renderStatusLine(statusLine, WIDE_ENOUGH_FOR_COST_SEGMENT).replace(/\x1b\[[0-9;]*m/g, "");
 		expect(stripped).toContain("S2.67");
 		expect(stripped).not.toContain("(adv)");
 	});
@@ -270,10 +280,64 @@ describe("StatusLineComponent", () => {
 					statusLineHost,
 				),
 			);
-			const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
+			const stripped = renderStatusLine(statusLine, WIDE_ENOUGH_FOR_COST_SEGMENT).replace(/\x1b\[[0-9;]*m/g, "");
 			expect(stripped).toContain("\u{f067a} 2.67 + \uea70 \u{f067a} 0.41");
 		} finally {
 			setThemeInstance(baseTheme);
+		}
+	});
+
+	it("refreshes the retained standalone view for model, thinking, and focused-session changes", () => {
+		type MutableStatusSession = {
+			state: {
+				messages: unknown[];
+				model: { name: string; contextWindow: number; thinking: boolean };
+				thinkingLevel?: ThinkingLevel;
+			};
+			model: { name: string; contextWindow: number; thinking: boolean };
+		};
+
+		const session = makeSessionWithLastMessage(null, false, {
+			modelName: "Original Model",
+		}) as unknown as MutableStatusSession;
+		session.state.model = { name: "Original Model", contextWindow: 128_000, thinking: true };
+		session.model = session.state.model;
+		session.state.thinkingLevel = ThinkingLevel.Off;
+
+		const statusLine = statusLines.track(new StatusLineComponent(session as unknown as AgentSession, statusLineHost));
+		statusLine.updateSettings({
+			preset: "custom",
+			leftSegments: ["model"],
+			rightSegments: [],
+			separator: "none",
+			transparent: true,
+		});
+		statusLine.setStandalone("full");
+
+		const root = mountForTest(() => StatusLineView({ source: statusLine }), { width: 120 });
+		try {
+			expect(root.text().join("\n")).toContain("Original Model");
+
+			session.state.model = { name: "Switched Model", contextWindow: 128_000, thinking: true };
+			session.model = session.state.model;
+			session.state.thinkingLevel = ThinkingLevel.High;
+			statusLine.ingestSession();
+
+			const highThinking = theme.thinking[ThinkingLevel.High] ?? ThinkingLevel.High;
+			expect(root.text().join("\n")).toContain("Switched Model");
+			expect(root.text().join("\n")).toContain(highThinking);
+
+			const focused = makeSessionWithLastMessage(null, false, {
+				modelName: "Focused Model",
+			}) as unknown as MutableStatusSession;
+			focused.state.model = { name: "Focused Model", contextWindow: 128_000, thinking: true };
+			focused.model = focused.state.model;
+			focused.state.thinkingLevel = ThinkingLevel.Low;
+			statusLine.setSession(focused as unknown as AgentSession, "focused-agent");
+
+			expect(root.text().join("\n")).toContain("Focused Model");
+		} finally {
+			root.dispose();
 		}
 	});
 });

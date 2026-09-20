@@ -15,7 +15,7 @@ import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
 
 export function refreshStatusLine(ctx: InteractiveModeContext): void {
-	ctx.statusLine.invalidate();
+	ctx.statusLine.ingestSession();
 	ctx.ui.requestRender();
 }
 

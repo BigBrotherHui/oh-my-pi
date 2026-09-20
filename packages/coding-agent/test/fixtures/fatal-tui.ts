@@ -1,16 +1,8 @@
-import { Input, ProcessTerminal, Text, TUI } from "@oh-my-pi/pi-tui";
-import { fatal } from "@oh-my-pi/pi-utils/postmortem";
+import { ProcessTerminal, render } from "@oh-my-pi/pi-tui";
+import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
+import { FatalTuiView } from "./fatal-tui-view";
 
-const tui = new TUI(new ProcessTerminal(), false);
-const input = new Input();
-input.prompt = "╰─ ";
-// The harness sends Enter once it has observed the composer boundary on the
-// PTY, so the fatal path always races against a fully painted frame.
-input.onSubmit = () => {
-	void fatal(new Error("fatal PTY fixture"));
-};
+const theme = await getThemeByName("dark");
+if (!theme) throw new Error("Expected dark theme");
 
-tui.addChild(new Text("safe transcript", 0, 0));
-tui.addChild(input);
-tui.setFocus(input);
-tui.start({ clearScrollback: true });
+render(FatalTuiView, { terminal: new ProcessTerminal(), theme });

@@ -813,7 +813,7 @@ export class OutputSink {
 	#totalBytes = 0;
 	#sawData = false;
 	#truncated = false;
-	#lastChunkTime = 0;
+	#lastChunkTime: number | undefined;
 	#pendingChunk = "";
 	#pendingCarriageReturn = false;
 	#pendingChunkTimer: Timer | undefined;
@@ -941,8 +941,8 @@ export class OutputSink {
 		// Live preview gets the inline (pre-cap) chunk so the TUI never lags behind
 		// what reached the in-memory sink — the column cap is for the persisted LLM view.
 		if (this.#onChunk && options?.emitInline !== false && inlineChunk.length > 0) {
-			const now = Date.now();
-			if (now - this.#lastChunkTime >= this.#chunkThrottleMs) {
+			const now = performance.now();
+			if (this.#lastChunkTime === undefined || now - this.#lastChunkTime >= this.#chunkThrottleMs) {
 				this.#emitPendingChunkWith(inlineChunk, now);
 			} else {
 				this.#pendingChunk += inlineChunk;
@@ -1320,12 +1320,13 @@ export class OutputSink {
 			this.#clearPendingChunkTimer();
 			return;
 		}
-		this.#emitPendingChunkWith("", Date.now());
+		this.#emitPendingChunkWith("", performance.now());
 	}
 
 	#schedulePendingChunkFlush(): void {
 		if (this.#chunkThrottleMs <= 0 || this.#pendingChunkTimer) return;
-		const elapsed = Date.now() - this.#lastChunkTime;
+		const elapsed =
+			this.#lastChunkTime === undefined ? this.#chunkThrottleMs : performance.now() - this.#lastChunkTime;
 		const delay = Math.max(0, this.#chunkThrottleMs - elapsed);
 		this.#pendingChunkTimer = setTimeout(() => {
 			this.#pendingChunkTimer = undefined;

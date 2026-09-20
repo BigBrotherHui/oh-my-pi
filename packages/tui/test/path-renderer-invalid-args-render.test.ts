@@ -1,126 +1,67 @@
-import { beforeAll, describe, expect, it } from "bun:test";
-import { editToolRenderer } from "@oh-my-pi/pi-tui/tools/edit";
-import { getThemeByName, initTheme, type Theme } from "@oh-my-pi/pi-tui/theme";
-import { readToolRenderer } from "@oh-my-pi/pi-tui/tools/read";
-import { writeToolRenderer } from "@oh-my-pi/pi-tui/tools/write";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { describe, expect, it } from "bun:test";
+import { createToolCallModel } from "../src/tools/model";
+import { editToolView, type EditRenderArgs, type EditToolDetails } from "../src/tools/edit";
+import { readToolView, type ReadRenderArgs, type ReadToolDetails } from "../src/tools/read";
+import { writeToolView, type WriteRenderArgs, type WriteToolDetails } from "../src/tools/write";
+import { mountForTest } from "../src/testing";
 
-interface InvalidPathCase {
-	readonly name: string;
-	readonly path: unknown;
-}
-
-const invalidPathCases: readonly InvalidPathCase[] = [
-	{ name: "array path", path: ["src/example.ts"] },
-	{ name: "object path", path: { value: "src/example.ts" } },
-];
-
-let uiTheme: Theme;
-
-beforeAll(async () => {
-	await initTheme(false, undefined, undefined, "dark", "light");
-	const theme = await getThemeByName("dark");
-	if (!theme) throw new Error("dark theme missing");
-	uiTheme = theme;
-});
-
-function renderPlain(component: Component, width = 120): string {
-	let rendered = "";
-	expect(() => {
-		rendered = Bun.stripANSI(component.render(width).join("\n"));
-	}).not.toThrow();
-	return rendered;
-}
-
-describe("tool path renderers with invalid provider arguments", () => {
-	for (const invalid of invalidPathCases) {
-		it(`read renderer does not throw for ${invalid.name}`, () => {
-			let callComponent: Component | undefined;
-			expect(() => {
-				callComponent = readToolRenderer.renderCall(
-					{ path: invalid.path },
-					{ expanded: false, isPartial: true },
-					uiTheme,
-				);
-			}).not.toThrow();
-			expect(renderPlain(callComponent!)).toContain("Read");
-
-			let resultComponent: Component | undefined;
-			expect(() => {
-				resultComponent = readToolRenderer.renderResult(
-					{
-						content: [{ type: "text", text: "hello from read" }],
-						details: {
-							displayContent: { text: "hello from read", startLine: 1 },
-							contentType: "text/plain",
-						},
-					},
-					{ expanded: false, isPartial: false },
-					uiTheme,
-					{ path: invalid.path },
-				);
-			}).not.toThrow();
-			const rendered = renderPlain(resultComponent!);
-			expect(rendered).toContain("Read");
-			expect(rendered).toContain("hello from read");
+describe("tool output with malformed provider paths", () => {
+	it("keeps read content visible when the requested path is not a string", () => {
+		const model = createToolCallModel<ReadRenderArgs, ReadToolDetails>({
+			id: "invalid-read",
+			toolName: "read",
+			label: "Read",
 		});
+		model.applyArgsChunk(JSON.stringify({ path: { value: "src/example.ts" } }));
+		const root = mountForTest(() => readToolView.view(model));
+		try {
+			model.applyResult({
+				content: [{ type: "text", text: "read output sentinel" }],
+				details: { contentType: "text/plain" },
+			});
+			expect(root.text().join("\n")).toContain("read output sentinel");
+			expect(root.text().join("\n")).not.toContain("[object Object]");
+		} finally {
+			root.dispose();
+		}
+	});
 
-		it(`write renderer does not throw for ${invalid.name}`, () => {
-			let callComponent: Component | undefined;
-			expect(() => {
-				callComponent = writeToolRenderer.renderCall(
-					{ path: invalid.path, content: "first line\nsecond line" },
-					{ expanded: false, isPartial: true, spinnerFrame: 0 },
-					uiTheme,
-				);
-			}).not.toThrow();
-			const callText = renderPlain(callComponent!);
-			expect(callText).toContain("Write");
-			expect(callText).toContain("second line");
-
-			let resultComponent: Component | undefined;
-			expect(() => {
-				resultComponent = writeToolRenderer.renderResult(
-					{
-						content: [{ type: "text", text: "Wrote file" }],
-						details: { resolvedPath: "/tmp/example.ts" },
-					},
-					{ expanded: false, isPartial: false },
-					uiTheme,
-					{ path: invalid.path, content: "first line\nsecond line" },
-				);
-			}).not.toThrow();
-			const resultText = renderPlain(resultComponent!);
-			expect(resultText).toContain("Write");
-			expect(resultText).toContain("first line");
+	it("preserves a streamed write body and then its failure despite a malformed path", () => {
+		const model = createToolCallModel<WriteRenderArgs, WriteToolDetails>({
+			id: "invalid-write",
+			toolName: "write",
+			label: "Write",
 		});
+		model.applyArgsChunk(JSON.stringify({ path: ["src/example.ts"], content: "first line\nwrite output sentinel" }));
+		const root = mountForTest(() => writeToolView.view(model));
+		try {
+			expect(root.text().join("\n")).toContain("write output sentinel");
+			model.applyResult({ content: [{ type: "text", text: "Path must be a string" }], isError: true });
+			expect(root.text().join("\n")).toContain("Path must be a string");
+		} finally {
+			root.dispose();
+		}
+	});
 
-		it(`edit renderer does not throw for ${invalid.name}`, () => {
-			let callComponent: Component | undefined;
-			expect(() => {
-				callComponent = editToolRenderer.renderCall(
-					{ path: invalid.path, oldText: "before", newText: "after" },
-					{ expanded: false, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "replace" } },
-					uiTheme,
-				);
-			}).not.toThrow();
-			expect(renderPlain(callComponent!)).toContain("Edit");
-
-			let resultComponent: Component | undefined;
-			expect(() => {
-				resultComponent = editToolRenderer.renderResult(
-					{
-						content: [{ type: "text", text: "updated" }],
-						details: { diff: "-before\n+after" },
-					},
-					{ expanded: false, isPartial: false, renderContext: { editMode: "replace" } },
-					uiTheme,
-					{ path: invalid.path, oldText: "before", newText: "after" },
-				);
-			}).not.toThrow();
-			const rendered = renderPlain(resultComponent!);
-			expect(rendered).toContain("Edit");
-			expect(rendered).toContain("after");
+	it("preserves edit diff content when the provider supplied an object path", () => {
+		const model = createToolCallModel<EditRenderArgs, EditToolDetails>({
+			id: "invalid-edit",
+			toolName: "edit",
+			label: "Edit",
 		});
-	}
+		model.applyArgsChunk(
+			JSON.stringify({ path: { value: "src/example.ts" }, oldText: "before", newText: "edit output sentinel" }),
+		);
+		const root = mountForTest(() => editToolView.view(model));
+		try {
+			model.applyResult({
+				content: [{ type: "text", text: "updated" }],
+				details: { diff: "-before\n+edit output sentinel" },
+			});
+			expect(root.text().join("\n")).toContain("edit output sentinel");
+			expect(root.text().join("\n")).not.toContain("[object Object]");
+		} finally {
+			root.dispose();
+		}
+	});
 });

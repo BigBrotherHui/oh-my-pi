@@ -34,7 +34,7 @@ async function createHost(initializeUi: boolean) {
 		onError() {},
 		async emit() {},
 	};
-	const host = Object.assign(Object.create(InteractiveMode.prototype), {
+	const host = {
 		shutdownRequested: false,
 		syncComposerShape() {},
 		session: {
@@ -58,6 +58,8 @@ async function createHost(initializeUi: boolean) {
 			},
 		},
 		hasPendingSubmission: () => state.pendingSubmission,
+		requestShutdown: InteractiveMode.prototype.requestShutdown,
+		checkShutdownRequested: InteractiveMode.prototype.checkShutdownRequested,
 		async shutdown() {
 			state.closed = true;
 		},
@@ -70,8 +72,10 @@ async function createHost(initializeUi: boolean) {
 		setEditorComponent() {},
 		toolOutputExpanded: false,
 		setToolsExpanded() {},
-	}) as InteractiveModeContext;
-	Object.defineProperty(host, "isShuttingDown", { get: () => state.closed });
+		get isShuttingDown() {
+			return state.closed;
+		},
+	} as unknown as InteractiveModeContext;
 	const controller = new ExtensionUiController(host);
 	if (initializeUi) await controller.initHooksAndCustomTools();
 	else controller.initializeHookRunner({} as ExtensionUIContext, false);

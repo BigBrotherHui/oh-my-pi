@@ -2,7 +2,6 @@ import type { ASIData, NumericMetricMap, ExperimentState } from "@oh-my-pi/pi-tu
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "../extensibility/extensions";
 import type { SessionEntry } from "../session/session-entries";
-import type { DashboardController } from "@oh-my-pi/pi-tui/apps/autoresearch-dashboard";
 
 export interface PendingRunSummary {
 	command: string;
@@ -28,7 +27,6 @@ export interface RunningExperiment {
 export interface AutoresearchRuntime {
 	autoresearchMode: boolean;
 	autoResumeArmed: boolean;
-	dashboardExpanded: boolean;
 	lastAutoResumePendingRunNumber: number | null;
 	lastRunDuration: number | null;
 	lastRunAsi: ASIData | null;
@@ -57,8 +55,8 @@ export interface RuntimeStore {
 }
 
 export interface AutoresearchToolFactoryOptions {
-	dashboard: DashboardController;
 	getRuntime(ctx: ExtensionContext): AutoresearchRuntime;
+	refreshDashboard(ctx: ExtensionContext): void;
 	pi: ExtensionAPI;
 }
 

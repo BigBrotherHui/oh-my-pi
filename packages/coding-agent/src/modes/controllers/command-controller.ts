@@ -2,16 +2,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CompactionCancelledError, type CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import {
-	getEnvApiKey,
-	getProviderDetails,
-	type ProviderDetails,
-	resolveUsedFraction,
-	type UsageLimit,
-	type UsageReport,
-} from "@oh-my-pi/pi-ai";
-import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { getEnvApiKey, getProviderDetails, type UsageReport } from "@oh-my-pi/pi-ai";
+import { createSignal } from "@oh-my-pi/pi-tui/reactive";
+import { logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
@@ -29,21 +22,28 @@ import {
 	summarizeMentalModel,
 } from "../../hindsight";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
-import { BashExecutionComponent, bashPtyViewport } from "@oh-my-pi/pi-tui/chat/bash-execution";
-import { BorderedLoader } from "@oh-my-pi/pi-tui/overlays/bordered-loader";
-import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
-import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
-import { MoveOverlay, type MoveOverlayResult } from "@oh-my-pi/pi-tui/overlays/move-overlay";
+import { BashExecutionStream, BashExecutionView } from "@oh-my-pi/pi-tui/chat/bash-execution";
+import { openBorderedLoader } from "@oh-my-pi/pi-tui/overlays/bordered-loader";
+import type { OverlayDisposer } from "@oh-my-pi/pi-tui/host/overlay";
+import { EvalExecutionView } from "@oh-my-pi/pi-tui/chat/eval-execution";
+import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { outputMeta } from "../../tools/output-meta";
+import { openMoveOverlay, type MoveOverlayResult } from "@oh-my-pi/pi-tui/overlays/move-overlay";
 import { moveDirectorySource } from "../move-directory-source";
-import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { getMarkdownTheme, getSymbolTheme, theme, type Theme } from "@oh-my-pi/pi-tui/theme";
-import type { InteractiveModeContext } from "../../modes/types";
+import { theme } from "@oh-my-pi/pi-tui/theme";
+import type { InteractiveModeContext, PendingExecution } from "../../modes/types";
 import { renderContextUsage } from "@oh-my-pi/pi-tui/status-line/context-usage";
+import {
+	BusyView,
+	CommandMarkdownPanelView,
+	CommandNoticeView,
+	CommandPanelView,
+} from "../components/reactive-controller-views";
+import { AdvisorStatusView, JobsView, SessionInfoView } from "../components/command-feedback-views";
 import { computeSessionContextBreakdown } from "../../session/context-usage-runtime";
 import { buildHotkeysMarkdown } from "@oh-my-pi/pi-tui/hotkeys-markdown";
 import { buildToolsMarkdown } from "@oh-my-pi/pi-tui/prompt/tools-markdown";
-import type { AsyncJobSnapshotItem } from "../../session/agent-session";
-import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
+import type { AuthStorage } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
 import {
@@ -54,12 +54,9 @@ import {
 	type SessionWorktree,
 } from "../../session/session-worktree";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
-import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
-import { formatProviderName } from "@oh-my-pi/pi-tui/chrome/format";
+import { limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { formatCompactQuota } from "@oh-my-pi/pi-tui/overlays/advisor-config";
-import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
-import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
 	getChangelogPath,
 	parseChangelog,
@@ -69,21 +66,10 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
-import { collapseSharedUsageReports, formatLimitTitle } from "@oh-my-pi/pi-tui/overlays/usage-display";
-import { formatRemainingOnlyTotal, isUsedOnlyAbsoluteAmount } from "@oh-my-pi/pi-tui/prompt/usage-amounts";
-
-function formatCreditValue(value: number): string {
-	return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
-}
+import { collapseSharedUsageReports } from "@oh-my-pi/pi-tui/overlays/usage-display";
 
 function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown: string): void {
-	const block = new TranscriptBlock();
-	block.addChild(new DynamicBorder());
-	block.addChild(new Text(theme.bold(theme.fg("accent", title)), 1, 0));
-	block.addChild(new Spacer(1));
-	block.addChild(new Markdown(markdown.trim(), 1, 1, getMarkdownTheme()));
-	block.addChild(new DynamicBorder());
-	ctx.presentCommandOutput(block);
+	ctx.presentCommandOutput(CommandMarkdownPanelView({ title, markdown }));
 }
 
 export class CommandController {
@@ -228,9 +214,10 @@ export class CommandController {
 
 	async handleDebugTranscriptCommand(): Promise<void> {
 		try {
-			const width = Math.max(1, this.ctx.ui.terminal.columns);
-			const renderedLines = this.ctx.chatContainer.render(width).map(line => replaceTabs(Bun.stripANSI(line)));
-			const rendered = renderedLines.join("\n").trimEnd();
+			const rendered = this.ctx.chatContainer
+				.entries()
+				.map(entry => entry.id)
+				.join("\n");
 			if (!rendered) {
 				this.ctx.showError("No messages to dump yet.");
 				return;
@@ -254,22 +241,12 @@ export class CommandController {
 			return;
 		}
 
-		const loader = new BorderedLoader(this.ctx.ui, theme, "Sharing session...");
-		this.ctx.editorContainer.clear();
-		this.ctx.editorContainer.addChild(loader);
-		this.ctx.ui.setFocus(loader);
-		this.ctx.ui.requestRender();
-
-		const restoreEditor = () => {
+		let cancelled = false;
+		const loader: OverlayDisposer = openBorderedLoader(this.ctx.ui, "Sharing session...", () => {
+			cancelled = true;
 			loader.dispose();
-			this.ctx.editorContainer.clear();
-			this.ctx.editorContainer.addChild(this.ctx.editor);
-			this.ctx.ui.setFocus(this.ctx.editor);
-		};
-		loader.onAbort = () => {
-			restoreEditor();
 			this.ctx.showStatus("Share cancelled");
-		};
+		});
 
 		// Custom share scripts keep their legacy contract: they receive a path
 		// to a standalone HTML export. No fallback to the default flow on error.
@@ -278,8 +255,8 @@ export class CommandController {
 			try {
 				await this.ctx.session.exportToHtml(tmpFile);
 				const result = await customShare.fn(tmpFile);
-				if (loader.signal.aborted) return;
-				restoreEditor();
+				if (cancelled) return;
+				loader.dispose();
 
 				if (typeof result === "string") {
 					this.ctx.showStatus(`Share URL: ${result}`);
@@ -294,8 +271,8 @@ export class CommandController {
 					this.ctx.showStatus("Session shared");
 				}
 			} catch (err) {
-				if (!loader.signal.aborted) {
-					restoreEditor();
+				if (!cancelled) {
+					loader.dispose();
 					this.ctx.showError(`Custom share failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			} finally {
@@ -313,8 +290,8 @@ export class CommandController {
 				state: this.ctx.session.state,
 				obfuscator: this.ctx.settings.get("share.redactSecrets") ? this.ctx.session.obfuscator : undefined,
 			});
-			if (loader.signal.aborted) return;
-			restoreEditor();
+			if (cancelled) return;
+			loader.dispose();
 
 			const lines = [`Share URL: ${result.url}`];
 			if (result.gistUrl) lines.push(`Gist: ${result.gistUrl}`);
@@ -322,8 +299,8 @@ export class CommandController {
 			this.ctx.showStatus(lines.join("\n"));
 			this.openInBrowser(result.url);
 		} catch (error: unknown) {
-			if (!loader.signal.aborted) {
-				restoreEditor();
+			if (!cancelled) {
+				loader.dispose();
 				this.ctx.showError(`Failed to share session: ${error instanceof Error ? error.message : "Unknown error"}`);
 			}
 		}
@@ -331,256 +308,82 @@ export class CommandController {
 
 	async handleSessionCommand(): Promise<void> {
 		const stats = this.ctx.session.getSessionStats();
-		const premiumRequests =
-			"premiumRequests" in stats && typeof stats.premiumRequests === "number"
-				? stats.premiumRequests
-				: this.ctx.session.sessionManager.getUsageStatistics().premiumRequests;
-		const normalizedPremiumRequests = Math.round((premiumRequests + Number.EPSILON) * 100) / 100;
-
-		let info = "";
-		info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
-		info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n`;
-		info += `\n${theme.bold("Provider")}\n`;
 		const model = this.ctx.session.model;
-		if (!model) {
-			info += `${theme.fg("dim", "No model selected")}\n`;
-		} else {
-			const authMode = resolveProviderAuthMode(this.ctx.session.modelRegistry.authStorage, model.provider);
-			const openaiWebsocketSetting = this.ctx.settings.get("providers.openaiWebsockets") ?? "auto";
-			const preferOpenAICodexWebsockets =
-				openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
-			const credentialSource = this.ctx.session.modelRegistry.authStorage.describeCredentialSource(
-				model.provider,
-				stats.sessionId,
-			);
-			const providerDetails = getProviderDetails({
-				model,
-				sessionId: stats.sessionId,
-				authMode,
-				credentialSource,
-				preferWebsockets: preferOpenAICodexWebsockets,
-				providerSessionState: this.ctx.session.providerSessionState,
-			});
-			info += renderProviderSection(providerDetails, theme);
-			if (stats.routedModels !== undefined) {
-				const routed = Object.entries(stats.routedModels)
+		const providerDetails = model
+			? getProviderDetails({
+					model,
+					sessionId: stats.sessionId,
+					authMode: resolveProviderAuthMode(this.ctx.session.modelRegistry.authStorage, model.provider),
+					credentialSource: this.ctx.session.modelRegistry.authStorage.describeCredentialSource(
+						model.provider,
+						stats.sessionId,
+					),
+					preferWebsockets: (() => {
+						const setting = this.ctx.settings.get("providers.openaiWebsockets") ?? "auto";
+						return setting === "on" ? true : setting === "off" ? false : undefined;
+					})(),
+					providerSessionState: this.ctx.session.providerSessionState,
+				})
+			: undefined;
+		const appendOnlySetting = this.ctx.settings.get("provider.appendOnlyContext") ?? "auto";
+		const appendOnly = shouldEnableAppendOnlyContext(appendOnlySetting, model);
+		const mcpServers = this.ctx.mcpManager?.getConnectedServers().map(name => ({
+			name,
+			toolCount: this.ctx.mcpManager?.getConnection(name)?.tools?.length ?? 0,
+		}));
+		this.ctx.presentCommandOutput(
+			SessionInfoView({
+				stats,
+				providerDetails,
+				routedModels: Object.entries(stats.routedModels ?? {})
 					.sort(([aId, aCount], [bId, bCount]) => bCount - aCount || aId.localeCompare(bId))
-					.map(
-						([id, count]) => `${replaceTabs(sanitizeText(id))}${count > 1 ? theme.fg("dim", ` ×${count}`) : ""}`,
-					);
-				info += `${theme.fg("dim", "Served:")} ${routed.join(", ")}\n`;
-			}
-		}
-		info += `\n`;
-		info += `${theme.bold("Messages")}\n`;
-		info += `${theme.fg("dim", "User:")} ${stats.userMessages}\n`;
-		info += `${theme.fg("dim", "Assistant:")} ${stats.assistantMessages}\n`;
-		info += `${theme.fg("dim", "Tool Calls:")} ${stats.toolCalls}\n`;
-		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
-		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
-		// Append-only context
-		{
-			const setting = this.ctx.settings.get("provider.appendOnlyContext") ?? "auto";
-			const model = this.ctx.session.model;
-			const mode = shouldEnableAppendOnlyContext(setting, model);
-			const activeLabel = mode ? theme.fg("success", "active") : theme.fg("dim", "inactive");
-			const settingLabel = setting === "auto" ? `${setting} (${model?.provider ?? "?"})` : setting;
-			info += `${theme.fg("dim", "Append-Only:")} ${activeLabel} (setting: ${settingLabel})\n`;
-		}
-		info += `${theme.bold("Tokens")}\n`;
-		info += `${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
-		if (stats.tokens.cacheRead > 0) {
-			info += `${theme.fg("dim", "Cache Read:")} ${stats.tokens.cacheRead.toLocaleString()}\n`;
-		}
-		if (stats.tokens.cacheWrite > 0) {
-			info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
-		}
-		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
-
-		if (stats.cost > 0 || normalizedPremiumRequests > 0 || stats.credits !== undefined) {
-			info += `\n${theme.bold("Cost")}\n`;
-			if (stats.cost > 0) {
-				info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}\n`;
-			}
-			if (normalizedPremiumRequests > 0) {
-				info += `${theme.fg("dim", "Premium Requests:")} ${normalizedPremiumRequests.toLocaleString()}\n`;
-			}
-			if (stats.credits !== undefined) {
-				info += `${theme.fg("dim", "Credits:")} ${formatCreditValue(stats.credits.cost)}\n`;
-				info += `${theme.fg("dim", "Committed Credits:")} ${formatCreditValue(stats.credits.committedCost)}\n`;
-				info += `${theme.fg("dim", "Committed ACU:")} ${formatCreditValue(stats.credits.acuCost)}\n`;
-			}
-		}
-
-		if (this.ctx.lspServers && this.ctx.lspServers.length > 0) {
-			info += `\n${theme.bold("LSP Servers")}\n`;
-			for (const server of this.ctx.lspServers) {
-				const statusColor =
-					server.status === "ready"
-						? "success"
-						: server.status === "available"
-							? "dim"
-							: server.status === "connecting"
-								? "warning"
-								: "error";
-				const statusText =
-					server.status === "error" && server.error ? `${server.status}: ${server.error}` : server.status;
-				info += `${theme.fg("dim", `${server.name}:`)} ${theme.fg(statusColor, statusText)} ${theme.fg("dim", `(${server.fileTypes.join(", ")})`)}\n`;
-			}
-		}
-
-		if (this.ctx.mcpManager) {
-			const mcpServers = this.ctx.mcpManager.getConnectedServers();
-			info += `\n${theme.bold("MCP Servers")}\n`;
-			if (mcpServers.length === 0) {
-				info += `${theme.fg("dim", "None connected")}\n`;
-			} else {
-				for (const name of mcpServers) {
-					const conn = this.ctx.mcpManager.getConnection(name);
-					const toolCount = conn?.tools?.length ?? 0;
-					info += `${theme.fg("dim", `${name}:`)} ${theme.fg("success", "connected")} ${theme.fg("dim", `(${toolCount} tools)`)}\n`;
-				}
-			}
-		}
-
-		this.ctx.showSessionInfo(info);
+					.map(([id, count]) => ({ id: sanitizeText(id), count })),
+				appendOnly: {
+					active: appendOnly,
+					setting:
+						appendOnlySetting === "auto" ? `${appendOnlySetting} (${model?.provider ?? "?"})` : appendOnlySetting,
+				},
+				lspServers: this.ctx.lspServers ?? [],
+				mcpServers,
+			}),
+		);
 	}
-
-	static readonly #advisorStatusGlyph: Record<string, string> = {
-		running: "●",
-		paused: "○",
-		no_model: "○",
-		quota_exhausted: "✕",
-		error: "✕",
-	};
-
-	static readonly #advisorStatusLabel: Record<string, string> = {
-		running: "running",
-		paused: "off",
-		no_model: "no model",
-		quota_exhausted: "quota exhausted",
-		error: "error",
-	};
 
 	async handleAdvisorStatusCommand(): Promise<void> {
 		const stats = this.ctx.session.getAdvisorStats();
 		if (!stats.configured) {
-			this.ctx.presentCommandOutput([new Spacer(1), new Text("Advisor is disabled.", 1, 0)]);
+			this.ctx.presentCommandOutput(CommandNoticeView({ text: "Advisor is disabled." }));
 			return;
 		}
-		// Fetch live quota data (cached 5 min by the auth-gateway) so we can show
-		// real usage windows/reset timers per advisor provider. Non-fatal when absent.
 		const usageProvider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
 		let usageReports: UsageReport[] | null = null;
 		if (usageProvider.fetchUsageReports) {
 			try {
 				usageReports = await usageProvider.fetchUsageReports();
 			} catch {
-				// Network/auth failure is non-fatal — just skip the quota line.
+				// Network/auth failure is non-fatal — just omit quota details.
 			}
 		}
-		// Resolve the active OAuth identity for each advisor's provider so quota
-		// filtering matches the credential actually in use (not sibling accounts).
-		const resolveActiveAdvisorAccount = (provider: string, sessionId?: string): OAuthAccountIdentity | undefined =>
-			this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
-				provider,
-				sessionId ?? this.ctx.session.sessionId,
-			);
-		const nowMs = Date.now();
-		// Roster view: show every configured advisor with its status, even when
-		// none are live (all paused/no-model). The old code returned a generic
-		// message that hid the per-advisor state the user needs to act on.
-		if (stats.advisors.length > 1 || (stats.configured && !stats.active)) {
-			let info = `${theme.bold("Advisor Status")} (${stats.advisors.length} advisors)\n`;
-			for (const a of stats.advisors) {
-				const glyph = CommandController.#advisorStatusGlyph[a.status] ?? "?";
-				const label = CommandController.#advisorStatusLabel[a.status] ?? a.status;
-				const color =
-					a.status === "running"
-						? "success"
-						: a.status === "quota_exhausted" || a.status === "error"
-							? "error"
-							: "dim";
-				info += `\n${theme.fg(color, glyph)} ${theme.bold(a.name)} ${theme.fg("dim", `[${label}]`)}\n`;
-				if (a.model) {
-					info += `${theme.fg("dim", "Model:")} ${a.model.provider}/${a.model.id}\n`;
-				}
-				if (a.model && usageReports) {
-					const identity = resolveActiveAdvisorAccount(a.model.provider, a.sessionId);
-					const quota = formatCompactQuota(
-						a.model.provider,
-						collapseSharedUsageReports(usageReports),
-						nowMs,
-						(report, limit) => !identity || limitMatchesActiveAccount(report, limit, identity),
-					);
-					if (quota) info += `${theme.fg("dim", quota)}\n`;
-				}
-				if (a.status === "running" || a.status === "quota_exhausted") {
-					const ctx =
-						a.contextWindow > 0
-							? `${a.contextTokens.toLocaleString()} / ${a.contextWindow.toLocaleString()} (${Math.round((a.contextTokens / a.contextWindow) * 100)}%)`
-							: `${a.contextTokens.toLocaleString()}`;
-					info += `${theme.fg("dim", "Context:")} ${ctx}\n`;
-					info += `${theme.fg("dim", "Messages:")} ${a.messages.total.toLocaleString()}\n`;
-					info += `${theme.fg("dim", "Spend:")} ${a.tokens.input.toLocaleString()} in / ${a.tokens.output.toLocaleString()} out`;
-					if (a.cost > 0) info += `, $${a.cost.toFixed(4)}`;
-					info += "\n";
-				}
-			}
-			if (stats.active) {
-				info += `\n${theme.bold("Totals")}\n`;
-				info += `${theme.fg("dim", "Tokens:")} ${stats.tokens.total.toLocaleString()}\n`;
-				if (stats.cost > 0) info += `${theme.fg("dim", "Cost:")} $${stats.cost.toFixed(4)}\n`;
-			}
-			this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
-			return;
-		}
-		// Single active advisor — detailed view.
-		const model = stats.model;
-		let info = `${theme.bold("Advisor Status")}\n\n`;
-		if (stats.advisors.length === 1) {
-			const a = stats.advisors[0];
-			const glyph = CommandController.#advisorStatusGlyph[a.status] ?? "?";
-			const label = CommandController.#advisorStatusLabel[a.status] ?? a.status;
-			info += `${theme.fg(a.status === "running" ? "success" : "error", glyph)} ${a.name} ${theme.fg("dim", `[${label}]`)}\n\n`;
-		}
-		if (model) {
-			info += `${theme.bold("Provider")}\n`;
-			info += `${theme.fg("dim", "Model:")} ${model.provider}/${model.id}\n`;
-		}
-		if (model && usageReports) {
-			const identity = resolveActiveAdvisorAccount(model.provider, stats.advisors[0]?.sessionId);
-			const quota = formatCompactQuota(
-				model.provider,
-				collapseSharedUsageReports(usageReports),
-				nowMs,
-				(report, limit) => !identity || limitMatchesActiveAccount(report, limit, identity),
-			);
-			if (quota) {
-				info += `\n${theme.bold("Quota")}\n`;
-				info += `${theme.fg("dim", quota)}\n`;
+		const now = Date.now();
+		const quotas = new Map<string, string>();
+		if (usageReports) {
+			const collapsed = collapseSharedUsageReports(usageReports);
+			for (const advisor of stats.advisors) {
+				if (!advisor.model) continue;
+				const identity = this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
+					advisor.model.provider,
+					advisor.sessionId ?? this.ctx.session.sessionId,
+				);
+				const quota = formatCompactQuota(
+					advisor.model.provider,
+					collapsed,
+					now,
+					(report, limit) => !identity || limitMatchesActiveAccount(report, limit, identity),
+				);
+				if (quota) quotas.set(advisor.name, quota);
 			}
 		}
-		info += `\n${theme.bold("Messages")}\n`;
-		info += `${theme.fg("dim", "User:")} ${stats.messages.user.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Assistant:")} ${stats.messages.assistant.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Total:")} ${stats.messages.total.toLocaleString()}\n`;
-		info += `\n${theme.bold("Context")}\n`;
-		if (stats.contextWindow > 0) {
-			const percent = Math.round((stats.contextTokens / stats.contextWindow) * 100);
-			info += `${theme.fg("dim", "Tokens:")} ${stats.contextTokens.toLocaleString()} / ${stats.contextWindow.toLocaleString()} (${percent}%)\n`;
-		} else {
-			info += `${theme.fg("dim", "Tokens:")} ${stats.contextTokens.toLocaleString()}\n`;
-		}
-		info += `\n${theme.bold("Spend")}\n`;
-		info += `${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
-		if (stats.tokens.cacheRead > 0) {
-			info += `${theme.fg("dim", "Cache Read:")} ${stats.tokens.cacheRead.toLocaleString()}\n`;
-		}
-		if (stats.cost > 0) info += `${theme.fg("dim", "Cost:")} $${stats.cost.toFixed(4)}\n`;
-		this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
+		this.ctx.presentCommandOutput(AdvisorStatusView({ stats, quotas }));
 	}
 
 	async handleJobsCommand(): Promise<void> {
@@ -589,35 +392,7 @@ export class CommandController {
 			this.ctx.showWarning("Async background jobs are unavailable in this session.");
 			return;
 		}
-
-		const now = Date.now();
-		const lineWidth = Math.max(24, (this.ctx.ui.terminal.columns ?? 100) - 24);
-		let info = `${theme.bold("Background Jobs")}\n\n`;
-		info += `${theme.fg("dim", "Running:")} ${snapshot.running.length}\n`;
-
-		if (snapshot.running.length === 0 && snapshot.recent.length === 0) {
-			info += `\n${theme.fg("dim", "No async jobs yet.")}\n`;
-			this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
-			return;
-		}
-
-		if (snapshot.running.length > 0) {
-			info += `\n${theme.bold("Running Jobs")}\n`;
-			for (const job of snapshot.running) {
-				info += `${renderJobLine(job, now)}\n`;
-				info += `  ${theme.fg("dim", truncateJobLabel(job.label, lineWidth))}\n`;
-			}
-		}
-
-		if (snapshot.recent.length > 0) {
-			info += `\n${theme.bold("Recent Jobs")}\n`;
-			for (const job of snapshot.recent) {
-				info += `${renderJobLine(job, now)}\n`;
-				info += `  ${theme.fg("dim", truncateJobLabel(job.label, lineWidth))}\n`;
-			}
-		}
-
-		this.ctx.presentCommandOutput([new Spacer(1), new Text(info.trimEnd(), 1, 0)]);
+		this.ctx.presentCommandOutput(JobsView({ ...snapshot, now: Date.now() }));
 	}
 
 	async handleUsageCommand(reports?: UsageReport[] | null): Promise<void> {
@@ -651,17 +426,9 @@ export class CommandController {
 		const changelogMarkdown =
 			entriesToShow.length > 0 ? renderChangelogEntries(entriesToShow).markdown : "No changelog entries found.";
 		const title = showFull ? "Full Changelog" : "Recent Changes";
-		const hint = showFull
-			? ""
-			: `\n\n${theme.fg("dim", "Use")} ${theme.bold("/changelog full")} ${theme.fg("dim", "to view the complete changelog.")}`;
+		const hint = showFull ? "" : "\n\nUse `/changelog full` to view the complete changelog.";
 
-		const block = new TranscriptBlock();
-		block.addChild(new DynamicBorder());
-		block.addChild(new Text(theme.bold(theme.fg("accent", title)), 1, 0));
-		block.addChild(new Spacer(1));
-		block.addChild(new Markdown(changelogMarkdown + hint, 1, 1, getMarkdownTheme()));
-		block.addChild(new DynamicBorder());
-		this.ctx.presentCommandOutput(block);
+		this.ctx.presentCommandOutput(CommandMarkdownPanelView({ title, markdown: changelogMarkdown + hint }));
 	}
 
 	handleHotkeysCommand(): void {
@@ -683,14 +450,9 @@ export class CommandController {
 			this.ctx.showWarning("Context usage is unavailable: no model is selected for this session.");
 			return;
 		}
-		const output = renderContextUsage(breakdown, theme);
-		const block = new TranscriptBlock();
-		block.addChild(new DynamicBorder());
-		block.addChild(new Text(theme.bold(theme.fg("accent", "Context Usage")), 1, 0));
-		block.addChild(new Spacer(1));
-		block.addChild(new Text(output, 1, 0));
-		block.addChild(new DynamicBorder());
-		this.ctx.presentCommandOutput(block);
+		this.ctx.presentCommandOutput(
+			CommandPanelView({ title: "Context Usage", content: renderContextUsage(breakdown, theme) }),
+		);
 	}
 
 	async handleMemoryCommand(text: string): Promise<void> {
@@ -705,13 +467,9 @@ export class CommandController {
 				this.ctx.showWarning("Memory payload is empty (memory backend off, disabled, or no memory available).");
 				return;
 			}
-			const block = new TranscriptBlock();
-			block.addChild(new DynamicBorder());
-			block.addChild(new Text(theme.bold(theme.fg("accent", "Memory Injection Payload")), 1, 0));
-			block.addChild(new Spacer(1));
-			block.addChild(new Markdown(payload, 1, 1, getMarkdownTheme()));
-			block.addChild(new DynamicBorder());
-			this.ctx.presentCommandOutput(block);
+			this.ctx.presentCommandOutput(
+				CommandMarkdownPanelView({ title: "Memory Injection Payload", markdown: payload }),
+			);
 			return;
 		}
 
@@ -1050,15 +808,15 @@ export class CommandController {
 		this.ctx.resetObserverRegistry();
 		setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
-		this.ctx.statusLine.invalidate();
+		this.ctx.statusLine.ingestSession();
 		this.ctx.statusLine.resetActiveTime();
 		this.ctx.updateEditorBorderColor();
 		this.ctx.clearTransientSessionUi();
 		this.ctx.resetTranscript();
 
-		this.ctx.present([new Spacer(1), new Text(`${theme.fg("accent", `${theme.status.success} ${label}`)}`, 1, 1)]);
+		this.ctx.present(CommandNoticeView({ text: label, color: "success" }));
 		await this.ctx.reloadTodos();
-		this.ctx.ui.requestRender(true, { clearScrollback: true });
+		this.ctx.ui.resetDisplay();
 	}
 
 	async handleClearCommand(): Promise<void> {
@@ -1072,8 +830,7 @@ export class CommandController {
 			return;
 		}
 		const stateLabel = result.closedProviderSessions === 1 ? "provider state" : "provider states";
-		this.ctx.statusLine.invalidate();
-		this.ctx.ui.requestRender();
+		this.ctx.statusLine.ingestSession();
 		this.ctx.showStatus(`Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`);
 	}
 
@@ -1094,18 +851,16 @@ export class CommandController {
 		// the session id, title, and transcript file all survive).
 		this.ctx.clearTransientSessionUi();
 		this.ctx.resetTranscript();
-		this.ctx.statusLine.invalidate();
+		this.ctx.statusLine.ingestSession();
 		this.ctx.updateEditorBorderColor();
 		const noun = result.droppedCount === 1 ? "message" : "messages";
-		this.ctx.present([
-			new Spacer(1),
-			new Text(
-				`${theme.fg("accent", `${theme.status.success} Context reset — ${result.droppedCount} ${noun} dropped; session continues.`)}`,
-				1,
-				1,
-			),
-		]);
-		this.ctx.ui.requestRender(true, { clearScrollback: true });
+		this.ctx.present(
+			CommandNoticeView({
+				text: `Context reset — ${result.droppedCount} ${noun} dropped; session continues.`,
+				color: "success",
+			}),
+		);
+		this.ctx.ui.resetDisplay();
 	}
 
 	async handleDeleteCommand(): Promise<void> {
@@ -1121,11 +876,8 @@ export class CommandController {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before forking.");
 			return;
 		}
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.disposeChildren();
+		this.ctx.loadingAnimation = undefined;
+		this.ctx.statusContainer.clear();
 
 		const success = await this.ctx.session.fork();
 		if (!success) {
@@ -1133,15 +885,11 @@ export class CommandController {
 			return;
 		}
 
-		this.ctx.statusLine.invalidate();
-		this.ctx.ui.requestRender();
+		this.ctx.statusLine.ingestSession();
 
 		const sessionFile = this.ctx.session.sessionFile;
 		const shortPath = sessionFile ? sessionFile.split("/").pop() : "new session";
-		this.ctx.present([
-			new Spacer(1),
-			new Text(`${theme.fg("accent", `${theme.status.success} Session forked to ${shortPath}`)}`, 1, 1),
-		]);
+		this.ctx.present(CommandNoticeView({ text: `Session forked to ${shortPath}`, color: "success" }));
 	}
 
 	/**
@@ -1164,8 +912,8 @@ export class CommandController {
 		// No argument in TUI mode: open the path autocomplete overlay.
 		if (!input) {
 			const result = await this.ctx.showHookCustom<MoveOverlayResult | undefined>(
-				(_tui, _theme, _keybindings, done) =>
-					new MoveOverlay(this.ctx.sessionManager.getCwd(), done, moveDirectorySource),
+				(tui, _theme, _keybindings, done) =>
+					openMoveOverlay(tui, this.ctx.sessionManager.getCwd(), done, moveDirectorySource),
 				{ overlay: true },
 			);
 			if (!result) return; // cancelled
@@ -1219,10 +967,7 @@ export class CommandController {
 			return this.#relocateSession(resolvedPath);
 		});
 		if (moved) {
-			this.ctx.present([
-				new Spacer(1),
-				new Text(`${theme.fg("accent", `${theme.status.success} Moved to ${resolvedPath}`)}`, 1, 1),
-			]);
+			this.ctx.present(CommandNoticeView({ text: `Moved to ${resolvedPath}`, color: "success" }));
 		}
 	}
 
@@ -1239,16 +984,8 @@ export class CommandController {
 		await this.#withSessionMove(async () => {
 			const branchName = branch?.trim() || defaultSessionWorktreeBranch();
 			const cwd = this.ctx.sessionManager.getCwd();
-			this.ctx.statusContainer.disposeChildren();
-			const loader = new Loader(
-				this.ctx.ui,
-				spinner => theme.fg("accent", spinner),
-				text => theme.fg("muted", text),
-				`Creating worktree on ${branchName}…`,
-				getSymbolTheme().spinnerFrames,
-			);
-			this.ctx.statusContainer.addChild(loader);
-			this.ctx.ui.requestRender();
+			this.ctx.statusContainer.clear();
+			const loader = this.ctx.statusContainer.append(BusyView({ message: `Creating worktree on ${branchName}…` }));
 			let worktree: SessionWorktree;
 			try {
 				worktree = await createSessionWorktree(cwd, this.ctx.settings, branchName);
@@ -1256,8 +993,7 @@ export class CommandController {
 				this.ctx.showError(`Worktree creation failed: ${err instanceof Error ? err.message : String(err)}`);
 				return false;
 			} finally {
-				loader.stop();
-				this.ctx.statusContainer.disposeChildren();
+				this.ctx.statusContainer.remove(loader);
 			}
 			if (worktree.cloneError) {
 				logger.warn("worktree clone fell back to plain checkout", {
@@ -1270,14 +1006,9 @@ export class CommandController {
 			if (cleanup.errorMessage !== undefined) {
 				this.ctx.showWarning(`Worktree created, but cleaning source checkout failed: ${cleanup.errorMessage}`);
 			}
-			this.ctx.present([
-				new Spacer(1),
-				new Text(
-					`${theme.fg("accent", `${theme.status.success} ${formatSessionWorktreeSummary(worktree, cleanup.cleaned)}`)}`,
-					1,
-					1,
-				),
-			]);
+			this.ctx.present(
+				CommandNoticeView({ text: formatSessionWorktreeSummary(worktree, cleanup.cleaned), color: "success" }),
+			);
 			return true;
 		});
 	}
@@ -1319,7 +1050,6 @@ export class CommandController {
 
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.reloadTodos();
-		this.ctx.ui.requestRender();
 		return true;
 	}
 
@@ -1374,45 +1104,53 @@ export class CommandController {
 		isDeferred: boolean,
 		shouldPersistCwd: boolean,
 	): Promise<boolean> {
-		this.ctx.bashComponent = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
-
-		if (isDeferred) {
-			this.ctx.pendingMessagesContainer.addChild(this.ctx.bashComponent);
-			this.ctx.pendingBashComponents.push(this.ctx.bashComponent);
-		} else {
-			this.ctx.present(this.ctx.bashComponent);
+		const stream = new BashExecutionStream();
+		stream.setPtyViewport((this.ctx.ui.terminal.columns ?? 80) - 2, (this.ctx.ui.terminal.rows ?? 24) - 4);
+		const entryId = `bash:${Snowflake.next()}`;
+		const view = () =>
+			BashExecutionView({
+				command,
+				stream,
+				expanded: () => this.ctx.toolOutputExpanded,
+				excludeFromContext,
+			});
+		const pendingId = isDeferred ? this.ctx.pendingMessagesContainer.append(view) : undefined;
+		const pendingExecution: PendingExecution | undefined =
+			pendingId === undefined
+				? undefined
+				: {
+						id: entryId,
+						pendingId,
+						sessionId: this.ctx.sessionManager.getSessionId(),
+						view,
+						state: "active",
+					};
+		if (pendingExecution) this.ctx.pendingExecutions.push(pendingExecution);
+		if (!isDeferred) {
+			this.ctx.chatContainer.append({
+				id: entryId,
+				state: "active",
+				view,
+			});
 		}
-		this.ctx.ui.requestRender();
 
 		try {
-			const result = await this.ctx.session.executeBash(
-				command,
-				chunk => {
-					if (this.ctx.bashComponent) {
-						this.ctx.bashComponent.appendOutput(chunk);
-					}
+			const result = await this.ctx.session.executeBash(command, chunk => stream.appendOutput(chunk), {
+				excludeFromContext,
+				useUserShell: true,
+				pty: {
+					...stream.getPtyViewport(),
+					onChunk: chunk => stream.appendPtyChunk(chunk),
 				},
-				{
-					excludeFromContext,
-					useUserShell: true,
-					// User-shell zsh/fish `!` commands run on a headless PTY; raw
-					// bytes render through the component's vterm replay (color-safe).
-					pty: {
-						...bashPtyViewport(this.ctx.ui),
-						onChunk: chunk => this.ctx.bashComponent?.appendPtyChunk(chunk),
-					},
-				},
-			);
-			if (this.ctx.bashComponent) {
-				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
-				this.ctx.bashComponent.setComplete(result.exitCode, result.cancelled, {
-					output: result.output,
-					truncation: meta?.truncation,
-					artifactError: meta?.artifactError,
-					images: result.images,
-					showImages: this.ctx.settings.get("terminal.showImages"),
-				});
-			}
+			});
+			await stream.setComplete(result.exitCode, result.cancelled, {
+				output: result.output,
+				meta: outputMeta().truncationFromSummary(result, { direction: "tail" }).get(),
+				images: result.images,
+				showImages: this.ctx.settings.get("terminal.showImages"),
+			});
+			if (pendingExecution) pendingExecution.state = "settled";
+			this.ctx.chatContainer.replace(entryId, { state: "settled" });
 			try {
 				if (shouldPersistCwd) return await this.#applyBashResultCwd(result);
 			} catch (error) {
@@ -1423,13 +1161,10 @@ export class CommandController {
 				);
 			}
 		} catch (error) {
-			if (this.ctx.bashComponent) {
-				this.ctx.bashComponent.setComplete(undefined, false);
-			}
+			await stream.setComplete(undefined, false);
+			if (pendingExecution) pendingExecution.state = "settled";
+			this.ctx.chatContainer.replace(entryId, { state: "settled" });
 			this.ctx.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-		} finally {
-			this.ctx.bashComponent = undefined;
-			this.ctx.ui.requestRender();
 		}
 		return false;
 	}
@@ -1453,45 +1188,62 @@ export class CommandController {
 	}
 
 	async handlePythonCommand(code: string, excludeFromContext = false): Promise<void> {
+		const [output, setOutput] = createSignal("");
+		const [exitCode, setExitCode] = createSignal<number | undefined>();
+		const [cancelled, setCancelled] = createSignal(false);
+		const [completed, setCompleted] = createSignal(false);
+		const [meta, setMeta] = createSignal<OutputMeta | undefined>();
+		const entryId = `python:${Snowflake.next()}`;
 		const isDeferred = this.ctx.session.isStreaming;
-		this.ctx.pythonComponent = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
-
-		if (isDeferred) {
-			this.ctx.pendingMessagesContainer.addChild(this.ctx.pythonComponent);
-			this.ctx.pendingPythonComponents.push(this.ctx.pythonComponent);
-		} else {
-			this.ctx.present(this.ctx.pythonComponent);
+		const view = () =>
+			EvalExecutionView({
+				language: "python",
+				code,
+				output,
+				exitCode,
+				cancelled,
+				running: () => !completed(),
+				expanded: () => this.ctx.toolOutputExpanded,
+				excludeFromContext,
+				meta,
+			});
+		const pendingId = isDeferred ? this.ctx.pendingMessagesContainer.append(view) : undefined;
+		const pendingExecution: PendingExecution | undefined =
+			pendingId === undefined
+				? undefined
+				: {
+						id: entryId,
+						pendingId,
+						sessionId: this.ctx.sessionManager.getSessionId(),
+						view,
+						state: "active",
+					};
+		if (pendingExecution) this.ctx.pendingExecutions.push(pendingExecution);
+		if (!isDeferred) {
+			this.ctx.chatContainer.append({
+				id: entryId,
+				state: "active",
+				view,
+			});
 		}
-		this.ctx.ui.requestRender();
 
 		try {
-			const result = await this.ctx.session.executePython(
-				code,
-				chunk => {
-					if (this.ctx.pythonComponent) {
-						this.ctx.pythonComponent.appendOutput(chunk);
-					}
-				},
-				{ excludeFromContext },
-			);
-
-			if (this.ctx.pythonComponent) {
-				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
-				this.ctx.pythonComponent.setComplete(result.exitCode, result.cancelled, {
-					output: result.output,
-					truncation: meta?.truncation,
-					artifactError: meta?.artifactError,
-				});
-			}
+			const result = await this.ctx.session.executePython(code, chunk => setOutput(previous => previous + chunk), {
+				excludeFromContext,
+			});
+			setOutput(result.output);
+			setExitCode(result.exitCode);
+			setCancelled(result.cancelled);
+			setMeta(outputMeta().truncationFromSummary(result, { direction: "tail" }).get());
+			setCompleted(true);
+			if (pendingExecution) pendingExecution.state = "settled";
+			this.ctx.chatContainer.replace(entryId, { state: "settled" });
 		} catch (error) {
-			if (this.ctx.pythonComponent) {
-				this.ctx.pythonComponent.setComplete(undefined, false);
-			}
+			setCompleted(true);
+			if (pendingExecution) pendingExecution.state = "settled";
+			this.ctx.chatContainer.replace(entryId, { state: "settled" });
 			this.ctx.showError(`Python execution failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
-
-		this.ctx.pythonComponent = undefined;
-		this.ctx.ui.requestRender();
 	}
 
 	async handleCompactCommand(
@@ -1551,8 +1303,7 @@ export class CommandController {
 			return;
 		}
 		this.ctx.rebuildChatFromMessages();
-		this.ctx.statusLine.invalidate();
-		this.ctx.ui.requestRender();
+		this.ctx.statusLine.ingestSession();
 		this.ctx.showStatus(formatShakeSummary(result));
 	}
 
@@ -1562,22 +1313,11 @@ export class CommandController {
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
 		mode?: CompactMode,
 	): Promise<CompactionOutcome> {
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.disposeChildren();
+		this.ctx.loadingAnimation = undefined;
+		this.ctx.statusContainer.clear();
 
-		const label = isAuto ? "Auto-compacting context... (esc to cancel)" : "Compacting context... (esc to cancel)";
-		const compactingLoader = new Loader(
-			this.ctx.ui,
-			spinner => theme.fg("accent", spinner),
-			text => theme.fg("muted", text),
-			label,
-			getSymbolTheme().spinnerFrames,
-		);
-		this.ctx.statusContainer.addChild(compactingLoader);
-		this.ctx.ui.requestRender();
+		const label = isAuto ? "Auto-compacting context… esc to cancel" : "Compacting context… esc to cancel";
+		const compactingLoader = this.ctx.statusContainer.append(BusyView({ message: label }));
 
 		let outcome: CompactionOutcome = "ok";
 		try {
@@ -1595,19 +1335,16 @@ export class CommandController {
 					: undefined;
 			await this.ctx.session.compact(instructions, options);
 
-			compactingLoader.stop();
-			this.ctx.statusContainer.disposeChildren();
-			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
+			this.ctx.statusContainer.remove(compactingLoader);
+			this.ctx.rebuildChatFromMessages();
 
-			this.ctx.statusLine.invalidate();
+			this.ctx.statusLine.ingestSession();
 			// Same as the auto-compaction rebuild: a collapsed transcript is an
 			// intentional replacement, so drop the stale pre-compaction scrollback
 			// instead of repainting the shrunken frame below it. With collapse
 			// disabled the full history stays inline and scrollback is kept.
 			if (this.ctx.settings.get("display.collapseCompacted")) {
-				this.ctx.ui.requestRender(true, { clearScrollback: true });
-			} else {
-				this.ctx.ui.requestRender();
+				this.ctx.ui.resetDisplay();
 			}
 		} catch (error) {
 			if (error instanceof CompactionCancelledError) {
@@ -1619,8 +1356,7 @@ export class CommandController {
 				this.ctx.showError(`Compaction failed: ${message}`);
 			}
 		} finally {
-			compactingLoader.stop();
-			this.ctx.statusContainer.disposeChildren();
+			this.ctx.statusContainer.remove(compactingLoader);
 		}
 		// Run the caller's pre-flush hook (e.g. the plan-approval model transition)
 		// before queued user input is dispatched, so any turn queued during
@@ -1649,21 +1385,11 @@ export class CommandController {
 			return;
 		}
 
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.disposeChildren();
+		this.ctx.loadingAnimation = undefined;
+		this.ctx.statusContainer.clear();
 
-		const handoffLoader = new Loader(
-			this.ctx.ui,
-			spinner => theme.fg("accent", spinner),
-			text => theme.fg("muted", text),
-			"Generating handoff… (esc to cancel)",
-			getSymbolTheme().spinnerFrames,
-		);
-		this.ctx.statusContainer.addChild(handoffLoader);
-		this.ctx.ui.requestRender();
+		const handoffLoader = this.ctx.statusContainer.append(BusyView({ message: "Generating handoff… esc to cancel" }));
+		let replacedDisplay = false;
 
 		try {
 			// Handoff generation runs as a oneshot request; the document is then
@@ -1678,18 +1404,12 @@ export class CommandController {
 			// Rebuild chat from the session, which now shows the handoff compaction divider.
 			this.ctx.clearTransientSessionUi();
 			await this.ctx.renderInitialMessages();
-			this.ctx.statusLine.invalidate();
+			replacedDisplay = true;
+			this.ctx.statusLine.ingestSession();
 			this.ctx.updateEditorBorderColor();
 			await this.ctx.reloadTodos();
 
-			this.ctx.present([
-				new Spacer(1),
-				new Text(
-					`${theme.fg("accent", `${theme.status.success} Context handed off and compacted in place`)}`,
-					1,
-					1,
-				),
-			]);
+			this.ctx.present(CommandNoticeView({ text: "Context handed off and compacted in place", color: "success" }));
 			if (result.savedPath) {
 				this.ctx.showStatus(`Handoff document saved to: ${result.savedPath}`);
 			}
@@ -1709,532 +1429,23 @@ export class CommandController {
 		} finally {
 			this.#finishHandoffUi(handoffLoader);
 		}
-		this.ctx.ui.requestRender(true, { clearScrollback: true });
+		if (replacedDisplay) this.ctx.ui.resetDisplay();
 	}
 
-	#finishHandoffUi(handoffLoader: Loader): void {
-		handoffLoader.stop();
-		// A retry/compaction event may replace the handoff overlay while transcript
-		// replay yields. Preserve it only while it still owns the status row; a
-		// reference to a loader disposed earlier must not retain the handoff overlay.
+	#finishHandoffUi(handoffLoader: string): void {
+		this.ctx.statusContainer.remove(handoffLoader);
 		const maintenanceLoader = this.ctx.autoCompactionLoader ?? this.ctx.retryLoader;
-		if (maintenanceLoader && this.ctx.statusContainer.children.includes(maintenanceLoader)) return;
-		this.ctx.statusContainer.disposeChildren();
-		// `disposeChildren()` disposed any working loader mounted by a delayed
-		// `agent_start` during transcript replay, which stops its animation timer.
-		// Drop the now-frozen reference so the reconciler below never reattaches it
-		// (`ensureLoadingAnimation()` only re-adds an existing instance, never
-		// restarts it).
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		if (this.ctx.session.isStreaming) {
-			// A new turn won the race with handoff cleanup; mount a fresh, running
-			// loader for it now that the stale reference is cleared.
-			this.ctx.ensureLoadingAnimation();
-		}
+		if (maintenanceLoader && this.ctx.statusContainer.entries().some(entry => entry.id === maintenanceLoader)) return;
+		this.ctx.statusContainer.clear();
+		this.ctx.loadingAnimation = undefined;
+		if (this.ctx.session.isStreaming) this.ctx.ensureLoadingAnimation();
 	}
-}
-
-const BAR_WIDTH_MAX = 24;
-const COLUMN_WIDTH_MIN = 4;
-
-function renderJobLine(job: AsyncJobSnapshotItem, now: number): string {
-	const duration = formatDuration(Math.max(0, now - job.startTime));
-	const status = formatJobStatus(job.status);
-	return `${theme.fg("dim", job.id)} ${theme.fg("dim", `[${job.type}]`)} ${status} ${theme.fg("dim", `(${duration})`)}`;
-}
-
-function formatJobStatus(status: AsyncJobSnapshotItem["status"]): string {
-	if (status === "running") return theme.fg("warning", "running");
-	if (status === "completed") return theme.fg("success", "completed");
-	if (status === "cancelled") return theme.fg("dim", "cancelled");
-	return theme.fg("error", "failed");
-}
-
-function truncateJobLabel(label: string, maxWidth: number): string {
-	if (visibleWidth(label) <= maxWidth) return label;
-	if (maxWidth <= 1) return "…";
-
-	let out = "";
-	for (const char of label) {
-		const next = `${out}${char}`;
-		if (visibleWidth(`${next}…`) > maxWidth) break;
-		out = next;
-	}
-
-	return `${out}…`;
-}
-
-function formatNumber(value: number, maxFractionDigits = 1): string {
-	return new Intl.NumberFormat("en-US", { maximumFractionDigits: maxFractionDigits }).format(value);
 }
 
 function resolveProviderAuthMode(authStorage: AuthStorage, provider: string): string {
-	if (authStorage.hasOAuth(provider)) {
-		return "oauth";
-	}
-	if (authStorage.has(provider)) {
-		return "api key";
-	}
-	if (getEnvApiKey(provider)) {
-		return "env api key";
-	}
-	if (authStorage.hasAuth(provider)) {
-		return "runtime/fallback";
-	}
+	if (authStorage.hasOAuth(provider)) return "oauth";
+	if (authStorage.has(provider)) return "api key";
+	if (getEnvApiKey(provider)) return "env api key";
+	if (authStorage.hasAuth(provider)) return "runtime/fallback";
 	return "unknown";
-}
-
-export function renderProviderSection(details: ProviderDetails, uiTheme: Pick<Theme, "fg">): string {
-	const lines: string[] = [];
-	lines.push(`${uiTheme.fg("dim", "Name:")} ${details.provider}`);
-	for (const field of details.fields) {
-		lines.push(`${uiTheme.fg("dim", `${field.label}:`)} ${field.value}`);
-	}
-	return `${lines.join("\n")}\n`;
-}
-
-function resolveProviderUsageTotal(reports: UsageReport[]): number {
-	return reports
-		.flatMap(report => report.limits)
-		.map(limit => resolveUsedFraction(limit) ?? 0)
-		.reduce((sum, value) => sum + value, 0);
-}
-
-function formatWindowSuffix(label: string, windowLabel: string, uiTheme: Theme): string {
-	const normalizedLabel = label.toLowerCase();
-	const normalizedWindow = windowLabel.toLowerCase();
-	if (normalizedWindow === "quota window") return "";
-	if (normalizedLabel.includes(normalizedWindow)) return "";
-	return uiTheme.fg("dim", `(${windowLabel})`);
-}
-
-/** ` (org)` suffix when the report is org-attributed — two subscriptions can share one email. */
-function orgSuffix(report: UsageReport): string {
-	const orgName = report.metadata?.orgName;
-	const orgId = report.metadata?.orgId;
-	const org = typeof orgName === "string" && orgName ? orgName : typeof orgId === "string" ? orgId : undefined;
-	return org ? ` (${org})` : "";
-}
-
-function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): string {
-	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return `${email}${orgSuffix(report)}`;
-	const accountId =
-		typeof report.metadata?.accountId === "string" && report.metadata.accountId
-			? report.metadata.accountId
-			: limit.scope.accountId || undefined;
-	if (accountId) return `${accountId}${orgSuffix(report)}`;
-	const projectId =
-		typeof report.metadata?.projectId === "string" && report.metadata.projectId
-			? report.metadata.projectId
-			: limit.scope.projectId || undefined;
-	if (projectId) return projectId;
-	return `account ${index + 1}`;
-}
-
-function formatUnlimitedReportLabel(report: UsageReport, index: number): string {
-	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return `${email}${orgSuffix(report)}`;
-	const accountId = report.metadata?.accountId;
-	if (typeof accountId === "string" && accountId) return `${accountId}${orgSuffix(report)}`;
-	const projectId = report.metadata?.projectId;
-	if (typeof projectId === "string" && projectId) return projectId;
-	return `account ${index + 1}`;
-}
-
-function formatResetShort(limit: UsageLimit, nowMs: number): string | undefined {
-	const resetsAt = limit.window?.resetsAt;
-	if (resetsAt === undefined) return undefined;
-	// Codex returns the prior window's reset_at until a new request opens a fresh window —
-	// rendering a negative delta is meaningless, so drop the suffix in that case.
-	if (resetsAt <= nowMs) return undefined;
-	return formatDuration(resetsAt - nowMs);
-}
-
-function formatAccountHeaderRow(
-	limits: UsageLimit[],
-	reports: UsageReport[],
-	nowMs: number,
-	columnWidth: number,
-	uiTheme: Theme,
-	activeAccount?: OAuthAccountIdentity,
-): string[] {
-	const parts = limits.map((limit, index) => {
-		const reset = formatResetShort(limit, nowMs);
-		const report = reports[index];
-		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = formatAccountLabel(limit, report, index);
-		return {
-			label: active ? `● ${label}` : label,
-			suffix: reset ? `(${reset})` : "",
-			active,
-		};
-	});
-	const maxSuffixWidth = parts.reduce((max, p) => Math.max(max, visibleWidth(p.suffix)), 0);
-	const gap = maxSuffixWidth > 0 ? 1 : 0;
-	const prefixBudget = columnWidth - maxSuffixWidth - gap;
-
-	// If suffix can't share the cell with at least `x…`, fall back to whole-label truncation.
-	if (prefixBudget < 2) {
-		return parts.map(p => {
-			const full = p.suffix ? `${p.label} ${p.suffix}` : p.label;
-			const cell = padColumn(truncateJobLabel(full, columnWidth), columnWidth);
-			return p.active ? uiTheme.fg("accent", cell) : cell;
-		});
-	}
-
-	return parts.map(p => {
-		const prefix = truncateJobLabel(p.label, prefixBudget);
-		const prefixCell = prefix + " ".repeat(prefixBudget - visibleWidth(prefix));
-		const styledPrefix = p.active ? uiTheme.fg("accent", prefixCell) : prefixCell;
-		if (!p.suffix) return styledPrefix + " ".repeat(maxSuffixWidth + gap);
-		const suffixPad = " ".repeat(maxSuffixWidth - visibleWidth(p.suffix));
-		return `${styledPrefix} ${suffixPad}${uiTheme.fg("dim", p.suffix)}`;
-	});
-}
-
-function padColumn(text: string, width: number): string {
-	const visible = visibleWidth(text);
-	if (visible >= width) return text;
-	return `${text}${padding(width - visible)}`;
-}
-
-type AggregateDisplayStatus = NonNullable<UsageLimit["status"]> | "neutral";
-
-function resolveAggregateStatus(limits: UsageLimit[]): AggregateDisplayStatus {
-	const hasOk = limits.some(limit => limit.status === "ok");
-	const hasWarning = limits.some(limit => limit.status === "warning");
-	const hasExhausted = limits.some(limit => limit.status === "exhausted");
-	if (!hasOk && !hasWarning && !hasExhausted) {
-		return limits.length > 0 && limits.every(isUsedOnlyAbsoluteAmount) ? "neutral" : "unknown";
-	}
-	if (hasOk) {
-		return hasWarning || hasExhausted ? "warning" : "ok";
-	}
-	if (hasWarning) return "warning";
-	return "exhausted";
-}
-
-function formatAggregateAmount(limits: UsageLimit[]): string {
-	const fractions = limits
-		.map(limit => resolveUsedFraction(limit))
-		.filter((value): value is number => value !== undefined);
-	if (fractions.length === limits.length && fractions.length > 0) {
-		const sum = fractions.reduce((total, value) => total + value, 0);
-		const avgRemaining = Math.max(0, ((limits.length - sum) / limits.length) * 100);
-		return `${formatNumber(avgRemaining)}% free`;
-	}
-
-	const amounts = limits
-		.map(limit => limit.amount)
-		.filter(amount => amount.used !== undefined && amount.limit !== undefined && amount.limit > 0);
-	if (amounts.length === limits.length && amounts.length > 0) {
-		const totalUsed = amounts.reduce((sum, amount) => sum + (amount.used ?? 0), 0);
-		const totalLimit = amounts.reduce((sum, amount) => sum + (amount.limit ?? 0), 0);
-		const remainingPct = totalLimit > 0 ? Math.max(0, 100 - (totalUsed / totalLimit) * 100) : 0;
-		return `${formatNumber(remainingPct)}% free`;
-	}
-
-	if (limits.length > 0 && limits.every(isUsedOnlyAbsoluteAmount)) return "";
-
-	// Prepaid balances have no total to divide by. `totalRemainingOnly`
-	// collapses account-wide pools seen once per stored key and sums only
-	// genuinely distinct ones, so a multi-key provider is never double-counted.
-	const remaining = formatRemainingOnlyTotal(limits);
-	if (remaining !== undefined) return remaining;
-
-	// Count unique accounts from limit scopes — not limits.length.
-	const uniqueAccountIds = new Set(
-		limits.map(limit => limit.scope.accountId).filter((id): id is string => typeof id === "string" && id.length > 0),
-	);
-	if (uniqueAccountIds.size > 0) return `${uniqueAccountIds.size} ${uniqueAccountIds.size === 1 ? "acct" : "accts"}`;
-	// No account IDs available — keep the pre-existing fallback so providers
-	// that don't populate scope.accountId still show a summary.
-	return `${limits.length} accts`;
-}
-
-function resolveResetRange(limits: UsageLimit[], nowMs: number): string | null {
-	const windows = limits
-		.map(limit => limit.window)
-		.filter(
-			(window): window is NonNullable<UsageLimit["window"]> =>
-				window?.resetsAt !== undefined && Number.isFinite(window.resetsAt) && window.resetsAt > nowMs,
-		);
-	if (windows.length === 0) return null;
-	// Use the shared verb when every contributing window agrees (e.g. all "tick");
-	// mixed or absent labels fall back to the generic "resets".
-	const labels = new Set(windows.map(window => window.resetLabel ?? "resets"));
-	const verb = labels.size === 1 ? [...labels][0]! : "resets";
-	const offsets = windows.map(window => window.resetsAt! - nowMs);
-	const minReset = Math.min(...offsets);
-	const maxReset = Math.max(...offsets);
-	if (maxReset - minReset > 60_000) {
-		return `${verb} in ${formatDuration(minReset)}–${formatDuration(maxReset)}`;
-	}
-	return `${verb} in ${formatDuration(minReset)}`;
-}
-
-function resolveStatusIcon(status: AggregateDisplayStatus, uiTheme: Theme): string {
-	if (status === "neutral") return uiTheme.fg("dim", uiTheme.status.info);
-	if (status === "exhausted") return uiTheme.fg("error", uiTheme.status.error);
-	if (status === "warning") return uiTheme.fg("warning", uiTheme.status.warning);
-	if (status === "ok") return uiTheme.fg("success", uiTheme.status.success);
-	return uiTheme.fg("dim", uiTheme.status.pending);
-}
-
-function resolveStatusColor(status: UsageLimit["status"]): "success" | "warning" | "error" | "dim" {
-	if (status === "exhausted") return "error";
-	if (status === "warning") return "warning";
-	if (status === "ok") return "success";
-	return "dim";
-}
-
-function renderUsageBar(limit: UsageLimit, uiTheme: Theme, barWidth: number): string {
-	const usedAmount = limit.amount.used;
-	if (usedAmount !== undefined && isUsedOnlyAbsoluteAmount(limit)) {
-		const used =
-			limit.amount.unit === "usd"
-				? `$${usedAmount.toFixed(2)}`
-				: `${formatNumber(usedAmount, 2)} ${limit.amount.unit}`;
-		return uiTheme.fg("dim", truncateJobLabel(`${used} used`, barWidth));
-	}
-	const fraction = resolveUsedFraction(limit);
-	if (fraction === undefined) {
-		return uiTheme.fg("dim", "·".repeat(barWidth));
-	}
-	const clamped = Math.min(Math.max(fraction, 0), 1);
-	const exact = clamped * barWidth;
-	const fullCells = Math.floor(exact);
-	const remainder = exact - fullCells;
-	let partial = "";
-	if (remainder >= 2 / 3) partial = "▓";
-	else if (remainder >= 1 / 3) partial = "▒";
-	const leading = "█".repeat(fullCells) + partial;
-	const empty = "░".repeat(Math.max(0, barWidth - fullCells - (partial ? 1 : 0)));
-	const color = resolveStatusColor(limit.status);
-	return `${uiTheme.fg(color, leading)}${uiTheme.fg("dim", empty)}`;
-}
-
-/**
- * Pick a per-account column width so the columns and trailing amount fit in `available`.
- * Falls back to the minimum when the terminal is too narrow rather than wrapping.
- */
-function resolveColumnWidth(count: number, available: number, trailing: number): number {
-	if (count <= 0) return BAR_WIDTH_MAX;
-	const indent = 2;
-	const gaps = count - 1;
-	const spaceForBars = available - indent - gaps - (trailing > 0 ? trailing + 1 : 0);
-	const ideal = Math.floor(spaceForBars / count);
-	if (ideal < COLUMN_WIDTH_MIN) return COLUMN_WIDTH_MIN;
-	return ideal;
-}
-
-export function renderUsageReports(
-	reports: UsageReport[],
-	uiTheme: Theme,
-	nowMs: number,
-	availableWidth: number,
-	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
-	usageModelSelectors: readonly string[] = [],
-): string {
-	const displayReports = collapseSharedUsageReports(reports);
-	const lines: string[] = [];
-	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
-	const headerSuffix = latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : "";
-	lines.push(uiTheme.bold(uiTheme.fg("accent", `Usage${headerSuffix}`)));
-	const grouped = new Map<string, UsageReport[]>();
-	for (const report of displayReports) {
-		const list = grouped.get(report.provider) ?? [];
-		list.push(report);
-		grouped.set(report.provider, list);
-	}
-	const providerEntries = Array.from(grouped.entries())
-		.map(([provider, providerReports]) => ({
-			provider,
-			providerReports,
-			totalUsage: resolveProviderUsageTotal(providerReports),
-		}))
-		.sort((a, b) => {
-			if (a.totalUsage !== b.totalUsage) return a.totalUsage - b.totalUsage;
-			return a.provider.localeCompare(b.provider);
-		});
-
-	for (const { provider, providerReports } of providerEntries) {
-		lines.push("");
-		const providerName = formatProviderName(provider);
-		const activeAccount = resolveActiveAccount?.(provider);
-
-		const limitGroups = new Map<
-			string,
-			{ label: string; windowLabel: string; limits: UsageLimit[]; reports: UsageReport[] }
-		>();
-		for (const report of providerReports) {
-			for (const limit of report.limits) {
-				const windowId = limit.window?.id ?? limit.scope.windowId ?? "default";
-				const key = `${formatLimitTitle(limit)}|${windowId}`;
-				const windowLabel = limit.window?.label ?? windowId;
-				const entry = limitGroups.get(key) ?? {
-					label: formatLimitTitle(limit),
-					windowLabel,
-					limits: [],
-					reports: [],
-				};
-				entry.limits.push(limit);
-				entry.reports.push(report);
-				limitGroups.set(key, entry);
-			}
-		}
-
-		lines.push(uiTheme.bold(uiTheme.fg("accent", providerName)));
-		const activeAccountLabel = formatActiveAccountLabel(activeAccount);
-		if (activeAccountLabel) {
-			lines.push(`  ${uiTheme.fg("accent", "in use by this session:")} ${activeAccountLabel}`);
-		}
-		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
-		if (reportingModels.length > 0) {
-			lines.push(`  ${uiTheme.fg("accent", "Models with usage data")}`);
-			for (const selector of reportingModels) {
-				lines.push(`    ${replaceTabs(truncateToWidth(sanitizeText(selector), availableWidth - 4))}`);
-			}
-		}
-
-		// Provider-wide disclaimers (e.g. "OMP-observed spend only") render once
-		// above the per-account sections instead of duplicating onto every limit.
-		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
-		if (providerNotes.length > 0) {
-			lines.push(
-				`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(providerNotes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • ")), 110)))}`.trimEnd(),
-			);
-		}
-
-		const resetAccountLines: string[] = [];
-		for (const report of providerReports) {
-			const count = report.resetCredits?.availableCount ?? 0;
-			if (count <= 0) continue;
-			const label =
-				typeof report.metadata?.email === "string" && report.metadata.email
-					? report.metadata.email
-					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
-						? report.metadata.accountId
-						: "account";
-			const isActive =
-				!!activeAccount &&
-				((!!activeAccount.accountId && activeAccount.accountId === report.metadata?.accountId) ||
-					(!!activeAccount.email && activeAccount.email === report.metadata?.email));
-			resetAccountLines.push(
-				`    • ${label}: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`,
-			);
-			const credits = report.resetCredits?.credits;
-			if (credits) {
-				for (const credit of credits) {
-					if (credit.expiresAt) {
-						const expiryMs = Date.parse(credit.expiresAt);
-						if (!Number.isNaN(expiryMs)) {
-							const remaining = expiryMs - nowMs;
-							const expiryDate = credit.expiresAt.slice(0, 10);
-							if (remaining > 0) {
-								resetAccountLines.push(`        expires in ${formatDuration(remaining)} (${expiryDate})`);
-							} else {
-								resetAccountLines.push(`        expired (${expiryDate})`);
-							}
-						}
-					}
-				}
-			}
-		}
-		if (resetAccountLines.length > 0) {
-			lines.push(
-				`  ${uiTheme.fg("accent", "Saved rate-limit resets")} ${uiTheme.fg("dim", "(/usage reset to spend)")}`,
-			);
-			for (const line of resetAccountLines) lines.push(uiTheme.fg("dim", line));
-		}
-
-		// Order account columns ONCE per provider (worst-first), then apply that
-		// same order to every window group. Sorting each group independently by
-		// its own used fraction (issue #6067) desynchronized the columns: an
-		// account exhausted on its 5h window but light on the weekly window would
-		// land in different column positions on each row, so the positional
-		// `account N` labels denoted different credentials per row and an
-		// exhausted limit appeared under a sibling that still had quota.
-		const accountRank = new Map<UsageReport, number>();
-		providerReports.forEach((report, position) => {
-			const worst = report.limits.reduce((max, limit) => {
-				const fraction = resolveUsedFraction(limit) ?? -1;
-				return fraction > max ? fraction : max;
-			}, -1);
-			// Encode worst-first primary key with the stable position as tiebreak
-			// so accounts tied on pressure keep their discovery order.
-			accountRank.set(report, -worst * 1000 + position);
-		});
-
-		const renderableGroups = Array.from(limitGroups.values()).map(group => {
-			const entries = group.limits.map((limit, index) => ({
-				limit,
-				report: group.reports[index],
-				index,
-			}));
-			entries.sort((a, b) => {
-				const aRank = accountRank.get(a.report) ?? a.index;
-				const bRank = accountRank.get(b.report) ?? b.index;
-				if (aRank !== bRank) return aRank - bRank;
-				return a.index - b.index;
-			});
-			const sortedLimits = entries.map(entry => entry.limit);
-			const sortedReports = entries.map(entry => entry.report);
-			return { group, sortedLimits, sortedReports, amountText: formatAggregateAmount(sortedLimits) };
-		});
-
-		const sectionCount = renderableGroups.reduce((max, g) => Math.max(max, g.sortedLimits.length), 0);
-		const sectionTrailing = renderableGroups.reduce((max, g) => Math.max(max, visibleWidth(g.amountText)), 0);
-		const sectionColumnWidth = resolveColumnWidth(sectionCount, availableWidth, sectionTrailing);
-		const sectionBarWidth = Math.min(sectionColumnWidth, BAR_WIDTH_MAX);
-
-		for (const { group, sortedLimits, sortedReports, amountText } of renderableGroups) {
-			const status = resolveAggregateStatus(sortedLimits);
-			const statusIcon = resolveStatusIcon(status, uiTheme);
-
-			const windowSuffix = formatWindowSuffix(group.label, group.windowLabel, uiTheme);
-			lines.push(`${statusIcon} ${uiTheme.bold(group.label)} ${windowSuffix}`.trim());
-			const accountLabels = formatAccountHeaderRow(
-				sortedLimits,
-				sortedReports,
-				nowMs,
-				sectionColumnWidth,
-				uiTheme,
-				activeAccount,
-			);
-			lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
-			const bars = sortedLimits.map(limit =>
-				padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth), sectionColumnWidth),
-			);
-			lines.push(`  ${bars.join(" ")} ${amountText}`.trimEnd());
-			const resetText = sortedLimits.length <= 1 ? resolveResetRange(sortedLimits, nowMs) : null;
-			if (resetText) {
-				lines.push(`  ${uiTheme.fg("dim", resetText)}`.trimEnd());
-			}
-			const notes = [...new Set(sortedLimits.flatMap(limit => limit.notes ?? []))];
-			if (notes.length > 0) {
-				lines.push(
-					`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(notes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • ")), 110)))}`.trimEnd(),
-				);
-			}
-		}
-
-		// Render accounts with no rate limits (e.g. business/enterprise plans).
-		const unlimitedReports = providerReports.filter(report => report.limits.length === 0);
-		for (const report of unlimitedReports) {
-			const label = formatUnlimitedReportLabel(report, 0);
-			const tier = report.metadata?.planType;
-			const tierSuffix = typeof tier === "string" && tier ? ` ${uiTheme.fg("dim", `(${tier})`)}` : "";
-			lines.push(
-				`${uiTheme.fg("success", uiTheme.status.success)} ${label}${tierSuffix} ${uiTheme.fg("dim", "-- no limits")}`,
-			);
-		}
-		// No per-provider footer; global header shows last check.
-	}
-
-	return lines.join("\n");
 }

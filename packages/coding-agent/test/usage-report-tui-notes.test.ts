@@ -16,7 +16,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { renderUsageReports } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
+import { renderUsage } from "./helpers/usage-report";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 
 const HOUR = 3_600_000;
@@ -64,7 +64,7 @@ describe("renderUsageReports (#3268 TUI aggregate)", () => {
 				[providerNote],
 			),
 		];
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, Date.now(), 120));
 		const occurrences = text.split(providerNote).length - 1;
 		expect(occurrences).toBe(1);
 	});
@@ -74,7 +74,7 @@ describe("renderUsageReports (#3268 TUI aggregate)", () => {
 			report("github-copilot", "acct@example.test", [limit("Copilot", "monthly", 30 * 24 * HOUR, 0.4)]),
 		];
 		const models = ["github-copilot/gpt-5.6", "github-copilot/claude-sonnet-4.6"];
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120, undefined, models));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, Date.now(), 120, undefined, models));
 		expect(text).toContain("Models with usage data");
 		expect(text).toContain(models[0]);
 		expect(text).toContain(models[1]);
@@ -88,7 +88,7 @@ describe("renderUsageReports (#3268 TUI aggregate)", () => {
 			report("github-copilot", "acct-a@example.test", [limit("Copilot", "monthly", 30 * 24 * HOUR, 0.8, [note])]),
 			report("github-copilot", "acct-b@example.test", [limit("Copilot", "monthly", 30 * 24 * HOUR, 0.9, [note])]),
 		];
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, Date.now(), 120));
 		const occurrences = text.split(note).length - 1;
 		// Deduped: appears once on the group note line. Pre-fix `flatMap(...).join`
 		// would bullet-join it twice (one per account in the group).
@@ -114,7 +114,7 @@ describe("renderUsageReports (#3268 TUI aggregate)", () => {
 			report("anthropic", "rae@example.com", [accountLimit()]),
 		];
 
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, now, 160));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, now, 160));
 
 		expect(text).toContain("rae@example.com (Team Org)");
 	});
@@ -131,7 +131,7 @@ describe("renderUsageReports (#3268 TUI aggregate)", () => {
 			]),
 		];
 
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, Date.now(), 120));
 
 		expect(text).toContain(theme.status.info);
 		expect(text).not.toContain(theme.status.pending);
@@ -167,7 +167,7 @@ describe("renderUsageReports (#3268 TUI aggregate)", () => {
 			]),
 		];
 
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 160));
+		const text = stripVTControlCharacters(renderUsage(reports, theme, Date.now(), 160));
 
 		expect(text).toContain(theme.status.success);
 		expect(text).toContain("$123.45 used");
@@ -182,7 +182,7 @@ describe("renderUsageReports session marker (#5691 org-qualified identity)", () 
 			report("anthropic", email, [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.4)]),
 		];
 		const text = stripVTControlCharacters(
-			renderUsageReports(reports, theme, Date.now(), 120, provider =>
+			renderUsage(reports, theme, Date.now(), 120, provider =>
 				provider === "anthropic" ? { email, orgId: "uuid-A", orgName: "Team Org" } : undefined,
 			),
 		);
@@ -196,9 +196,7 @@ describe("renderUsageReports session marker (#5691 org-qualified identity)", () 
 			report("anthropic", email, [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.4)]),
 		];
 		const text = stripVTControlCharacters(
-			renderUsageReports(reports, theme, Date.now(), 120, provider =>
-				provider === "anthropic" ? { email } : undefined,
-			),
+			renderUsage(reports, theme, Date.now(), 120, provider => (provider === "anthropic" ? { email } : undefined)),
 		);
 		const marker = text.split("\n").find(line => line.includes("in use by this session"));
 		expect(marker).toContain(email);

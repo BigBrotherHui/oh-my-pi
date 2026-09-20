@@ -74,7 +74,7 @@ describe("resolveApprovedPlan", () => {
 		const result = await resolveApprovedPlan({
 			suppliedTitle: undefined,
 			// Resumed sessions can persist the accepted single-slash spelling.
-			statePlanFilePath: "local:/completed-plan.md",
+			statePlanFilePath: "local://completed-plan.md",
 			readPlan: canonical({
 				"local://completed-plan.md": "# Completed\n\nOld plan",
 				"local://new-draft-plan.md": "# New\n\nNew plan",
