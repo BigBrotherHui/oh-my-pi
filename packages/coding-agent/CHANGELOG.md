@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevented LSP client from hanging when a request is aborted while waiting for a previous write
+
 ## [18.2.7] - 2026-09-21
 
 ### Breaking Changes
