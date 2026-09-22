@@ -237,10 +237,10 @@ describe("executeJs", () => {
 		expect(persisted.output.trim()).toBe("2");
 	});
 
-	// The `var` test above covers a binding left as-is; `let` is demoted to `var` first, and
-	// replacing the whole object (not mutating it) exercises publishing a fresh reference — the
-	// real wrong-output impact reported in #10987 (corrected value discarded after an await).
-	it("persists a demoted let reassigned to a new object before an unrelated await", async () => {
+	// `let` takes the global-assignment path rather than the direct-global `var` path. Replacing
+	// the whole object (not mutating it) exercises persistence of a fresh reference — the real
+	// wrong-output impact reported in #10987 (corrected value discarded after an await).
+	it("persists a globalized let reassigned to a new object before an unrelated await", async () => {
 		const first = await executeJs(
 			"let box = { sql: 'original' }; box = { sql: 'corrected' }; await Promise.resolve(); box.sql;",
 			{ sessionId, session, sessionFile },
@@ -251,6 +251,58 @@ describe("executeJs", () => {
 		const persisted = await executeJs("return box.sql;", { sessionId, session, sessionFile });
 		expect(persisted.exitCode).toBe(0);
 		expect(persisted.output.trim()).toBe("corrected");
+	});
+
+	it("preserves an explicit globalThis mutation after an async declaration", async () => {
+		const first = await executeJs(
+			"var explicitGlobalWrite = 1; await Promise.resolve(); globalThis.explicitGlobalWrite = 2;",
+			{ sessionId, session, sessionFile },
+		);
+		expect(first.exitCode).toBe(0);
+
+		const persisted = await executeJs("return explicitGlobalWrite;", { sessionId, session, sessionFile });
+		expect(persisted.exitCode).toBe(0);
+		expect(persisted.output.trim()).toBe("2");
+	});
+
+	it("does not publish a declaration skipped by an early return", async () => {
+		const initialized = await executeJs("var skippedDeclaration = 5;", { sessionId, session, sessionFile });
+		expect(initialized.exitCode).toBe(0);
+
+		const skipped = await executeJs("await Promise.resolve(); if (true) return; let skippedDeclaration = 1;", {
+			sessionId,
+			session,
+			sessionFile,
+		});
+		expect(skipped.exitCode).toBe(0);
+
+		const persisted = await executeJs("return skippedDeclaration;", { sessionId, session, sessionFile });
+		expect(persisted.exitCode).toBe(0);
+		expect(persisted.output.trim()).toBe("5");
+	});
+
+	it("persists finally mutations after an early return", async () => {
+		const first = await executeJs(
+			"var finallyUpdated = 1; await Promise.resolve(); try { return; } finally { finallyUpdated = 2; }",
+			{ sessionId, session, sessionFile },
+		);
+		expect(first.exitCode).toBe(0);
+
+		const persisted = await executeJs("return finallyUpdated;", { sessionId, session, sessionFile });
+		expect(persisted.exitCode).toBe(0);
+		expect(persisted.output.trim()).toBe("2");
+	});
+
+	it("preserves function hoisting and persists function reassignment", async () => {
+		const first = await executeJs(
+			"const initial = hoistedFunction(1); function hoistedFunction(n) { if (n < 0) return 0; return n + 1; } await Promise.resolve(); hoistedFunction = () => { const next = initial + 1; return next; };",
+			{ sessionId, session, sessionFile },
+		);
+		expect(first.exitCode).toBe(0);
+
+		const persisted = await executeJs("return hoistedFunction();", { sessionId, session, sessionFile });
+		expect(persisted.exitCode).toBe(0);
+		expect(persisted.output.trim()).toBe("3");
 	});
 
 	it("persists bindings when auto-displaying the final expression", async () => {

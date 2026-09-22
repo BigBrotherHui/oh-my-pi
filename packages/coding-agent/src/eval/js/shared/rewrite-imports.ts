@@ -32,12 +32,17 @@ type BabelBindingPattern = {
 	value?: unknown;
 };
 
+type BabelVariableDeclarator = {
+	id: BabelBindingPattern & { start: number; end: number };
+	init?: { start: number; end: number } | null;
+};
+
 type BabelVariableDeclaration = {
 	type: "VariableDeclaration";
 	kind: "const" | "let" | "var";
 	start: number;
 	end: number;
-	declarations?: ReadonlyArray<{ id: BabelBindingPattern }>;
+	declarations?: ReadonlyArray<BabelVariableDeclarator>;
 };
 
 type BabelClassDeclaration = {
@@ -55,21 +60,11 @@ type BabelFunctionDeclaration = {
 	id: { start: number; end: number; name: string } | null;
 };
 
-/** Top-level declarations whose bindings must survive the cell (demoted and/or published). */
-type BabelPublishableDecl = BabelLexicalDecl | BabelFunctionDeclaration;
-
 type BabelExpressionStatement = {
 	type: "ExpressionStatement";
 	start: number;
 	end: number;
 	expression?: { type?: string };
-};
-
-type BabelReturnStatement = {
-	type: "ReturnStatement";
-	start: number;
-	end: number;
-	argument?: { start: number; end: number } | null;
 };
 
 type BabelProgramNode = BabelImportDeclaration | BabelLexicalDecl | BabelExpressionStatement | { type: string };
@@ -338,157 +333,117 @@ function collectBindingNames(pattern: unknown, names: string[]): void {
 	}
 }
 
-function getLexicalBindingNames(node: BabelPublishableDecl): string[] {
-	const names: string[] = [];
-	if (node.type === "VariableDeclaration") {
-		for (const declaration of node.declarations ?? []) collectBindingNames(declaration.id, names);
-	} else if (node.id) {
-		names.push(node.id.name);
-	}
-	return names;
-}
-
-function appendGlobalBindingPublish(source: string, names: readonly string[]): string {
-	if (names.length === 0) return source;
-	const assignments = names.map(name => `this[${JSON.stringify(name)}] = ${name};`).join("\n");
-	return `${source};\n${assignments}`;
+function ensureGlobalBinding(name: string): string {
+	const key = JSON.stringify(name);
+	return `Object.hasOwn(this, ${key}) || Object.defineProperty(this, ${key}, { value: undefined, writable: true, configurable: true, enumerable: true });`;
 }
 
 /**
- * Republish current top-level binding values immediately before a mid-cell `return` unwinds
- * the async wrapper. Without this, a successful early `return` (conditional or bare) skips the
- * trailing republish and later cells see the binding's declaration value instead of its final
- * assignment. A thrown error still bypasses every republish, preserving incremental semantics.
+ * Rewrite a top-level `var`/`let`/`const` declaration so its bindings live on the worker
+ * global instead of the async wrapper's local scope. Initializers assign directly through
+ * `this`, while destructuring first creates the target global bindings so it also works in an
+ * explicit strict-mode cell. An uninitialized declaration writes `undefined` only when its
+ * statement executes; an early return above it leaves any prior cross-cell value untouched.
  */
-function buildReturnRepublish(names: readonly string[], argument: string | undefined): string {
-	const assignments = names.map(name => `this[${JSON.stringify(name)}] = ${name};`).join(" ");
-	if (argument === undefined) return `{ ${assignments} return; }`;
-	// Evaluate the return argument first (it may mutate a published binding), then republish,
-	// then return the captured value. The arrow inherits the wrapper's `this` (the worker global)
-	// and closes over the top-level bindings.
-	return `return (__ompReturn => { ${assignments} return __ompReturn; })((${argument}));`;
+function globalizeVariableDeclaration(decl: BabelVariableDeclaration, code: string): string {
+	const statements: string[] = [];
+	for (const declarator of decl.declarations ?? []) {
+		const id = declarator.id;
+		if (id.type === "Identifier" && id.name) {
+			const value = declarator.init ? code.slice(declarator.init.start, declarator.init.end) : "undefined";
+			statements.push(`this[${JSON.stringify(id.name)}] = ${value};`);
+			continue;
+		}
+
+		const names: string[] = [];
+		collectBindingNames(id, names);
+		for (const name of names) statements.push(ensureGlobalBinding(name));
+		if (declarator.init) {
+			const pattern = code.slice(id.start, id.end);
+			const value = code.slice(declarator.init.start, declarator.init.end);
+			statements.push(`(${pattern} = ${value});`);
+		}
+	}
+	return statements.join("\n");
 }
 
 /**
- * Collect every `return` that would unwind the async cell wrapper — returns not nested inside a
- * function/method boundary. A return's argument cannot itself contain a top-level return, so we
- * stop descending once one is found.
- */
-function collectTopLevelReturns(value: unknown, out: BabelReturnStatement[]): void {
-	if (!value || typeof value !== "object") return;
-	if (Array.isArray(value)) {
-		for (const item of value) collectTopLevelReturns(item, out);
-		return;
-	}
-	const node = value as Record<string, unknown>;
-	const type = node.type;
-	if (type === "ReturnStatement") {
-		out.push(node as unknown as BabelReturnStatement);
-		return;
-	}
-	if (typeof type === "string" && isExecutionBoundary(type)) return;
-	for (const key in node) {
-		if (key === "loc" || key === "extra" || key === "range") continue;
-		if (key === "leadingComments" || key === "trailingComments" || key === "innerComments") continue;
-		collectTopLevelReturns(node[key], out);
-	}
-}
-
-/**
- * Demote top-level `const`/`let`/`class` declarations to `var` so they persist on the
- * worker's globalThis across indirect `eval` calls. Indirect eval gives each call its own
- * lexical environment, so `const x = 1` in one cell would be invisible to the next.
- * `var` and function declarations are stored on the global object and survive across cells.
+ * Make top-level declarations survive across indirect `eval` calls, which each get their own
+ * lexical environment. In the plain (non-async) path a cell runs directly in global scope, so it
+ * is enough to demote `const`/`let`/`class` to `var` and let the declaration land on globalThis:
  *
  *   const x = 1;             -> var x = 1;
  *   let { a, b } = obj;      -> var { a, b } = obj;
  *   class Foo extends Bar {} -> var Foo = class extends Bar {};
  *
- * When the source must run inside the async wrapper (top-level `await`), demoted `var`s —
- * and the user's own top-level `var` and `function` declarations — would be scoped to the
- * wrapper function and die with the cell. In that mode we publish every top-level binding
- * after its declaration, before each mid-cell `return` that unwinds the wrapper, and once more
- * after the cell body so later assignments persist regardless of how the cell completes.
+ * When the cell needs the async wrapper (top-level `await`) every top-level `var`/`let`/`const`/
+ * `class` is instead rewritten into an assignment against the worker global, so the identifier,
+ * later reassignments, and an explicit `globalThis.x = …` all resolve to the same binding:
  *
- * Nested declarations (inside functions, blocks, classes) are left alone — they're
- * scoped to their enclosing function/block regardless of `var` vs `let`/`const`.
+ *   var value = 1; value = 2;   -> this["value"] = 1; value = 2;
+ *   class Foo {}                -> this["Foo"] = class Foo {};
+ *
+ * Because the local declaration is gone, reassignments and `finally` mutations write straight to
+ * the global, a declaration that never runs (an early `return` above it) leaves any prior value
+ * intact, and a direct `globalThis` write is not clobbered. Function declarations become named
+ * function expressions assigned at wrapper entry, preserving in-cell hoisting, recursion, and
+ * later reassignment persistence. Nested declarations (inside functions, blocks, classes) are
+ * left alone — they belong to their enclosing scope.
  */
 async function demoteTopLevelLexicals(code: string, options: { publishGlobals?: boolean } = {}): Promise<string> {
-	const publishGlobals = options.publishGlobals === true;
-	const fastPath = publishGlobals ? /\b(?:const|let|class|var|function)\b/ : /\b(?:const|let|class)\b/;
+	const globalize = options.publishGlobals === true;
+	const fastPath = globalize ? /\b(?:const|let|class|var|function)\b/ : /\b(?:const|let|class)\b/;
 	if (!fastPath.test(code)) return code;
 
 	const ast = await parseProgram(code);
-	if (!ast) {
-		return code;
-	}
+	if (!ast) return code;
 
-	const targets: Array<{ node: BabelPublishableDecl; demote: boolean }> = [];
+	const edits: Array<{ start: number; end: number; text: string }> = [];
+	const functionInitializers: string[] = [];
 	for (const node of ast.program.body) {
 		if (node.type === "VariableDeclaration") {
 			const decl = node as unknown as BabelVariableDeclaration;
-			if (decl.kind === "const" || decl.kind === "let") targets.push({ node: decl, demote: true });
-			else if (publishGlobals) targets.push({ node: decl, demote: false });
+			if (globalize) {
+				edits.push({ start: decl.start, end: decl.end, text: globalizeVariableDeclaration(decl, code) });
+			} else if (decl.kind === "const" || decl.kind === "let") {
+				const segment = code.slice(decl.start, decl.end);
+				edits.push({ start: decl.start, end: decl.end, text: `var${segment.slice(decl.kind.length)}` });
+			}
 		} else if (node.type === "ClassDeclaration") {
 			const decl = node as unknown as BabelClassDeclaration;
-			if (decl.id) targets.push({ node: decl, demote: true });
-		} else if (publishGlobals && node.type === "FunctionDeclaration") {
-			const decl = node as unknown as BabelFunctionDeclaration;
-			if (decl.id) targets.push({ node: decl, demote: false });
-		}
-	}
-	if (targets.length === 0) return code;
-
-	const finalPublishNames: string[] = [];
-	if (publishGlobals) {
-		const seen = new Set<string>();
-		for (const { node } of targets) {
-			for (const name of getLexicalBindingNames(node)) {
-				if (seen.has(name)) continue;
-				seen.add(name);
-				finalPublishNames.push(name);
+			if (!decl.id) continue;
+			const segment = code.slice(decl.start, decl.end);
+			const tail = segment.slice(decl.id.end - decl.start);
+			if (globalize) {
+				edits.push({
+					start: decl.start,
+					end: decl.end,
+					text: `this[${JSON.stringify(decl.id.name)}] = class ${decl.id.name}${tail};`,
+				});
+			} else {
+				const hasTrailingSemi = segment.endsWith(";");
+				edits.push({
+					start: decl.start,
+					end: decl.end,
+					text: `var ${decl.id.name} = class${tail}${hasTrailingSemi ? "" : ";"}`,
+				});
 			}
+		} else if (globalize && node.type === "FunctionDeclaration") {
+			const decl = node as unknown as BabelFunctionDeclaration;
+			if (!decl.id) continue;
+			const segment = code.slice(decl.start, decl.end);
+			functionInitializers.push(`this[${JSON.stringify(decl.id.name)}] = ${segment};`);
+			edits.push({ start: decl.start, end: decl.end, text: "" });
 		}
 	}
-
-	// Position-anchored edits over the original source. Declaration demotions and mid-cell
-	// return republishes never overlap (a top-level return is a statement, never inside a
-	// demoted declaration), so applying them back-to-front keeps every offset valid.
-	const edits: Array<{ start: number; end: number; text: string }> = [];
-	for (const { node, demote } of targets) {
-		const segment = code.slice(node.start, node.end);
-		const bindingNames = publishGlobals ? getLexicalBindingNames(node) : [];
-		let replacement: string;
-		if (!demote) {
-			replacement = segment;
-		} else if (node.type === "VariableDeclaration") {
-			replacement = `var${segment.slice(node.kind.length)}`;
-		} else {
-			const id = node.id;
-			if (!id) continue;
-			const idEndInSegment = id.end - node.start;
-			const tail = segment.slice(idEndInSegment);
-			const hasTrailingSemi = segment.endsWith(";");
-			replacement = `var ${id.name} = class${tail}${hasTrailingSemi ? "" : ";"}`;
-		}
-		edits.push({ start: node.start, end: node.end, text: appendGlobalBindingPublish(replacement, bindingNames) });
-	}
-
-	if (finalPublishNames.length > 0) {
-		const returns: BabelReturnStatement[] = [];
-		for (const node of ast.program.body) collectTopLevelReturns(node, returns);
-		for (const ret of returns) {
-			const argument = ret.argument ? code.slice(ret.argument.start, ret.argument.end) : undefined;
-			edits.push({ start: ret.start, end: ret.end, text: buildReturnRepublish(finalPublishNames, argument) });
-		}
-	}
+	if (edits.length === 0) return code;
 
 	edits.sort((a, b) => b.start - a.start);
 	let result = code;
 	for (const edit of edits) {
 		result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
 	}
-	return appendGlobalBindingPublish(result, finalPublishNames);
+	return functionInitializers.length === 0 ? result : `${functionInitializers.join("\n")}\n${result}`;
 }
 
 async function returnFinalExpression(code: string): Promise<{ source: string; returned: boolean }> {
