@@ -237,6 +237,22 @@ describe("executeJs", () => {
 		expect(persisted.output.trim()).toBe("2");
 	});
 
+	// The `var` test above covers a binding left as-is; `let` is demoted to `var` first, and
+	// replacing the whole object (not mutating it) exercises publishing a fresh reference — the
+	// real wrong-output impact reported in #10987 (corrected value discarded after an await).
+	it("persists a demoted let reassigned to a new object before an unrelated await", async () => {
+		const first = await executeJs(
+			"let box = { sql: 'original' }; box = { sql: 'corrected' }; await Promise.resolve(); box.sql;",
+			{ sessionId, session, sessionFile },
+		);
+		expect(first.exitCode).toBe(0);
+		expect(first.output.trim()).toBe("corrected");
+
+		const persisted = await executeJs("return box.sql;", { sessionId, session, sessionFile });
+		expect(persisted.exitCode).toBe(0);
+		expect(persisted.output.trim()).toBe("corrected");
+	});
+
 	it("persists bindings when auto-displaying the final expression", async () => {
 		const first = await executeJs("const inspected = 40; inspected + 2;", { sessionId, session, sessionFile });
 		expect(first.exitCode).toBe(0);
