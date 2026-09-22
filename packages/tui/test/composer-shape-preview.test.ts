@@ -79,6 +79,26 @@ describe("composer shape preview", () => {
 		}
 	});
 
+	it("forwards the caller's full width to the status source above 96 columns", async () => {
+		await setTheme("dark");
+		// The preview is a fidelity mirror of the live editor, which spans the
+		// full terminal width. A renderer-local cap made wide `/settings` previews
+		// narrower than the real composer (#12500): the band's status row must be
+		// asked to fill the caller's width, not a clamped 96.
+		let bandWidth = -1;
+		const status = {
+			getTopBorder: (_width: number) => ({ content: "", width: 0 }),
+			getStandaloneTopBorder: (_width: number) => ({ content: "", width: 0 }),
+			getBandTopBorder: (width: number) => {
+				bandWidth = width;
+				return { content: "", width: 0 };
+			},
+			renderBottomBar: () => "",
+		};
+		renderComposerShapePreview("band", 120, status);
+		expect(bandWidth).toBe(120);
+	});
+
 	it("installs extension shapes into both selectors and live rendering", async () => {
 		await setTheme("dark");
 		const style: ComposerStyle = {
