@@ -1,5 +1,6 @@
 use std::{
-	os::unix::net::UnixStream,
+	os::{fd::AsRawFd, unix::net::UnixStream},
+	ptr,
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -10,10 +11,11 @@ use ashpd::desktop::{
 use futures::StreamExt;
 use reis::{
 	ei,
-	event::{Device, DeviceCapability, EiEvent},
+	event::{Device, DeviceCapability, EiEvent, Keymap},
 	tokio::EiConvertEventStream,
 };
 
+use super::xkb::{KeyStroke, KeyboardLayout};
 use crate::desktop::{
 	backend::{Modifiers, MouseButton, PointerEvent},
 	error::{CoreResult, DesktopError},
@@ -39,6 +41,10 @@ impl DiscoveryTargets {
 struct EiDevice {
 	device: Device,
 	serial: u32,
+	/// The compositor's active keyboard layout, compiled from the announced XKB
+	/// keymap. `None` for pointer devices, keyboards that announce no usable
+	/// keymap, or when libxkbcommon is unavailable.
+	layout: Option<KeyboardLayout>,
 }
 
 type RemoteDesktopSession = Session<'static, RemoteDesktop<'static>>;
@@ -215,11 +221,16 @@ impl Libei {
 					},
 					EiEvent::DeviceResumed(event) => {
 						if pending_pointer.as_ref() == Some(&event.device) {
-							self.pointer =
-								Some(EiDevice { device: event.device.clone(), serial: event.serial });
+							self.pointer = Some(EiDevice {
+								device: event.device.clone(),
+								serial: event.serial,
+								layout: None,
+							});
 						}
 						if pending_keyboard.as_ref() == Some(&event.device) {
-							self.keyboard = Some(EiDevice { device: event.device, serial: event.serial });
+							let layout = event.device.keymap().and_then(read_keymap);
+							self.keyboard =
+								Some(EiDevice { device: event.device, serial: event.serial, layout });
 						}
 					},
 					EiEvent::Disconnected(event) => {
@@ -411,7 +422,11 @@ impl Libei {
 		})?;
 		let mut codes = Vec::with_capacity(keys.len());
 		for &key in keys {
-			codes.push(evdev_keycode(key)?);
+			let code = match key {
+				KeyName::Char(character) => char_stroke(device, character)?.keycode,
+				_ => evdev_keycode(key)?,
+			};
+			codes.push(code);
 		}
 		let sequence = self.sequence;
 		self.sequence = self.sequence.wrapping_add(1);
@@ -433,37 +448,94 @@ impl Libei {
 		let device = self.keyboard.as_ref().ok_or_else(|| {
 			DesktopError::permission_denied("RemoteDesktop portal did not provide a libei keyboard")
 		})?;
-		let strokes: Vec<_> = text
+		let strokes: Vec<KeyStroke> = text
 			.chars()
-			.map(|character| {
-				evdev_char(character).ok_or_else(|| {
-					DesktopError::input_failed(format!(
-						"libei cannot type character {character:?} with the announced evdev keymap"
-					))
-				})
-			})
+			.map(|character| char_stroke(device, character))
 			.collect::<CoreResult<_>>()?;
 		let sequence = self.sequence;
 		self.sequence = self.sequence.wrapping_add(1);
 		Self::begin(device, sequence);
 		let mut time = Self::timestamp();
-		for (code, shift) in strokes {
-			if shift {
-				Self::send_key(device, 42, true, time)?;
+		for stroke in strokes {
+			for &modifier in &stroke.modifiers {
+				Self::send_key(device, modifier, true, time)?;
 				time = time.saturating_add(1);
 			}
-			Self::send_key(device, code, true, time)?;
+			Self::send_key(device, stroke.keycode, true, time)?;
 			time = time.saturating_add(1);
-			Self::send_key(device, code, false, time)?;
+			Self::send_key(device, stroke.keycode, false, time)?;
 			time = time.saturating_add(1);
-			if shift {
-				Self::send_key(device, 42, false, time)?;
+			for &modifier in stroke.modifiers.iter().rev() {
+				Self::send_key(device, modifier, false, time)?;
 				time = time.saturating_add(1);
 			}
 		}
 		self.finish(device);
 		Ok(())
 	}
+}
+
+/// Compiles the layout announced on a libei keyboard device. Only XKB keymaps
+/// are understood; a different type, an empty map, an unreadable fd, or a
+/// missing libxkbcommon yields `None`, and callers fall back to the fixed US
+/// table.
+fn read_keymap(keymap: &Keymap) -> Option<KeyboardLayout> {
+	if keymap.type_ != ei::keyboard::KeymapType::Xkb {
+		return None;
+	}
+	let size = keymap.size as usize;
+	if size == 0 {
+		return None;
+	}
+	// SAFETY: map a read-only private view of the keymap fd for the announced
+	// byte length; `MAP_FAILED` is checked before the region is read, and the
+	// mapping is released before returning.
+	let mapped = unsafe {
+		libc::mmap(
+			ptr::null_mut(),
+			size,
+			libc::PROT_READ,
+			libc::MAP_PRIVATE,
+			keymap.fd.as_raw_fd(),
+			0,
+		)
+	};
+	if mapped == libc::MAP_FAILED {
+		return None;
+	}
+	// SAFETY: `mmap` returned `size` readable bytes at `mapped`.
+	let bytes = unsafe { std::slice::from_raw_parts(mapped.cast::<u8>(), size) };
+	let text = bytes.split(|&byte| byte == 0).next().unwrap_or(bytes);
+	let layout = std::str::from_utf8(text)
+		.ok()
+		.and_then(KeyboardLayout::compile);
+	// SAFETY: unmap the exact region mapped above.
+	unsafe {
+		libc::munmap(mapped, size);
+	}
+	layout
+}
+
+/// Resolves the keystroke that types `character` on `device`.
+///
+/// Prefers the device's active layout; characters the layout cannot express (or
+/// when no keymap was announced) fall back to the fixed US evdev table, which
+/// also covers control characters such as newline and tab that XKB reports as
+/// non-Unicode keysyms.
+fn char_stroke(device: &EiDevice, character: char) -> CoreResult<KeyStroke> {
+	if let Some(stroke) = device
+		.layout
+		.as_ref()
+		.and_then(|layout| layout.resolve_char(character))
+	{
+		return Ok(stroke.clone());
+	}
+	if let Some((keycode, shift)) = evdev_char(character) {
+		return Ok(KeyStroke { keycode, modifiers: if shift { vec![42] } else { Vec::new() } });
+	}
+	Err(DesktopError::input_failed(format!(
+		"libei cannot type character {character:?}: not in the active keyboard layout"
+	)))
 }
 
 fn evdev_keycode(key: KeyName) -> CoreResult<u32> {
