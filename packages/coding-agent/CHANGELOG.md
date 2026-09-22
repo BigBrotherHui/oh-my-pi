@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Fixed POSIX `hub start` PTY launches overwriting explicit environment values through implicit login-shell profiles. ([#12613](https://github.com/can1357/oh-my-pi/issues/12613))
 - Fixed resume clutter: elide 0-turn sessions from the /resume menu; -c similarly skips empty sessions.
 - Fixed Edit calls getting stuck generating repeated closing tags after an empty `SM:AFTER` insertion.
 - Fixed Edit previews and application panicking on Unicode no-op edits and overlapping duplicate matches.
