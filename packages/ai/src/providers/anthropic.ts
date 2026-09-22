@@ -443,6 +443,14 @@ type AnthropicControlState = {
 	baseEffort: AnthropicOutputEffort | undefined;
 	baseEffortWire: AnthropicOutputEffort | undefined;
 	currentEffort: AnthropicOutputEffort | undefined;
+	/**
+	 * Content fingerprints of the per-call context messages (extension-injected)
+	 * seen on the previous request for this conversation. A per-call message
+	 * whose content recurs is byte-stable across turns, so a cache breakpoint
+	 * placed behind it stays reusable; a new or changed fingerprint marks it
+	 * volatile and caps the stable message region in `applyPromptCaching`.
+	 */
+	perCallContextFingerprints: Set<string>;
 };
 
 type AnthropicProviderSessionState = ProviderSessionState & {
@@ -481,6 +489,7 @@ function createAnthropicControlState(): AnthropicControlState {
 		baseEffort: undefined,
 		baseEffortWire: undefined,
 		currentEffort: undefined,
+		perCallContextFingerprints: new Set(),
 	};
 }
 
@@ -3934,7 +3943,23 @@ function applyCacheControlToMessage(message: MessageParam, cacheControl: Anthrop
 	return false;
 }
 
-function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
+/**
+ * Content-only identity of a per-call context message, used to tell whether an
+ * extension re-injected byte-identical context this turn. `cache_control`
+ * decorations are excluded so a breakpoint that lands on the message in one
+ * turn does not make it look changed the next.
+ */
+function perCallContextFingerprint(message: MessageParam): string {
+	return JSON.stringify([message.role, message.content], (key, value) =>
+		key === "cache_control" ? undefined : value,
+	);
+}
+
+function applyPromptCaching(
+	params: MessageCreateParamsStreaming,
+	cacheControl?: AnthropicCacheControl,
+	controlState?: AnthropicControlState,
+): void {
 	if (!cacheControl) return;
 
 	const headBreakpoints = countHeadBreakpoints(params);
@@ -3953,17 +3978,38 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 		params.messages[trailingIndex - 1]?.role === "assistant";
 	const messageEnd = hasTrailingAssistantPad ? trailingIndex - 1 : trailingIndex;
 
-	// A breakpoint caches every preceding byte, not only the decorated message.
-	// Once per-call or turn-scoped content appears, no later message can anchor a
-	// prefix reusable by the next request.
+	// A breakpoint caches every preceding byte, not only the decorated message,
+	// so a volatile message anywhere in the prefix stops any later breakpoint
+	// from being reusable next turn. Two kinds of message are re-synthesized per
+	// request: turn-scoped `clear_at` messages (always volatile — they are
+	// cleared next turn) and per-call context injected by extensions. The latter
+	// is volatile only when its content actually changed: an extension that
+	// re-inserts the same standing context every request (the common case, e.g.
+	// a context provider) leaves the prefix byte-stable, so history behind it can
+	// still anchor a reusable breakpoint. Distinguish the two by comparing each
+	// per-call message against the previous turn's fingerprints; the first truly
+	// volatile message caps the stable region.
+	const previousPerCall = controlState?.perCallContextFingerprints;
+	const currentPerCall = new Set<string>();
 	let stableMessageEnd = messageEnd;
+	let stableEndCapped = false;
 	for (let index = 0; index <= messageEnd; index++) {
 		const message = params.messages[index];
-		if (message && (message.clear_at === "next_user_message" || isPerCallContextMessage(message))) {
+		if (!message) continue;
+		let volatileHere = false;
+		if (isPerCallContextMessage(message)) {
+			const fingerprint = perCallContextFingerprint(message);
+			currentPerCall.add(fingerprint);
+			volatileHere = !(previousPerCall?.has(fingerprint) ?? false);
+		} else if (message.clear_at === "next_user_message") {
+			volatileHere = true;
+		}
+		if (volatileHere && !stableEndCapped) {
 			stableMessageEnd = index - 1;
-			break;
+			stableEndCapped = true;
 		}
 	}
+	if (controlState) controlState.perCallContextFingerprints = currentPerCall;
 
 	// Decimation counts conversational turns, so it reads the provenance marker
 	// `convertAnthropicMessages` records rather than the wire role. A wire `user`
@@ -3981,9 +4027,14 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	const decimationIndices = userIndices.filter((_, ordinal) => (ordinal + 1) % ANTHROPIC_DECIMATION_INTERVAL === 0);
 
 	// Collect up to 2 trailing candidates from the reusable prefix, skipping
-	// mid-conversation tool-control messages. They contain only tool_addition /
-	// tool_removal blocks, so cache_control is always rejected there; parking
-	// the rolling window on one spends the tail breakpoint on a decoration
+	// mid-conversation tool-control messages and ephemeral injected/turn-scoped
+	// messages. Tool-control system messages contain only tool_addition /
+	// tool_removal blocks, so cache_control is always rejected there. A per-call
+	// context or `clear_at` message is re-synthesized each turn, so its exact
+	// bytes never recur at the same position even when its content is stable;
+	// anchoring on it would spend the tail breakpoint on a prefix that cannot
+	// hit. Anchor on the persisted history behind it instead. Parking the
+	// rolling window on any of these spends the tail breakpoint on a decoration
 	// that always fails, and with decimation checkpoints present the remaining
 	// breakpoints land on already-cached history while the growing tail is
 	// re-billed as uncached input every turn.
@@ -3991,6 +4042,7 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	for (let index = stableMessageEnd; index >= 0 && trailingCandidates.length < 2; index--) {
 		const message = params.messages[index];
 		if (!message) continue;
+		if (isPerCallContextMessage(message) || message.clear_at === "next_user_message") continue;
 		if (
 			message.role === "system" &&
 			typeof message.content !== "string" &&
@@ -4705,7 +4757,7 @@ function buildParams(
 
 	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
-	applyPromptCaching(params, cacheControl);
+	applyPromptCaching(params, cacheControl, controlState);
 
 	return params;
 }

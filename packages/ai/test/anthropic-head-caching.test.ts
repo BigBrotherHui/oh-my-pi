@@ -86,6 +86,35 @@ async function captureWireBody(
 	return body;
 }
 
+/**
+ * Capture one turn's wire body while sharing a `providerSessionState` map so
+ * the Anthropic control state (and its cross-turn per-call fingerprints)
+ * persists across successive calls, the way a live session does.
+ */
+async function captureSessionTurn(
+	messages: Message[],
+	providerSessionState: Map<string, ProviderSessionState>,
+): Promise<MessageCreateParams> {
+	const controller = new AbortController();
+	const { promise, resolve } = Promise.withResolvers<MessageCreateParams>();
+	const stream = streamAnthropic(
+		MODEL,
+		{ ...CONTEXT, messages },
+		{
+			apiKey: "sk-ant-api-test",
+			signal: controller.signal,
+			sessionId: "sess-1",
+			providerSessionState,
+			onPayload: payload => {
+				resolve(payload as unknown as MessageCreateParams);
+				controller.abort();
+			},
+		},
+	);
+	void stream.result().catch(() => undefined);
+	return promise;
+}
+
 function countCacheBreakpoints(body: MessageCreateParams): number {
 	let count = 0;
 	for (const block of body.system ?? []) {
@@ -591,5 +620,70 @@ describe("anthropic head caching (general API-key path)", () => {
 		expect(cached).toContain(68);
 		expect(cached).toContain(69);
 		expect(cached).toHaveLength(4);
+	});
+
+	it("re-caches the message tail once stable per-call context repeats across turns", async () => {
+		// An extension that re-injects the same standing context every request
+		// (e.g. a context provider) must not permanently sink the message tail.
+		// The first turn cannot yet know the injection is stable, but from the
+		// second turn on the byte-identical prefix lets history behind it anchor a
+		// rolling breakpoint again. Regression for the head-only cache collapse.
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const injected: Message = {
+			role: "developer",
+			content: "standing context",
+			attribution: "agent",
+			timestamp: 3,
+		};
+		markPerCallContextMessage(injected);
+		const history: Message[] = [
+			{ role: "user", content: "first user", timestamp: 1 },
+			assistantMessage("first assistant", 2),
+			injected,
+		];
+		for (let turn = 1; turn <= 4; turn++) {
+			history.push({ role: "user", content: `later user ${turn}`, timestamp: turn * 2 + 2 });
+			history.push(assistantMessage(`later assistant ${turn}`, turn * 2 + 3));
+		}
+
+		const turn1 = await captureSessionTurn([...history], providerSessionState);
+		// Unknown stability on first sighting: stay behind the injection (index 2).
+		expect(findCachedMessageIndices(turn1)).toEqual([0, 1]);
+
+		history.push({ role: "user", content: "brand new user", timestamp: 100 });
+		const turn2 = await captureSessionTurn([...history], providerSessionState);
+		const cached = findCachedMessageIndices(turn2);
+		expect(cached.some(index => index > 2)).toBe(true);
+		expect(cached).toContain(turn2.messages.length - 1);
+	});
+
+	it("keeps capping the tail when per-call context changes every turn", async () => {
+		// A genuinely volatile injection (new content each request) still bars any
+		// breakpoint behind it: its bytes differ next turn, so a cached prefix that
+		// contained it could never hit.
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const build = (nonce: number): Message[] => {
+			const injected: Message = {
+				role: "developer",
+				content: `volatile context ${nonce}`,
+				attribution: "agent",
+				timestamp: 3,
+			};
+			markPerCallContextMessage(injected);
+			const history: Message[] = [
+				{ role: "user", content: "first user", timestamp: 1 },
+				assistantMessage("first assistant", 2),
+				injected,
+			];
+			for (let turn = 1; turn <= 4; turn++) {
+				history.push({ role: "user", content: `later user ${turn}`, timestamp: turn * 2 + 2 });
+				history.push(assistantMessage(`later assistant ${turn}`, turn * 2 + 3));
+			}
+			return history;
+		};
+
+		await captureSessionTurn(build(1), providerSessionState);
+		const turn2 = await captureSessionTurn(build(2), providerSessionState);
+		expect(findCachedMessageIndices(turn2)).toEqual([0, 1]);
 	});
 });

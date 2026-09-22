@@ -4,6 +4,7 @@
 ### Fixed
 
 - Fixed auth-broker client config resolution failing silently on Windows when reading the token file or `config.yml`; reads now use `node:fs` instead of `Bun.file`.
+- Fixed Anthropic prompt-cache breakpoints collapsing to the tools+system head when a `context` extension injects a message every request; stable re-injected context now keeps the growing message tail cached instead of re-billing it as uncached input each turn ([#12392](https://github.com/can1357/oh-my-pi/issues/12392)).
 
 ## [18.2.5] - 2026-09-17
 
