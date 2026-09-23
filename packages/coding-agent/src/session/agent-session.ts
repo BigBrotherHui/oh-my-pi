@@ -5631,6 +5631,24 @@ export class AgentSession {
 		return this.#tools.refreshMCPTools(mcpTools);
 	}
 
+	/**
+	 * Every tool the model can currently call: built-ins from agent state plus
+	 * whatever live MCP tools sit in the session registry. agent.state.tools is
+	 * a snapshot taken at construction, so MCP tools refreshed after MCP
+	 * discovery (see refreshMCPTools) are absent from it — RPC consumers that
+	 * enumerate tools (get_state dumpTools) must read this merged view instead.
+	 */
+	getAllTools(): AgentTool[] {
+		const merged = new Map<string, AgentTool>();
+		for (const tool of this.agent.state.tools) {
+			merged.set(tool.name, tool);
+		}
+		for (const [name, tool] of this.#tools.registry) {
+			if (!merged.has(name)) merged.set(name, tool);
+		}
+		return [...merged.values()];
+	}
+
 	/** Replaces host-owned RPC tools before the next model call. */
 	refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {
 		return this.#tools.refreshRpcHostTools(rpcTools);
