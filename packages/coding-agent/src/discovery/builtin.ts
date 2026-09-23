@@ -164,6 +164,18 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				timeout = undefined;
 			}
 
+			// Validate allowedTools: string-array glob allowlist of raw tool names
+			let allowedTools: string[] | undefined;
+			const rawAllowed = serverConfig.allowedTools;
+			if (Array.isArray(rawAllowed) && rawAllowed.every(entry => typeof entry === "string")) {
+				const cleaned = (rawAllowed as string[]).map(entry => entry.trim()).filter(entry => entry.length > 0);
+				if (cleaned.length > 0) allowedTools = cleaned;
+			} else if (rawAllowed != null) {
+				logger.warn(
+					`MCP server "${serverName}": invalid allowedTools ${JSON.stringify(rawAllowed).slice(0, 120)}, ignoring`,
+				);
+			}
+
 			// Validate requestIdFormat: only the two documented encodings
 			const requestIdFormat = parseRequestIdFormat(serverConfig.requestIdFormat);
 			if (requestIdFormat === undefined && serverConfig.requestIdFormat != null) {
@@ -185,6 +197,8 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				timeout,
 				requestIdFormat,
 				instructions,
+				allowedTools,
+
 				command: serverConfig.command as string | undefined,
 				args: serverConfig.args as string[] | undefined,
 				env: serverConfig.env as Record<string, string> | undefined,
