@@ -2048,7 +2048,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					usageLimit: session.getUsageLimitState(),
 					messageCount: session.messages.length,
 					systemPrompt: session.systemPrompt,
-					dumpTools: session.agent.state.tools.map(tool => ({
+					dumpTools: session.getAllTools().map(tool => ({
 						name: tool.name,
 						description: tool.description,
 						parameters: toolWireSchema(tool),
