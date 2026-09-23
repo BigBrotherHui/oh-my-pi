@@ -1303,12 +1303,22 @@ export async function runRpcMode(
 					fastModeActive: session.isFastModeActive(),
 					messageCount: session.messages.length,
 					systemPrompt: session.systemPrompt,
-					dumpTools: session.getAllTools().map(tool => ({
-						name: tool.name,
-						description: tool.description,
-						parameters: toolWireSchema(tool),
-						examples: tool.examples,
-					})),
+					dumpTools: [
+						...session.agent.state.tools.map(tool => ({
+							name: tool.name,
+							description: tool.description,
+							parameters: toolWireSchema(tool),
+							examples: tool.examples,
+						})),
+						...session
+							.listMcpToolSummaries()
+							.filter(summary => !session.agent.state.tools.some(tool => tool.name === summary.name))
+							.map(summary => ({
+								name: summary.name,
+								description: summary.description ?? '',
+								parameters: {},
+							})),
+					],
 					contextUsage: session.getContextUsage(),
 				};
 				return success(id, "get_state", state);

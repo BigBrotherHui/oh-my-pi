@@ -36,6 +36,12 @@ export interface MCPServer {
 	envLiteralKeys?: string[];
 	/** Working directory for stdio transport */
 	cwd?: string;
+	/**
+	 * Optional allowlist of RAW MCP tool names (glob patterns, e.g. `get_*`,
+	 * `push_files`) to expose for this server. Tools whose raw name matches no
+	 * pattern are hidden from the model entirely. OMP-specific extension.
+	 */
+	allowedTools?: string[];
 	/** URL (for HTTP/SSE transport) */
 	url?: string;
 	/** HTTP headers (for HTTP transport) */

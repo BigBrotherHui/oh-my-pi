@@ -720,7 +720,7 @@ export class MCPManager {
 
 			const toolsPromise = connectionPromise.then(async connection => {
 				try {
-					const serverTools = await listTools(connection);
+					const serverTools = this.filterAllowedTools(name, await listTools(connection), connection.config.allowedTools);
 					return { connection, serverTools };
 				} catch (error) {
 					// Detach and delete synchronously, then close in the background:
@@ -1076,6 +1076,49 @@ export class MCPManager {
 	/**
 	 * Get all known server names (connected, connecting, or discovered).
 	 */
+	/**
+	 * Apply the server's `allowedTools` glob allowlist (MCPServerConfig) to raw
+	 * tool names. Empty/absent allowlist = expose everything. Patterns are
+	 * case-sensitive globs: `*` matches any run, `?` one char.
+	 */
+	/**
+	 * Apply the server's `allowedTools` glob allowlist (MCPServerConfig) to raw
+	 * tool names. Empty/absent allowlist = expose everything. Patterns are
+	 * globs: `*` matches any run of characters, everything else is literal
+	 * (case-sensitive, matching raw tool names).
+	 */
+	private matchGlob(name: string, pattern: string): boolean {
+		const segments = pattern.split("*");
+		if (segments.length === 1) return name === pattern;
+		let pos = 0;
+		const lastIdx = segments.length - 1;
+		for (let i = 0; i < segments.length; i++) {
+			const seg = segments[i];
+			if (i === 0) {
+				if (!name.startsWith(seg)) return false;
+				pos = seg.length;
+				continue;
+			}
+			if (seg.length === 0) continue; // trailing "*" wildcard
+			const at = name.indexOf(seg, pos);
+			if (at < 0) return false;
+			if (i === lastIdx && at + seg.length !== name.length) return false;
+			pos = at + seg.length;
+		}
+		return true;
+	}
+
+	private filterAllowedTools<T extends { name: string }>(serverName: string, tools: T[], allowedTools?: string[]): T[] {
+		if (!allowedTools || allowedTools.length === 0) return tools;
+		const usable = allowedTools.filter(pattern => typeof pattern === "string" && pattern.trim().length > 0);
+		if (usable.length === 0) return tools;
+		const filtered = tools.filter(tool => usable.some(pattern => this.matchGlob(tool.name, pattern.trim())));
+		logger.warn(
+			`MCP server "${serverName}": allowedTools allowlist exposed ${filtered.length}/${tools.length} tools`,
+		);
+		return filtered;
+	}
+
 	getAllServerNames(): string[] {
 		return Array.from(
 			new Set([...this.#sources.keys(), ...this.#connections.keys(), ...this.#pendingConnections.keys()]),
@@ -1448,7 +1491,7 @@ export class MCPManager {
 			void this.reconnectServer(name);
 		};
 		try {
-			const serverTools = await listTools(connection);
+			const serverTools = this.filterAllowedTools(name, await listTools(connection),  connection.config.allowedTools);
 			const reconnect = (options?: { authChallenge?: MCPAuthChallenge }) => this.reconnectServer(name, options);
 			const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 			void this.toolCache?.set(name, config, serverTools);
@@ -1498,7 +1541,7 @@ export class MCPManager {
 		connection.tools = undefined;
 
 		// Reload tools
-		const serverTools = await listTools(connection);
+		const serverTools = this.filterAllowedTools(name, await listTools(connection), connection.config.allowedTools);
 		const reconnect = () => this.reconnectServer(name);
 		const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 		void this.toolCache?.set(name, connection.config, serverTools);

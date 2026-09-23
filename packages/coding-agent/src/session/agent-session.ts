@@ -5632,21 +5632,20 @@ export class AgentSession {
 	}
 
 	/**
-	 * Every tool the model can currently call: built-ins from agent state plus
-	 * whatever live MCP tools sit in the session registry. agent.state.tools is
-	 * a snapshot taken at construction, so MCP tools refreshed after MCP
-	 * discovery (see refreshMCPTools) are absent from it — RPC consumers that
-	 * enumerate tools (get_state dumpTools) must read this merged view instead.
+	 * Names + descriptions of the live MCP tools sitting in the session
+	 * registry (refreshed by refreshMCPTools after MCP discovery). These are
+	 * absent from agent.state.tools snapshots, so RPC consumers enumerating
+	 * tools must merge this view: MCP tools are injected into the model
+	 * context per-turn and therefore work even though state.tools omits them.
 	 */
-	getAllTools(): AgentTool[] {
-		const merged = new Map<string, AgentTool>();
-		for (const tool of this.agent.state.tools) {
-			merged.set(tool.name, tool);
-		}
+	listMcpToolSummaries(): Array<{ name: string; description?: string }> {
+		const summaries: Array<{ name: string; description?: string }> = [];
 		for (const [name, tool] of this.#tools.registry) {
-			if (!merged.has(name)) merged.set(name, tool);
+			if (!name.startsWith("mcp__")) continue;
+			const loose = tool as { description?: string };
+			summaries.push({ name, description: loose.description });
 		}
-		return [...merged.values()];
+		return summaries;
 	}
 
 	/** Replaces host-owned RPC tools before the next model call. */

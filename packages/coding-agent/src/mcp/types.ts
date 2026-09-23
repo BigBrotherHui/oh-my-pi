@@ -81,6 +81,12 @@ interface MCPServerConfigBase {
 	 * tool's config do not, since the key is not part of those formats.
 	 */
 	requestIdFormat?: MCPRequestIdFormat;
+	/**
+	 * Optional allowlist of RAW MCP tool names (glob patterns, e.g. `get_*`,
+	 * `push_files`) to expose for this server. Raw names that match no pattern
+	 * are hidden from the model entirely. OMP-specific, like requestIdFormat.
+	 */
+	allowedTools?: string[];
 	/** Authentication configuration (optional) */
 	auth?: MCPAuthConfig;
 	/** OAuth configuration for servers requiring explicit client credentials */
