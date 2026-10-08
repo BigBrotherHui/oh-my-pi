@@ -469,8 +469,13 @@ import {
 	cfgTierGoogle,
 	cfgTierOpenai,
 	cfgProvidersAnthropicSlowMode,
+	cfgModelToolCallBudgetEnabled,
+	cfgModelToolCallBudgetNoticeRatio,
+	cfgModelToolCallBudgetSoft,
 } from "./settings";
 import { type AnthropicSlowModeController, anthropicSlowModeLanes, formatUsageLimitLabel } from "./anthropic-slow-mode";
+import { renderToolCallBudgetWrapUp } from "./tool-call-budget";
+import type { RepeatedToolCallDetection } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import type { UsageLimitState } from "./usage-limit";
 import { cfgInterruptMode } from "../modes/settings";
 import { cfgFollowUpMode } from "../modes/settings";
@@ -1002,6 +1007,12 @@ export class AgentSession implements SettingsScope {
 
 	readonly #streamingEditGuard: StreamingEditGuard;
 	readonly #loopGuards: LoopGuards;
+	/** Tool calls dispatched in the current agent run (reset at each run start). */
+	#runToolCallCount = 0;
+	/** Whether the near-budget wrap-up steer has already been injected this run. */
+	#toolBudgetNoticeSent = false;
+	/** Set once the run is over budget: further tool batches are blocked. */
+	#toolBudgetExhausted = false;
 	#promptInFlightCount = 0;
 	#abortInProgress = false;
 	/** Submissions accepted by prompt()/promptCustomMessage()/sendCustomMessage() that have not
@@ -1108,6 +1119,8 @@ export class AgentSession implements SettingsScope {
 	#beginInFlight(): void {
 		this.#promptInFlightCount++;
 		if (this.#promptInFlightCount === 1) {
+			// A new run starts here: the tool-call budget is per run, not per session.
+			this.#resetToolCallBudget();
 			this.#acquirePowerAssertion();
 		}
 	}
@@ -2051,6 +2064,7 @@ export class AgentSession implements SettingsScope {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			schedulePostPromptTask: task => this.#schedulePostPromptTask(task),
 			discardAssistantTurn: message => this.#recovery.discardAssistantTurn(message),
+			forceToolBudgetWrapUp: detection => this.#forceToolBudgetWrapUp(detection),
 		};
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
@@ -4815,6 +4829,61 @@ export class AgentSession implements SettingsScope {
 		}
 		return this.#ttsr.afterToolCall(ctx);
 	}
+
+	/**
+	 * Run-scoped tool-call budget. The core loop has no global cap, so a model
+	 * that keeps finding new files to read can explore forever without ever
+	 * answering. Past `noticeRatio * soft` a wrap-up steer is injected once;
+	 * at `soft` every further tool call is blocked with the same text, so the
+	 * next model request can only produce an answer. Disabled by default.
+	 */
+	#accountToolCallBudget(): BeforeToolCallResult | undefined {
+		if (this.#toolBudgetExhausted) {
+			const budget = Math.max(1, Math.floor(cfgModelToolCallBudgetSoft.get(this.settings)));
+			return { block: true, reason: renderToolCallBudgetWrapUp({ count: this.#runToolCallCount, budget }) };
+		}
+		if (cfgModelToolCallBudgetEnabled.get(this.settings) !== true) return undefined;
+		const budget = Math.max(1, Math.floor(cfgModelToolCallBudgetSoft.get(this.settings)));
+		const ratio = cfgModelToolCallBudgetNoticeRatio.get(this.settings);
+		const noticeAt = Math.max(1, Math.floor(budget * (ratio > 0 && ratio < 1 ? ratio : 0.8)));
+		this.#runToolCallCount += 1;
+		const count = this.#runToolCallCount;
+		if (count >= budget) {
+			if (!this.#toolBudgetExhausted) {
+				this.#toolBudgetExhausted = true;
+				this.emitNotice("warning", `Tool-call budget reached (${budget}); forcing a final answer.`, "tool-budget");
+			}
+			return { block: true, reason: renderToolCallBudgetWrapUp({ count, budget }) };
+		}
+		if (count >= noticeAt && !this.#toolBudgetNoticeSent) {
+			this.#toolBudgetNoticeSent = true;
+			this.emitNotice("info", `${count} tool calls used of ${budget}; wrapping up soon.`, "tool-budget");
+			return { additionalContext: renderToolCallBudgetWrapUp({ count, budget }) };
+		}
+		return undefined;
+	}
+
+	/** Resets the run-scoped tool-call budget at the start of each agent run. */
+	#resetToolCallBudget(): void {
+		this.#runToolCallCount = 0;
+		this.#toolBudgetNoticeSent = false;
+		this.#toolBudgetExhausted = false;
+	}
+
+	/**
+	 * Escalate an ignored repeat-tool-call corrective: mark the run over budget so
+	 * the remaining tool calls are blocked and the model must answer.
+	 */
+	#forceToolBudgetWrapUp(detection: RepeatedToolCallDetection): void {
+		if (this.#toolBudgetExhausted) return;
+		this.#toolBudgetExhausted = true;
+		this.#toolBudgetNoticeSent = true;
+		this.emitNotice(
+			"warning",
+			`Repeated ${detection.toolName} call ignored the corrective; forcing a final answer.`,
+			"tool-budget",
+		);
+	}
 	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
 	 * arg-prep time — before concurrency scheduling, `tool_execution_start`,
@@ -4826,8 +4895,9 @@ export class AgentSession implements SettingsScope {
 	 * execution still emit there).
 	 */
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
-		const runner = this.#extensionRunner;
-		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+		const budgetBlock = this.#accountToolCallBudget();
+		if (budgetBlock) return budgetBlock;
+		const runner = this.#extensionRunner;		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
 		if (ttsrResult) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);

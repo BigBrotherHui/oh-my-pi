@@ -345,6 +345,50 @@ export const cfgModelToolCallLoopGuardExemptTools = register({
 	},
 });
 
+/**
+ * Run-scoped tool-call budget for the PRIMARY agent. The core loop has no
+ * global cap (see agent-loop.ts), so a model that keeps finding new things to
+ * read can explore indefinitely without ever producing an answer. When this is
+ * enabled, the session injects one wrap-up steer past `noticeRatio * soft` and
+ * then refuses further tool batches at `soft`, forcing a text-only answer.
+ * Off by default so normal coding sessions are unaffected.
+ */
+export const cfgModelToolCallBudgetEnabled = register({
+	id: "model.toolCallBudget.enabled",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "model",
+		group: "Thinking",
+		label: "Tool-Call Budget",
+		description: "Cap tool calls per agent run: warn near the limit, then force a text-only answer",
+	},
+});
+
+export const cfgModelToolCallBudgetSoft = register({
+	id: "model.toolCallBudget.soft",
+	type: "number",
+	default: 60,
+	ui: {
+		tab: "model",
+		group: "Thinking",
+		label: "Tool-Call Budget (soft)",
+		description: "Tool calls allowed in one agent run before the loop stops dispatching new tool batches",
+	},
+});
+
+export const cfgModelToolCallBudgetNoticeRatio = register({
+	id: "model.toolCallBudget.noticeRatio",
+	type: "number",
+	default: 0.8,
+	ui: {
+		tab: "model",
+		group: "Thinking",
+		label: "Tool-Call Budget Notice Ratio",
+		description: "Fraction of the soft budget at which a wrap-up reminder is injected (0-1)",
+	},
+});
+
 export const cfgInlineToolDescriptors = register({
 	id: "inlineToolDescriptors",
 	type: "enum",

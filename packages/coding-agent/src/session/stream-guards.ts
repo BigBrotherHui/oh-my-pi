@@ -48,6 +48,11 @@ export interface StreamGuardsHost {
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	schedulePostPromptTask(task: (signal: AbortSignal) => Promise<void>): void;
 	discardAssistantTurn(message: AssistantMessage): void;
+	/**
+	 * Escalate an ignored repeat-tool-call corrective into the run's tool-call
+	 * budget hard stop. Optional so hosts without a budget stay functional.
+	 */
+	forceToolBudgetWrapUp?(detection: RepeatedToolCallDetection): void;
 }
 
 /** Guards streamed edit calls against invalid final previews. */
@@ -124,6 +129,8 @@ export class LoopGuards {
 	readonly #host: StreamGuardsHost;
 	#geminiHeaderDetector: GeminiHeaderRunDetector | undefined;
 	#toolCallLoopGuard: ToolCallLoopGuard | undefined;
+	/** True once the corrective for this loop has been injected at least once. */
+	#toolCallLoopRedirectSent = false;
 	#toolCallLoopGuardSettingsKey: string | undefined;
 
 	constructor(host: StreamGuardsHost) {
@@ -137,7 +144,21 @@ export class LoopGuards {
 			message: context.message,
 			toolResults: context.toolResults,
 		});
-		if (detection) this.#injectToolCallLoopRedirect(messages, detection);
+		if (!detection) return;
+		// A repeat after the corrective was already issued means the model ignored
+		// it. Injecting a second identical steer just burns tokens, so escalate to
+		// the tool-call budget's hard stop: the remaining tool calls in this run are
+		// blocked and the next request can only produce an answer.
+		if (this.#toolCallLoopRedirectSent) {
+			logger.warn("cross-turn tool-call loop repeated after corrective; forcing wrap-up", {
+				toolName: detection.toolName,
+				count: detection.count,
+			});
+			this.#host.forceToolBudgetWrapUp?.(detection);
+			return;
+		}
+		this.#toolCallLoopRedirectSent = true;
+		this.#injectToolCallLoopRedirect(messages, detection);
 	}
 
 	/** Feeds a streamed assistant event to the Gemini header-runaway detector. */
