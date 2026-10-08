@@ -912,7 +912,11 @@ export const cfgAsyncMaxJobs = register({
 export const cfgToolsXdev = register({
 	id: "tools.xdev",
 	type: "boolean",
-	default: true,
+	// Keep MCP tools in the normal model tool schema by default. Some
+	// OpenAI-compatible models (notably DeepSeek) treat the xd:// discovery
+	// URL as a plain read path instead of completing the read/write device
+	// protocol, so the default mounted mode can silently prevent MCP calls.
+	default: false,
 	ui: {
 		tab: "tools",
 		group: "Discovery & MCP",
