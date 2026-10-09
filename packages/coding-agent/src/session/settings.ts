@@ -360,7 +360,7 @@ export const cfgModelToolCallBudgetEnabled = register({
 	ui: {
 		tab: "model",
 		group: "Thinking",
-		label: "Tool-Call Budget",
+		label: "Tool-Call Budget (emergency)",
 		description: "Cap tool calls per agent run: warn near the limit, then force a text-only answer",
 	},
 });
@@ -368,12 +368,12 @@ export const cfgModelToolCallBudgetEnabled = register({
 export const cfgModelToolCallBudgetSoft = register({
 	id: "model.toolCallBudget.soft",
 	type: "number",
-	default: 60,
+	default: 240,
 	ui: {
 		tab: "model",
 		group: "Thinking",
-		label: "Tool-Call Budget (soft)",
-		description: "Tool calls allowed in one agent run before the loop stops dispatching new tool batches",
+		label: "Tool-Call Budget (emergency soft)",
+		description: "Emergency fuse only; normal convergence is handled by loop guards and goal budgets",
 	},
 });
 
