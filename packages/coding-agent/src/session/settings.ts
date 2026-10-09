@@ -345,14 +345,7 @@ export const cfgModelToolCallLoopGuardExemptTools = register({
 	},
 });
 
-/**
- * Run-scoped tool-call budget for the PRIMARY agent. The core loop has no
- * global cap (see agent-loop.ts), so a model that keeps finding new things to
- * read can explore indefinitely without ever producing an answer. When this is
- * enabled, the session injects one wrap-up steer past `noticeRatio * soft` and
- * then refuses further tool batches at `soft`, forcing a text-only answer.
- * Off by default so normal coding sessions are unaffected.
- */
+/** Optional run-scoped emergency fuse; warnings and blocked results request a grounded answer. */
 export const cfgModelToolCallBudgetEnabled = register({
 	id: "model.toolCallBudget.enabled",
 	type: "boolean",
@@ -386,6 +379,30 @@ export const cfgModelToolCallBudgetNoticeRatio = register({
 		group: "Thinking",
 		label: "Tool-Call Budget Notice Ratio",
 		description: "Fraction of the soft budget at which a wrap-up reminder is injected (0-1)",
+	},
+});
+
+export const cfgModelExplorationProgressEnabled = register({
+	id: "model.explorationProgress.enabled",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "model",
+		group: "Thinking",
+		label: "Repeated Exploration Guard",
+		description: "Warn on unchanged read-only evidence and restrict repeated targets while allowing new evidence",
+	},
+});
+
+export const cfgModelExplorationProgressWindow = register({
+	id: "model.explorationProgress.window",
+	type: "number",
+	default: 3,
+	ui: {
+		tab: "model",
+		group: "Thinking",
+		label: "Repeated Exploration Window",
+		description: "Consecutive turns with previously seen requests and unchanged results before a warning",
 	},
 });
 

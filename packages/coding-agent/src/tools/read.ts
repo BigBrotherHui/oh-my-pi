@@ -27,6 +27,7 @@ import {
 	parseImageMetadata,
 	prompt,
 	readImageMetadata,
+	stableStringifyJson,
 } from "@oh-my-pi/pi-utils";
 import {
 	cfgIdaAvailable,
@@ -814,6 +815,15 @@ interface SessionWithRepeatReadTracker extends ToolSession {
  * does. Tracking is per session and resets whenever the output changes.
  */
 function appendRepeatReadHint(session: ToolSession, path: string, result: AgentToolResult<ReadToolDetails>): void {
+	const evidenceDetails = { ...result.details };
+	delete evidenceDetails.repeatReadEvidenceHash;
+	const evidenceHash = Bun.SHA256.hash(
+		stableStringifyJson([result.content, result.isError, result.useless, evidenceDetails]),
+		"hex",
+	);
+	result.details ??= {};
+	result.details.repeatReadEvidenceHash = evidenceHash;
+
 	const block = result.content?.find(entry => entry.type === "text");
 	if (!block || typeof block.text !== "string" || block.text.length === 0 || result.isError) return;
 

@@ -475,7 +475,7 @@ import {
 } from "./settings";
 import { type AnthropicSlowModeController, anthropicSlowModeLanes, formatUsageLimitLabel } from "./anthropic-slow-mode";
 import { renderToolCallBudgetWrapUp } from "./tool-call-budget";
-import type { RepeatedToolCallDetection } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
+import explorationWrapUpTemplate from "../prompts/system/exploration-progress-wrapup.md" with { type: "text" };
 import type { UsageLimitState } from "./usage-limit";
 import { cfgInterruptMode } from "../modes/settings";
 import { cfgFollowUpMode } from "../modes/settings";
@@ -1121,6 +1121,7 @@ export class AgentSession implements SettingsScope {
 		if (this.#promptInFlightCount === 1) {
 			// A new run starts here: the tool-call budget is per run, not per session.
 			this.#resetToolCallBudget();
+			this.#loopGuards.resetRun();
 			this.#acquirePowerAssertion();
 		}
 	}
@@ -2064,7 +2065,6 @@ export class AgentSession implements SettingsScope {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			schedulePostPromptTask: task => this.#schedulePostPromptTask(task),
 			discardAssistantTurn: message => this.#recovery.discardAssistantTurn(message),
-			forceToolBudgetWrapUp: detection => this.#forceToolBudgetWrapUp(detection),
 		};
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
@@ -3877,6 +3877,9 @@ export class AgentSession implements SettingsScope {
 		// Both buffer resets run before the awaited fan-out: event handlers run
 		// concurrently and message_update skips the await, so a reset placed after
 		// it could land behind the new message's first deltas and clear them.
+		if (event.type === "message_start" && isUserAuthoredQueuedMessage(event.message)) {
+			this.#loopGuards.resetRun();
+		}
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
 		if (event.type === "message_start" && event.message.role === "assistant") this.#ttsr.onAssistantMessageStart();
 
@@ -4830,13 +4833,7 @@ export class AgentSession implements SettingsScope {
 		return this.#ttsr.afterToolCall(ctx);
 	}
 
-	/**
-	 * Run-scoped tool-call budget. The core loop has no global cap, so a model
-	 * that keeps finding new files to read can explore forever without ever
-	 * answering. Past `noticeRatio * soft` a wrap-up steer is injected once;
-	 * at `soft` every further tool call is blocked with the same text, so the
-	 * next model request can only produce an answer. Disabled by default.
-	 */
+	/** Optional emergency fuse; blocked results request a grounded answer but cannot force provider termination. */
 	#accountToolCallBudget(): BeforeToolCallResult | undefined {
 		if (this.#toolBudgetExhausted) {
 			const budget = Math.max(1, Math.floor(cfgModelToolCallBudgetSoft.get(this.settings)));
@@ -4871,20 +4868,6 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/**
-	 * Escalate an ignored repeat-tool-call corrective: mark the run over budget so
-	 * the remaining tool calls are blocked and the model must answer.
-	 */
-	#forceToolBudgetWrapUp(detection: RepeatedToolCallDetection): void {
-		if (this.#toolBudgetExhausted) return;
-		this.#toolBudgetExhausted = true;
-		this.#toolBudgetNoticeSent = true;
-		this.emitNotice(
-			"warning",
-			`Repeated ${detection.toolName} call ignored the corrective; forcing a final answer.`,
-			"tool-budget",
-		);
-	}
-	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
 	 * arg-prep time — before concurrency scheduling, `tool_execution_start`,
 	 * and the wrapper's approval gate. A handler block becomes a blocked tool
@@ -4895,15 +4878,19 @@ export class AgentSession implements SettingsScope {
 	 * execution still emit there).
 	 */
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
+		if (this.#loopGuards.beforeToolCall({ ...ctx.toolCall, name: ctx.tool.name })) {
+			return { block: true, reason: prompt.render(explorationWrapUpTemplate, { turns: "several" }) };
+		}
 		const budgetBlock = this.#accountToolCallBudget();
-		if (budgetBlock) return budgetBlock;
-		const runner = this.#extensionRunner;		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+		if (budgetBlock?.block) return budgetBlock;
+		const runner = this.#extensionRunner;
+		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
 		if (ttsrResult) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 			return ttsrResult;
 		}
-		if (!runner?.hasHandlers("tool_call")) return undefined;
+		if (!runner?.hasHandlers("tool_call")) return budgetBlock;
 		const metadata = ctx.toolCall.providerMetadata;
 		const computer = metadata?.type === "computer" ? metadata : undefined;
 		// Parity with the wrapper's pre-emit short-circuit: an already-denied
@@ -4941,7 +4928,8 @@ export class AgentSession implements SettingsScope {
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.
 		const args = callResult?.input !== undefined && !computer ? callResult.input : undefined;
-		const additionalContext = callResult?.additionalContext;
+		const additionalContext =
+			[callResult?.additionalContext, budgetBlock?.additionalContext].filter(Boolean).join("\n") || undefined;
 		if (args === undefined && additionalContext === undefined) return undefined;
 		return { args, additionalContext };
 	}

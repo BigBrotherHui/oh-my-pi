@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Repeated read-only exploration now checks tool results and restricts unchanged requests while allowing new targets, edits and tests; loop state resets between prompts and the optional emergency budget remains off by default.
+
 ## [18.8.4] - 2026-10-08
 
 ### Changed

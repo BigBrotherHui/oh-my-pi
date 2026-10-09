@@ -46,6 +46,8 @@ export type ReadTruncationStats = Omit<TruncationResult, "content">;
 
 /** Display metadata for file and URL reads. */
 export interface ReadToolDetails {
+	/** SHA-256 of the underlying result before generated repeat-read hints are appended. */
+	repeatReadEvidenceHash?: string;
 	kind?: "file" | "url";
 	proc?: ProcReadDetails;
 	cfg?: CfgReadDetails;

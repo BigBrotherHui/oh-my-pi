@@ -10,4 +10,4 @@ Do NOT call any more tools. Write your final answer now, in the user's language,
 - what remains uncertain, and exactly what would settle it
 - if the request was a question, the direct answer; if it was a task, the state of the work and what is left
 
-Answer from the evidence already in this conversation. If it is genuinely insufficient, say so plainly and name the single next step — a wrong-but-clear answer with stated gaps is more useful than more searching.
+Answer only from the evidence already in this conversation. If it is insufficient, state the uncertainty plainly and identify the missing evidence. Do not invent an answer or claim unfinished work is complete.

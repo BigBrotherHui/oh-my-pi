@@ -5,12 +5,14 @@ import {
 	type AgentTurnEndContext,
 	createToolScopedAbortReason,
 } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, AssistantMessageEvent, Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, Model, ToolCall } from "@oh-my-pi/pi-ai";
 import { GeminiHeaderRunDetector } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
+import explorationWrapUpTemplate from "../prompts/system/exploration-progress-wrapup.md" with { type: "text" };
+import { ExplorationProgressGuard, type ExplorationDetection } from "./exploration-progress-guard";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 import {
@@ -21,6 +23,8 @@ import {
 
 import { cfgEditStreamingAbort } from "../edit/settings";
 import {
+	cfgModelExplorationProgressEnabled,
+	cfgModelExplorationProgressWindow,
 	cfgModelLoopGuardEnabled,
 	cfgModelLoopGuardToolCallReminder,
 	cfgModelToolCallLoopGuardEnabled,
@@ -48,11 +52,6 @@ export interface StreamGuardsHost {
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	schedulePostPromptTask(task: (signal: AbortSignal) => Promise<void>): void;
 	discardAssistantTurn(message: AssistantMessage): void;
-	/**
-	 * Escalate an ignored repeat-tool-call corrective into the run's tool-call
-	 * budget hard stop. Optional so hosts without a budget stay functional.
-	 */
-	forceToolBudgetWrapUp?(detection: RepeatedToolCallDetection): void;
 }
 
 /** Guards streamed edit calls against invalid final previews. */
@@ -132,31 +131,54 @@ export class LoopGuards {
 	/** True once the corrective for this loop has been injected at least once. */
 	#toolCallLoopRedirectSent = false;
 	#toolCallLoopGuardSettingsKey: string | undefined;
+	readonly #exploration = new ExplorationProgressGuard();
 
 	constructor(host: StreamGuardsHost) {
 		this.#host = host;
 	}
 
-	/** Records a completed turn and injects a redirect when calls repeat. */
+	/** Reset run-scoped convergence state for a fresh user prompt. */
+	resetRun(): void {
+		this.#toolCallLoopRedirectSent = false;
+		this.#toolCallLoopGuard = undefined;
+		this.#toolCallLoopGuardSettingsKey = undefined;
+		this.#geminiHeaderDetector = undefined;
+		this.#exploration.resetRun();
+	}
+
+	beforeToolCall(call: ToolCall): boolean {
+		if (!cfgModelExplorationProgressEnabled.get(this.#host.settings)) {
+			this.#exploration.resetRun();
+			return false;
+		}
+		return this.#exploration.shouldBlock(call);
+	}
+
+	/** Records completed tool evidence before the next provider request. */
 	recordTurn(messages: AgentMessage[], context: AgentTurnEndContext | undefined): void {
 		if (context?.message.role !== "assistant") return;
+		if (cfgModelExplorationProgressEnabled.get(this.#host.settings)) {
+			const exploration = this.#exploration.recordTurn(
+				context,
+				cfgModelExplorationProgressWindow.get(this.#host.settings),
+			);
+			if (exploration) this.#injectExplorationWrapUp(messages, exploration);
+		} else {
+			this.#exploration.resetRun();
+		}
 		const detection = this.#activeToolCallLoopGuard()?.recordTurn({
 			message: context.message,
 			toolResults: context.toolResults,
 		});
-		if (!detection) return;
-		// A repeat after the corrective was already issued means the model ignored
-		// it. Injecting a second identical steer just burns tokens, so escalate to
-		// the tool-call budget's hard stop: the remaining tool calls in this run are
-		// blocked and the next request can only produce an answer.
-		if (this.#toolCallLoopRedirectSent) {
-			logger.warn("cross-turn tool-call loop repeated after corrective; forcing wrap-up", {
-				toolName: detection.toolName,
-				count: detection.count,
-			});
-			this.#host.forceToolBudgetWrapUp?.(detection);
+		if (!detection) {
+			this.#toolCallLoopRedirectSent = false;
 			return;
 		}
+		if (
+			this.#toolCallLoopRedirectSent &&
+			detection.count > cfgModelToolCallLoopGuardThreshold.get(this.#host.settings)
+		)
+			return;
 		this.#toolCallLoopRedirectSent = true;
 		this.#injectToolCallLoopRedirect(messages, detection);
 	}
@@ -174,6 +196,35 @@ export class LoopGuards {
 			return;
 		}
 		if (event.type === "text_start" || event.type === "toolcall_start") detector.reset();
+	}
+
+	#injectExplorationWrapUp(messages: AgentMessage[], detection: ExplorationDetection): void {
+		const content = prompt.render(explorationWrapUpTemplate, { turns: detection.turns });
+		const message: CustomMessage = {
+			role: "custom",
+			customType: "exploration-progress-wrapup",
+			content,
+			display: false,
+			details: detection,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		messages.push(message);
+		if (this.#host.agent.state.messages !== messages) this.#host.agent.appendMessage(message);
+		this.#host.sessionManager.appendCustomMessageEntry(
+			"exploration-progress-wrapup",
+			content,
+			false,
+			detection,
+			"agent",
+		);
+		this.#host.emitNotice(
+			"warning",
+			detection.stage === "restrict"
+				? "Repeated read requests are restricted; new evidence and other tools remain available."
+				: "Read-only exploration repeated unchanged evidence; requested a grounded answer.",
+			"exploration-progress",
+		);
 	}
 
 	#activeToolCallLoopGuard(): ToolCallLoopGuard | undefined {
