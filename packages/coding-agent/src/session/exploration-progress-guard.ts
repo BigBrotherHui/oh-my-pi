@@ -6,15 +6,34 @@ import { createMCPToolName } from "../mcp/tool-bridge";
 
 const BUILTIN_READ_TOOLS = new Set(["read", "grep", "glob", "find"]);
 const MCP_READ_TOOLS = new Set([
-	...["list_projects", "index_status", "search_graph", "trace_path", "get_code_snippet", "check_index_coverage"].map(
-		name => createMCPToolName("codebase-memory-mcp", name),
-	),
-	...["memory_briefing", "memory_search", "memory_get"].map(name => createMCPToolName("ai-memory", name)),
+	...[
+		"list_projects",
+		"index_status",
+		"search_graph",
+		"trace_path",
+		"get_code_snippet",
+		"check_index_coverage",
+		"search_code",
+		"get_architecture",
+		"get_file_outline",
+		"query_graph",
+		"detect_changes",
+	].map(name => createMCPToolName("codebase-memory-mcp", name)),
+	...[
+		"memory_briefing",
+		"memory_search",
+		"memory_get",
+		"memory_get_page",
+		"memory_read_page",
+		"memory_query",
+		"memory_recent",
+		"memory_status",
+	].map(name => createMCPToolName("ai-memory", name)),
 ]);
 const HISTORY_LIMIT = 512;
 
 export interface ExplorationDetection {
-	stage: "warning" | "restrict";
+	stage: "warning" | "restrict" | "nudge";
 	turns: number;
 }
 
@@ -32,11 +51,15 @@ export class ExplorationProgressGuard {
 	#idleTurns = 0;
 	#warned = false;
 	#restricted = false;
+	#readOnlyCalls = 0;
+	#nudged = false;
 
 	resetRun(): void {
 		this.#evidence.clear();
 		this.#deniedCalls.clear();
 		this.#resetEpisode();
+		this.#readOnlyCalls = 0;
+		this.#nudged = false;
 	}
 
 	#resetEpisode(): void {
@@ -68,13 +91,22 @@ export class ExplorationProgressGuard {
 		return true;
 	}
 
-	recordTurn(context: AgentTurnEndContext, threshold: number): ExplorationDetection | undefined {
+	recordTurn(context: AgentTurnEndContext, threshold: number, nudgeAfter = 0): ExplorationDetection | undefined {
 		if (context.message.role !== "assistant") return undefined;
 		const calls = context.message.content.filter((part): part is ToolCall => part.type === "toolCall");
 		if (!context.willContinue || calls.length === 0 || !calls.every(call => this.#isReadOnly(call.name))) {
 			this.resetRun();
 			return undefined;
 		}
+		// A long pure read-only run that keeps finding NEW evidence never trips the
+		// repeat detector above, yet can still explore forever without answering.
+		// Nudge once past `nudgeAfter` read-only calls; any non-read tool resets it,
+		// and this never blocks a call — so edits, tests and new targets stay free.
+		this.#readOnlyCalls += calls.length;
+		const nudge =
+			nudgeAfter > 0 && !this.#nudged && this.#readOnlyCalls >= nudgeAfter
+				? ((this.#nudged = true), { stage: "nudge" as const, turns: this.#readOnlyCalls })
+				: undefined;
 		const results = new Map(context.toolResults.map(result => [result.toolCallId, result]));
 		const observations: [string, string][] = [];
 		let progress = false;
@@ -120,11 +152,11 @@ export class ExplorationProgressGuard {
 		while (this.#evidence.size > HISTORY_LIMIT) this.#evidence.delete(this.#evidence.keys().next().value!);
 		if (progress) {
 			this.#resetEpisode();
-			return undefined;
+			return nudge;
 		}
 		this.#idleTurns++;
 		const window = Number.isFinite(threshold) ? Math.max(2, Math.trunc(threshold)) : 3;
-		if (this.#idleTurns < window || this.#restricted) return undefined;
+		if (this.#idleTurns < window || this.#restricted) return nudge;
 		if (!this.#warned) {
 			this.#warned = true;
 			return { stage: "warning", turns: this.#idleTurns };

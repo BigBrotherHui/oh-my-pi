@@ -45,6 +45,35 @@ function restrict(guard: ExplorationProgressGuard): void {
 }
 
 describe("ExplorationProgressGuard", () => {
+	it("nudges once after many read-only calls that keep finding new evidence without blocking", () => {
+		const g = new ExplorationProgressGuard();
+		const stages: (string | undefined)[] = [];
+		for (let n = 0; n < 50; n++)
+			stages.push(g.recordTurn(turn([call({ path: `f${n}.ts` })], `evidence ${n}`), 3, 45)?.stage);
+		expect(stages.filter(s => s === "nudge")).toHaveLength(1);
+		expect(stages.filter(s => s === "warning" || s === "restrict")).toHaveLength(0);
+		// The nudge is advisory: an unseen target is never blocked, and it fires once.
+		expect(g.shouldBlock(call({ path: "brand-new.ts" }))).toBe(false);
+		for (let n = 0; n < 10; n++)
+			expect(g.recordTurn(turn([call({ path: `g${n}.ts` })], `more ${n}`), 3, 45)).toBeUndefined();
+	});
+
+	it("resets the read-only checkpoint on any non-read tool, so coding work is unaffected", () => {
+		const g = new ExplorationProgressGuard();
+		for (let n = 0; n < 44; n++)
+			expect(g.recordTurn(turn([call({ path: `f${n}.ts` })], `e${n}`), 3, 45)).toBeUndefined();
+		expect(g.recordTurn(turn([call({ path: "answer.txt" }, "write")], "wrote"), 3, 45)).toBeUndefined();
+		for (let n = 0; n < 44; n++)
+			expect(g.recordTurn(turn([call({ path: `f${n}.ts` })], `e${n}`), 3, 45)).toBeUndefined();
+		expect(g.shouldBlock(call())).toBe(false);
+	});
+
+	it("records no checkpoint when the threshold is disabled", () => {
+		const g = new ExplorationProgressGuard();
+		for (let n = 0; n < 80; n++)
+			expect(g.recordTurn(turn([call({ path: `f${n}.ts` })], `e${n}`), 3, 0)).toBeUndefined();
+	});
+
 	it("warns then blocks unchanged large results even when repeated targets alternate", () => {
 		const g = new ExplorationProgressGuard();
 		const results = [];

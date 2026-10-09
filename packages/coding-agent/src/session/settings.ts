@@ -406,6 +406,19 @@ export const cfgModelExplorationProgressWindow = register({
 	},
 });
 
+export const cfgModelExplorationProgressNudgeAfter = register({
+	id: "model.explorationProgress.nudgeAfter",
+	type: "number",
+	default: 45,
+	ui: {
+		tab: "model",
+		group: "Thinking",
+		label: "Exploration Checkpoint (read-only calls)",
+		description:
+			"After this many consecutive read-only calls, request one interim answer or the single missing fact; never blocks tools (0 disables)",
+	},
+});
+
 export const cfgInlineToolDescriptors = register({
 	id: "inlineToolDescriptors",
 	type: "enum",

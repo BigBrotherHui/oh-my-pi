@@ -11,6 +11,7 @@ import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
+import explorationNudgeTemplate from "../prompts/system/exploration-progress-nudge.md" with { type: "text" };
 import explorationWrapUpTemplate from "../prompts/system/exploration-progress-wrapup.md" with { type: "text" };
 import { ExplorationProgressGuard, type ExplorationDetection } from "./exploration-progress-guard";
 import type { CustomMessage } from "./messages";
@@ -24,6 +25,7 @@ import {
 import { cfgEditStreamingAbort } from "../edit/settings";
 import {
 	cfgModelExplorationProgressEnabled,
+	cfgModelExplorationProgressNudgeAfter,
 	cfgModelExplorationProgressWindow,
 	cfgModelLoopGuardEnabled,
 	cfgModelLoopGuardToolCallReminder,
@@ -161,6 +163,7 @@ export class LoopGuards {
 			const exploration = this.#exploration.recordTurn(
 				context,
 				cfgModelExplorationProgressWindow.get(this.#host.settings),
+				cfgModelExplorationProgressNudgeAfter.get(this.#host.settings),
 			);
 			if (exploration) this.#injectExplorationWrapUp(messages, exploration);
 		} else {
@@ -199,6 +202,33 @@ export class LoopGuards {
 	}
 
 	#injectExplorationWrapUp(messages: AgentMessage[], detection: ExplorationDetection): void {
+		if (detection.stage === "nudge") {
+			const nudge = prompt.render(explorationNudgeTemplate, { calls: detection.turns });
+			const nudgeMessage: CustomMessage = {
+				role: "custom",
+				customType: "exploration-progress-nudge",
+				content: nudge,
+				display: false,
+				details: detection,
+				attribution: "agent",
+				timestamp: Date.now(),
+			};
+			messages.push(nudgeMessage);
+			if (this.#host.agent.state.messages !== messages) this.#host.agent.appendMessage(nudgeMessage);
+			this.#host.sessionManager.appendCustomMessageEntry(
+				"exploration-progress-nudge",
+				nudge,
+				false,
+				detection,
+				"agent",
+			);
+			this.#host.emitNotice(
+				"info",
+				`Checkpoint after ${detection.turns} read-only calls: requested an interim answer or the missing fact. No tools were blocked.`,
+				"exploration-progress",
+			);
+			return;
+		}
 		const content = prompt.render(explorationWrapUpTemplate, { turns: detection.turns });
 		const message: CustomMessage = {
 			role: "custom",
